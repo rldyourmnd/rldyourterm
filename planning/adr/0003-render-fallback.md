@@ -20,6 +20,9 @@ Accepted
 5. Пороговые условия fallback:
    - больше 2 подряд critical GPU errors в 2–3 с;
    - 1 error `DeviceLost` без успешного recover.
+6. Frame pacing не задается фиксированным FPS в primary path:
+   - cadence вычисляется от refresh-rate текущего монитора;
+   - при переносе окна между мониторами cadence пересчитывается без restart.
 
 ## Rationale
 - `wgpu` сам по себе cross-platform (`Vulkan`, `Metal`, `D3D12`, `OpenGL`) и API-устойчив к backend различиям.
@@ -33,3 +36,5 @@ Accepted
 ## References
 - Context7 `wgpu` для request_device/surface config/error callbacks.  
   Source: `https://docs.rs/wgpu/latest` (`/websites/rs_wgpu`, `/gfx-rs/wgpu`)
+- Context7 `winit` для monitor/window событий и refresh-rate query.  
+  Source: `https://docs.rs/winit/latest` (`/websites/rs_winit_winit`)

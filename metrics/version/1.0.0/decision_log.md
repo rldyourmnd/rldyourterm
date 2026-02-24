@@ -11,6 +11,7 @@
 - PTY-слой: не писать собственный PTY; использовать `portable-pty` как единственный базовый PTY абстракционный слой.
 - Оконный и event-loop слой: использовать `winit`.
 - GPU рендер: использовать `wgpu` как cross-platform backend.
+- Frame pacing: monitor-driven cadence от системного refresh-rate без обязательного числового `fps-target` в primary UX.
 - UX настроек: в-терминальный command palette как primary path.
 - Shell baseline: `fish + starship`, fallback `zsh`.
 - Обновления/релиз: без CI, только ручной release-процесс.
