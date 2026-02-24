@@ -9,7 +9,7 @@
 - Minimal modal command mode for commands like:
   - `theme set cuberpunk`
   - `mode cpu` / `mode gpu` / `mode auto`
-  - `render fps target 120`
+  - `render cadence monitor-auto`
   - `shell fish` `shell zsh` `shell auto-init on|off`
 
 ## Persistence
@@ -21,7 +21,7 @@
 - All palette actions emit `settings.apply` trace events.
 
 ## Scope and v1.0 commands
-- Baseline commands: theme, render mode, shell target, fps target, auto-init toggle.
+- Baseline commands: theme, render mode, shell target, monitor-driven render cadence policy, auto-init toggle.
 - Invalid commands must not affect running session state.
 - Every command path must emit `settings.apply` with event-id, previous state, and new state.
 - Debug mode command and profile commands are allowed through a dedicated safe command namespace.

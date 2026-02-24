@@ -18,5 +18,5 @@
 
 ### Проверки качества
 - Сквозная ручная валидация по Linux 22.04/24.04/25.10 и macOS.
-- Проверены сценарии long-run, burst output, resize storm, prompt/copy/paste, scrollback cap.
+- Проверены сценарии long-run (>=10 минут), burst output, resize storm, перенос окна между мониторами с разным refresh-rate, prompt/copy/paste, scrollback cap.
 - Нет критичных blockers из risk matrix v1.0.0.

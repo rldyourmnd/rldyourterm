@@ -13,7 +13,7 @@ v1.0 ориентирован на продуктового пользовате
    - `shell fish|zsh|auto`
    - `mode cpu|gpu|auto`
    - `shell auto-init on|off`
-   - `performance fps-target <hz>`
+   - `render cadence monitor-auto`
 3. Изменения конфигурации:
    - валидируются на schema;
    - применяются live;
@@ -28,6 +28,7 @@ v1.0 ориентирован на продуктового пользовате
 ## Consequences
 - Надо реализовать parser команд palette и историю изменений.
 - Конфиг всё равно persistence хранится в typed local profile (не user-edit-first).
+- В v1.0 числовой `fps-target` не используется в primary path; частота рендера определяется от текущего монитора и меняется автоматически при переносе окна.
 
 ## Related
 - `planning/settings/settings_palette.md`

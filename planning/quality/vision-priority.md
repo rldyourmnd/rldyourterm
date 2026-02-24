@@ -18,7 +18,7 @@
   - `--render-mode cpu`
   - `--render-mode gpu`
   - `--render-mode auto` (GPU if healthy, fallback CPU on failure)
-- Explicit RAM/perf budget discipline and frame pacing strategy.
+- Explicit RAM/perf budget discipline and monitor-driven frame pacing strategy.
 
 ## Non-Goals (v1)
 - No full multiplexer on v1 (single-terminal baseline first).
