@@ -1,0 +1,248 @@
+"$schema" = "https://starship.rs/config-schema.json"
+
+# Stable-max profile:
+# High information density with predictable performance and low noise.
+format = """
+$os$username$hostname$localip$directory$git_branch$git_status$git_metrics$fill$cmd_duration$jobs$time$line_break$character"""
+
+right_format = """
+$shell$shlvl$nix_shell$container$python$nodejs$rust$golang$java$kotlin$php$docker_context$kubernetes$aws$gcloud$azure$memory_usage$battery$status$sudo"""
+
+add_newline = false
+scan_timeout = 30
+command_timeout = 1000
+
+palette = "ai_stable"
+
+[fill]
+symbol = " "
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+vimcmd_symbol = "[❮](bold cyan)"
+
+[os]
+disabled = false
+format = "[$symbol ]($style)"
+style = "bold fg:surface2"
+
+[username]
+show_always = true
+format = "[$user ]($style)"
+style_user = "bold fg:blue"
+style_root = "bold fg:red"
+
+[hostname]
+ssh_only = true
+format = "[@$hostname ]($style)"
+style = "bold fg:peach"
+
+[localip]
+disabled = false
+ssh_only = true
+format = "[($localipv4 )]($style)"
+style = "bold fg:yellow"
+
+[directory]
+truncate_to_repo = true
+truncation_length = 3
+truncation_symbol = "…/"
+style = "bold fg:text"
+read_only = " "
+read_only_style = "bold fg:red"
+format = "[$path]($style)[$read_only]($read_only_style) "
+
+[git_branch]
+symbol = " "
+truncation_length = 32
+style = "bold fg:mauve"
+format = "[$symbol$branch]($style) "
+
+[git_status]
+style = "bold fg:yellow"
+format = "([$all_status$ahead_behind]($style) )"
+conflicted = "⚔ "
+ahead = "⇡${count} "
+behind = "⇣${count} "
+diverged = "⇕⇡${ahead_count}⇣${behind_count} "
+untracked = "?${count} "
+stashed = "*${count} "
+modified = "!${count} "
+staged = "+${count} "
+renamed = "»${count} "
+deleted = "✘${count} "
+
+[git_metrics]
+disabled = false
+ignore_submodules = true
+only_nonzero_diffs = true
+format = "[+$added]($added_style)[/-$deleted]($deleted_style) "
+added_style = "bold fg:green"
+deleted_style = "bold fg:red"
+
+[cmd_duration]
+min_time = 500
+show_milliseconds = true
+show_notifications = true
+min_time_to_notify = 45000
+format = "[󱑃 $duration ]($style)"
+style = "bold fg:peach"
+
+[jobs]
+threshold = 1
+symbol = "✦"
+format = "[$symbol$number ]($style)"
+style = "bold fg:yellow"
+
+[time]
+disabled = false
+time_format = "%Y-%m-%d %H:%M"
+format = "[󰃰 $time]($style)"
+style = "fg:surface2"
+
+[shell]
+disabled = false
+format = "[󱆃 $indicator ]($style)"
+style = "bold fg:teal"
+
+[shlvl]
+disabled = false
+threshold = 3
+format = "[sh$shlvl ]($style)"
+style = "fg:surface2"
+
+[status]
+disabled = false
+format = "[✖ $status ]($style)"
+style = "bold fg:red"
+success_symbol = ""
+not_found_symbol = ""
+sigint_symbol = "⨯"
+not_executable_symbol = ""
+signal_symbol = ""
+
+[sudo]
+disabled = false
+symbol = "󰌾 "
+format = "[$symbol]($style)"
+style = "bold fg:peach"
+
+[memory_usage]
+disabled = false
+threshold = 75
+symbol = "󰍛 "
+format = "[${ram_pct}]($style) "
+style = "bold fg:orange"
+
+[battery]
+disabled = false
+format = "[$symbol$percentage]($style) "
+full_symbol = "󰁹 "
+charging_symbol = "󰂄 "
+discharging_symbol = "󰂃 "
+unknown_symbol = "󰁽 "
+empty_symbol = "󰂎 "
+
+[[battery.display]]
+threshold = 15
+style = "bold fg:red"
+
+[[battery.display]]
+threshold = 45
+style = "fg:yellow"
+
+[[battery.display]]
+threshold = 100
+style = "fg:green"
+
+[python]
+symbol = " "
+format = "[${symbol}${version}( ($virtualenv)) ]($style)"
+style = "bold fg:yellow"
+pyenv_version_name = true
+
+[nodejs]
+symbol = " "
+format = "[${symbol}${version} ]($style)"
+style = "bold fg:green"
+
+[rust]
+symbol = " "
+format = "[${symbol}${version} ]($style)"
+style = "bold fg:red"
+
+[golang]
+symbol = " "
+format = "[${symbol}${version} ]($style)"
+style = "bold fg:teal"
+
+[java]
+symbol = " "
+format = "[${symbol}${version} ]($style)"
+style = "bold fg:orange"
+
+[kotlin]
+symbol = " "
+format = "[${symbol}${version} ]($style)"
+style = "bold fg:mauve"
+
+[php]
+symbol = " "
+format = "[${symbol}${version} ]($style)"
+style = "bold fg:mauve"
+
+[docker_context]
+symbol = " "
+format = "[$symbol$context ]($style)"
+style = "bold fg:blue"
+
+[kubernetes]
+disabled = false
+symbol = "󱃾 "
+format = "[$symbol$context( \\($namespace\\)) ]($style)"
+style = "bold fg:blue"
+
+[aws]
+disabled = false
+symbol = " "
+format = "[$symbol$profile( \\($region\\)) ]($style)"
+style = "bold fg:peach"
+
+[gcloud]
+disabled = false
+symbol = " "
+format = "[$symbol$account(@$domain)( \\($region\\)) ]($style)"
+style = "bold fg:sky"
+
+[azure]
+disabled = false
+symbol = "󰠅 "
+format = "[$symbol$subscription ]($style)"
+style = "bold fg:blue"
+
+[nix_shell]
+symbol = " "
+format = "[$symbol$state( $name) ]($style)"
+style = "bold fg:teal"
+impure_msg = "impure"
+pure_msg = "pure"
+unknown_msg = "?"
+
+[container]
+symbol = "⬢ "
+format = "[$symbol$name ]($style)"
+style = "bold fg:peach"
+
+[palettes.ai_stable]
+text = "#cdd6f4"
+surface2 = "#9399b2"
+blue = "#89b4fa"
+sky = "#89dceb"
+teal = "#94e2d5"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+orange = "#fab387"
+peach = "#fab387"
+red = "#f38ba8"
+mauve = "#cba6f7"
