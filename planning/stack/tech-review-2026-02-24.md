@@ -3,7 +3,7 @@
 ## Checked libraries (Context7)
 - `portable-pty`: stable PTY workflow (`openpty`, `spawn_command`, `resize`, reader/writer split).
 - `wgpu`: cross-platform GPU abstraction with explicit adapter request and render pipeline/queue submit lifecycle.
-- `winit`: event-loop + window lifecycle control (`Resized`, `RedrawRequested`, `CloseRequested`, `request_redraw`).
+- `winit`: event-loop + window lifecycle control (`Moved`, `Resized`, `ScaleFactorChanged`, `RedrawRequested`, `CloseRequested`, `request_redraw`) + monitor refresh API.
 
 ## Decision for v1.0.0
 1. Use all three as baseline primitives.
@@ -19,3 +19,4 @@
 - PTY resize propagation (`SIGWINCH`/kernel window-size sync) and cleanup on crash.
 - GPU device loss handling and queue submission error paths.
 - Event loop scheduling to avoid redraw storms and to maintain idle efficiency.
+- monitor transfer handling: deterministic cadence re-sync from current monitor refresh-rate and no hardcoded fps path.
