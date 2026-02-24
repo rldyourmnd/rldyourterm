@@ -11,7 +11,7 @@ Accepted
 - v1.0.0 использует `portable-pty` как единственную кроссплатформенную PTY абстракцию.
 - Своя PTY-реализация как core не пишется в v1.0.
 - Реализуем адаптерный слой:
-  - `foundation/pty` — создание PTY, resize, spawn, read/write, kill.
+  - `foundation/api::pty::PtyFactory` — создание PTY, resize, spawn, read/write, kill.
   - `services/session` — retry policy и корректное завершение.
 - Важные ограничения:
   - не держать writer `portable-pty` более одного раза;

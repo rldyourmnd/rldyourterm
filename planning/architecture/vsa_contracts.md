@@ -1,10 +1,10 @@
 # VSA Contract Notes (Research Stage)
 
 ## Layer Contract
-- `foundation/`: OS/desktop integrations, PTY adapters, font loaders, clipboard, windowing system hooks.
+- `foundation/`: OS/desktop integrations, PTY adapters, font loaders, clipboard, windowing system hooks, monitor timing probes.
 - `core/`: terminal engine state machine, buffers, parser boundaries, key protocols.
-- `services/`: orchestration: session lifecycle, mode switching, failover.
-- `features/`: pluggable capabilities (render.cpu, render.gpu, settings.ui, shell integration).
+- `services/`: orchestration: session lifecycle, mode switching, monitor-driven render pacing, failover.
+- `features/`: pluggable capabilities (`render_cpu`, `render_gpu`, `settings`, `shell_integration`, `diagnostics`).
 - `app/`: binaries and CLI assembly.
 
 Детализированный контракт и контрольные ограничения: `planning/architecture/vsa-layer-contracts-v1.0.0.md`.
