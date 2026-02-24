@@ -10,6 +10,7 @@
 - Содержит:
   - PTY адаптеры.
   - оконный слой (создание окна/события ввода/фокуса/Resize).
+  - извлечение monitor timing (включая refresh-rate) через window adapter.
   - clipboard + system helpers.
   - профили логирования и runtime env.
 - Не содержит доменной логики терминала.
@@ -25,15 +26,16 @@
 - Оркеструет:
   - жизненный цикл сессии и child process;
   - режимы рендера (`cpu/gpu/auto`) и переключения;
+  - monitor-driven frame pacing и re-sync при переносе окна между мониторами;
   - recovery policy (retry/backoff/fallback);
   - глобальные события в runtime.
 
 ### features/
 - Модульные capabilities:
   - settings (in-terminal palette);
-  - render.cpu;
-  - render.gpu;
-  - shell integration (`fish/zsh`);
+  - render_cpu;
+  - render_gpu;
+  - shell_integration (`fish/zsh`);
   - diagnostics (`metrics`, `logs`, traces).
 - Каждый feature имеет только trait-интерфейс по public API и внутреннюю реализацию.
 
@@ -65,3 +67,4 @@
 ## 6) Совместимость v1.0
 - Приоритет: корректная работа базовых ANSI/cursor/color/scroll/paste сценариев.
 - Экзотические/редкие расширения допускаются с деградацией без падения сессии.
+- Переход окна между мониторами с разной частотой (например, 144Hz/60Hz) не должен вызывать crash/tear и должен приводить к автоматическому обновлению cadence.
