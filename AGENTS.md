@@ -69,8 +69,13 @@
   - `planning/stack/v1.0.0-module-integration-contracts.md`
   - `planning/quality/v1.0.0-quality-gates.md`
   - `planning/risk/v1.0.0-risk-matrix.md`
+  - `planning/operations/v1.0.0-start-readiness-index.md`
 - Ветвление и финальные этапы без CI: только manual test pack и ручной QA.
-- Версия v1.0.0 должна быть консистентно зафиксирована во всех `metrics/version/1.0.0/*.md`.
+- Версия v1.0.0 должна быть консистентно зафиксирована во всех:
+  - `metrics/version/1.0.0/decision_log.md`
+  - `metrics/version/1.0.0/quality_targets.md`
+  - `metrics/version/1.0.0/research_decisions.md`
+  - `metrics/version/1.0.0/definition_of_done.md`.
 
 ## 6) Non-goals v1.0.0 (запрещено по умолчанию)
 - Multiplexer-режим в v1.0.0.
