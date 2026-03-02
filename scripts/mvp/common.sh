@@ -125,10 +125,51 @@ assert_result_line() {
     return 1
   fi
 
+  local running_step_observed
+  running_step_observed="$(result_field "$result_line" running_step_observed || true)"
+  if [[ "$running_step_observed" != "yes" ]]; then
+    echo "MVP_GATE_RESULT profile=$profile status=fail reason=running-step-missing value=${running_step_observed:-missing} log=$log_file" >&2
+    return 1
+  fi
+
+  local recoverable_observed
+  recoverable_observed="$(result_field "$result_line" recoverable_observed || true)"
+  local cadence_resync_observed
+  cadence_resync_observed="$(result_field "$result_line" cadence_resync_observed || true)"
+  local gpu_retry_observed
+  gpu_retry_observed="$(result_field "$result_line" gpu_retry_observed || true)"
+  local fallback_observed
+  fallback_observed="$(result_field "$result_line" fallback_observed || true)"
+
+  case "$profile" in
+    claude)
+      if [[ "$recoverable_observed" != "yes" ]]; then
+        echo "MVP_GATE_RESULT profile=$profile status=fail reason=recoverable-evidence-missing value=${recoverable_observed:-missing} log=$log_file" >&2
+        return 1
+      fi
+      ;;
+    codex)
+      if [[ "$gpu_retry_observed" != "yes" ]]; then
+        echo "MVP_GATE_RESULT profile=$profile status=fail reason=gpu-retry-evidence-missing value=${gpu_retry_observed:-missing} log=$log_file" >&2
+        return 1
+      fi
+      if [[ "$fallback_observed" != "yes" ]]; then
+        echo "MVP_GATE_RESULT profile=$profile status=fail reason=gpu-fallback-evidence-missing value=${fallback_observed:-missing} log=$log_file" >&2
+        return 1
+      fi
+      ;;
+    gemini)
+      if [[ "$cadence_resync_observed" != "yes" ]]; then
+        echo "MVP_GATE_RESULT profile=$profile status=fail reason=cadence-resync-evidence-missing value=${cadence_resync_observed:-missing} log=$log_file" >&2
+        return 1
+      fi
+      ;;
+  esac
+
   if ! grep -q '^MVP_STEP .*command=single-window:1 ' "$log_file"; then
     echo "MVP_GATE_RESULT profile=$profile status=fail reason=single-window-step-missing log=$log_file" >&2
     return 1
   fi
 
-  echo "MVP_GATE_RESULT profile=$profile status=pass state=$result_state windows=$result_windows single_window_required=$result_single_window_required single_window_enforced=$result_single_window_enforced release_governance=$result_release_governance log=$log_file"
+  echo "MVP_GATE_RESULT profile=$profile status=pass state=$result_state windows=$result_windows single_window_required=$result_single_window_required single_window_enforced=$result_single_window_enforced release_governance=$result_release_governance recoverable_observed=$recoverable_observed cadence_resync_observed=$cadence_resync_observed gpu_retry_observed=$gpu_retry_observed fallback_observed=$fallback_observed running_step_observed=$running_step_observed log=$log_file"
 }
