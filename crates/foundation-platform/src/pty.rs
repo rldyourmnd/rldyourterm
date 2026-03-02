@@ -1,7 +1,11 @@
 use std::io::{self, ErrorKind, Read, Write};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::Duration;
 
-use portable_pty::{CommandBuilder, MasterPty, PtySize as PortablePtySize, native_pty_system};
+use portable_pty::{
+    Child, ChildKiller, CommandBuilder, MasterPty, PtySize as PortablePtySize, native_pty_system,
+};
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation::error::{
     FoundationError, FoundationResult, PtyFailureCode, PtyOperation, Recoverability,
@@ -9,15 +13,22 @@ use rldyourterm_foundation::error::{
 
 // Reserved sentinel when the child is known to be gone but no exit status can be retrieved.
 const UNKNOWN_EXIT_CODE: i32 = i32::MIN;
+const POST_KILL_REAP_ATTEMPTS: usize = 5;
+const POST_KILL_REAP_BACKOFF: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Default)]
 pub struct PlatformPtyFactory;
+
+struct PtyProcess {
+    child: Mutex<Box<dyn Child + Send + Sync>>,
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+}
 
 struct PtyInner {
     master: Box<dyn MasterPty + Send>,
     reader: Option<Box<dyn Read + Send>>,
     writer: Option<Box<dyn Write + Send>>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    process: Arc<PtyProcess>,
     exit_code: Option<i32>,
     last_size: PtySize,
     closed: bool,
@@ -61,22 +72,60 @@ impl PlatformPtyIo {
         Self::cache_exit_code(inner, UNKNOWN_EXIT_CODE)
     }
 
-    fn refresh_exit_state(inner: &mut PtyInner) -> FoundationResult<Option<i32>> {
+    fn lock_child<'a>(
+        process: &'a Arc<PtyProcess>,
+        operation: PtyOperation,
+    ) -> FoundationResult<MutexGuard<'a, Box<dyn Child + Send + Sync>>> {
+        process.child.lock().map_err(|_| {
+            FoundationError::pty(
+                operation,
+                PtyFailureCode::BoundaryFault,
+                Recoverability::Fatal,
+                "pty child lock poisoned",
+                None,
+            )
+        })
+    }
+
+    fn lock_killer<'a>(
+        process: &'a Arc<PtyProcess>,
+        operation: PtyOperation,
+    ) -> FoundationResult<MutexGuard<'a, Box<dyn ChildKiller + Send + Sync>>> {
+        process.killer.lock().map_err(|_| {
+            FoundationError::pty(
+                operation,
+                PtyFailureCode::BoundaryFault,
+                Recoverability::Fatal,
+                "pty killer lock poisoned",
+                None,
+            )
+        })
+    }
+
+    fn refresh_exit_state(
+        inner: &mut PtyInner,
+        operation: PtyOperation,
+    ) -> FoundationResult<Option<i32>> {
         if let Some(code) = inner.exit_code {
             return Ok(Some(code));
         }
 
-        match inner.child.try_wait() {
+        let wait_result = {
+            let mut child = Self::lock_child(&inner.process, operation)?;
+            child.try_wait()
+        };
+
+        match wait_result {
             Ok(Some(status)) => {
                 let code = Self::cache_exit_code(inner, normalize_exit_code(status.exit_code()));
                 Ok(Some(code))
             }
             Ok(None) => Ok(None),
             Err(error) if is_child_lifecycle_race(&error) => {
-                let code = Self::cache_unknown_exit(inner, PtyOperation::TryWait, &error);
+                let code = Self::cache_unknown_exit(inner, operation, &error);
                 Ok(Some(code))
             }
-            Err(error) => Err(child_failure(PtyOperation::TryWait, error)),
+            Err(error) => Err(child_failure(operation, error)),
         }
     }
 
@@ -86,7 +135,11 @@ impl PlatformPtyIo {
             return Ok(());
         }
 
-        match inner.child.kill() {
+        let kill_result = {
+            let mut killer = Self::lock_killer(&inner.process, operation)?;
+            killer.kill()
+        };
+        match kill_result {
             Ok(()) => {}
             Err(error) if is_child_lifecycle_race(&error) => {
                 let _ = Self::cache_unknown_exit(inner, operation, &error);
@@ -95,24 +148,42 @@ impl PlatformPtyIo {
             Err(error) => return Err(child_failure(operation, error)),
         }
 
-        let _ = Self::refresh_exit_state(inner)?;
+        for attempt in 0..POST_KILL_REAP_ATTEMPTS {
+            let wait_result = {
+                let mut child = Self::lock_child(&inner.process, PtyOperation::TryWait)?;
+                child.try_wait()
+            };
+            match wait_result {
+                Ok(Some(status)) => {
+                    let _ = Self::cache_exit_code(inner, normalize_exit_code(status.exit_code()));
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(error) if is_child_lifecycle_race(&error) => {
+                    let _ = Self::cache_unknown_exit(inner, operation, &error);
+                    return Ok(());
+                }
+                Err(error) => return Err(child_failure(PtyOperation::TryWait, error)),
+            }
+            if attempt + 1 < POST_KILL_REAP_ATTEMPTS {
+                thread::sleep(POST_KILL_REAP_BACKOFF);
+            }
+        }
+
+        tracing::warn!(
+            operation = %operation.as_str(),
+            attempts = POST_KILL_REAP_ATTEMPTS,
+            "pty child did not report exit after kill; caching unknown exit"
+        );
+        inner.exit_code = Some(UNKNOWN_EXIT_CODE);
         Ok(())
     }
 
-    fn wait_for_exit(inner: &mut PtyInner, operation: PtyOperation) -> FoundationResult<i32> {
-        if let Some(code) = Self::refresh_exit_state(inner)? {
-            return Ok(code);
-        }
-
-        match inner.child.wait() {
-            Ok(status) => {
-                let code = Self::cache_exit_code(inner, normalize_exit_code(status.exit_code()));
-                Ok(code)
-            }
-            Err(error) if is_child_lifecycle_race(&error) => {
-                let code = Self::cache_unknown_exit(inner, operation, &error);
-                Ok(code)
-            }
+    fn wait_for_exit(process: Arc<PtyProcess>, operation: PtyOperation) -> FoundationResult<i32> {
+        let mut child = Self::lock_child(&process, operation)?;
+        match child.wait() {
+            Ok(status) => Ok(normalize_exit_code(status.exit_code())),
+            Err(error) if is_child_lifecycle_race(&error) => Ok(UNKNOWN_EXIT_CODE),
             Err(error) => Err(child_failure(operation, error)),
         }
     }
@@ -134,7 +205,7 @@ impl PlatformPtyIo {
 impl PtyIo for PlatformPtyIo {
     fn take_reader(&self) -> FoundationResult<Box<dyn Read + Send>> {
         let mut inner = self.lock_inner(PtyOperation::Read)?;
-        let _ = Self::refresh_exit_state(&mut inner)?;
+        let _ = Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?;
         Self::ensure_open(&inner, PtyOperation::Read)?;
 
         inner.reader.take().ok_or_else(|| {
@@ -150,14 +221,14 @@ impl PtyIo for PlatformPtyIo {
 
     fn take_writer(&self) -> FoundationResult<Box<dyn Write + Send>> {
         let mut inner = self.lock_inner(PtyOperation::AcquireWriterLease)?;
-        let _ = Self::refresh_exit_state(&mut inner)?;
+        let _ = Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?;
         Self::ensure_open(&inner, PtyOperation::AcquireWriterLease)?;
 
         inner.writer.take().ok_or_else(|| {
             FoundationError::pty(
                 PtyOperation::AcquireWriterLease,
                 PtyFailureCode::SingleWriterInvariantViolation,
-                Recoverability::Degrade,
+                Recoverability::Fatal,
                 "pty writer is already acquired",
                 None,
             )
@@ -166,7 +237,7 @@ impl PtyIo for PlatformPtyIo {
 
     fn resize(&self, size: PtySize) -> FoundationResult<()> {
         let mut inner = self.lock_inner(PtyOperation::Resize)?;
-        let _ = Self::refresh_exit_state(&mut inner)?;
+        let _ = Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?;
         Self::ensure_open(&inner, PtyOperation::Resize)?;
 
         let normalized = normalize_size(size);
@@ -184,7 +255,7 @@ impl PtyIo for PlatformPtyIo {
 
     fn kill(&self) -> FoundationResult<()> {
         let mut inner = self.lock_inner(PtyOperation::Kill)?;
-        if Self::refresh_exit_state(&mut inner)?.is_some() {
+        if Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?.is_some() {
             return Ok(());
         }
 
@@ -192,13 +263,29 @@ impl PtyIo for PlatformPtyIo {
     }
 
     fn wait(&self) -> FoundationResult<i32> {
-        let mut inner = self.lock_inner(PtyOperation::TryWait)?;
-        Self::wait_for_exit(&mut inner, PtyOperation::TryWait)
+        let process = {
+            let mut inner = self.lock_inner(PtyOperation::TryWait)?;
+            if let Some(code) = Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)? {
+                return Ok(code);
+            }
+            Arc::clone(&inner.process)
+        };
+
+        match Self::wait_for_exit(process, PtyOperation::TryWait) {
+            Ok(code) => {
+                let mut inner = self.lock_inner(PtyOperation::TryWait)?;
+                if inner.exit_code.is_none() {
+                    let _ = Self::cache_exit_code(&mut inner, code);
+                }
+                Ok(inner.exit_code.unwrap_or(code))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn try_wait(&self) -> FoundationResult<Option<i32>> {
         let mut inner = self.lock_inner(PtyOperation::TryWait)?;
-        Self::refresh_exit_state(&mut inner)
+        Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)
     }
 
     fn close(&self) -> FoundationResult<()> {
@@ -252,26 +339,32 @@ impl PtyFactory for PlatformPtyFactory {
             command.env(key, value);
         }
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(command)
             .map_err(|error| io_failure(PtyOperation::SpawnShell, error))?;
+        let mut killer = child.clone_killer();
 
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| io_failure(PtyOperation::SpawnShell, error))?;
+        let reader = pair.master.try_clone_reader().map_err(|error| {
+            let _ = killer.kill();
+            let _ = child.wait();
+            io_failure(PtyOperation::SpawnShell, error)
+        })?;
 
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| io_failure(PtyOperation::SpawnShell, error))?;
+        let writer = pair.master.take_writer().map_err(|error| {
+            let _ = killer.kill();
+            let _ = child.wait();
+            io_failure(PtyOperation::SpawnShell, error)
+        })?;
 
         let inner = PtyInner {
             master: pair.master,
             reader: Some(reader),
             writer: Some(writer),
-            child,
+            process: Arc::new(PtyProcess {
+                child: Mutex::new(child),
+                killer: Mutex::new(killer),
+            }),
             exit_code: None,
             last_size: normalized_size,
             closed: false,
