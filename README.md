@@ -40,6 +40,14 @@ Run the binary directly as the terminal runtime (outside the MVP harness):
 cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1
 ```
 
+Default non-harness runtime now launches the GUI window terminal path (single-window MVP baseline).
+If GUI initialization fails, runtime emits a warning and falls back to TTY mode.
+To force TTY mode explicitly:
+
+```bash
+cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1 --tty
+```
+
 Or build once and run the binary directly:
 
 ```bash
