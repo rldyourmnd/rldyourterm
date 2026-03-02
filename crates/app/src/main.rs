@@ -91,6 +91,8 @@ struct Cli {
     palette_command: Vec<String>,
     #[arg(long, default_value_t = 1)]
     mvp_repeat: u16,
+    #[arg(long, default_value_t = false)]
+    tty: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,14 +186,46 @@ fn run(cli: Cli) -> Result<RunOutcome> {
 
     emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
     let launch_plan = ShellLaunchPlan::from_resolution(selected_shell);
-    let exit_code = pty_runtime::run_interactive_pty(
-        &launch_plan.executable,
-        &launch_plan.args,
-        render_mode,
-        cli.refresh_rate_millihz,
-        cli.window_count,
-    )
-    .context("failed to run interactive runtime")?;
+    let exit_code = if cli.tty {
+        pty_runtime::run_interactive_pty(
+            &launch_plan.executable,
+            &launch_plan.args,
+            render_mode,
+            cli.refresh_rate_millihz,
+            cli.window_count,
+        )
+        .context("failed to run TTY interactive runtime")?
+    } else {
+        match gui_runtime::run_interactive_gui_pty(
+            &launch_plan.executable,
+            &launch_plan.args,
+            render_mode,
+            cli.refresh_rate_millihz,
+            cli.window_count,
+        ) {
+            Ok(code) => code,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "GUI runtime unavailable; falling back to TTY interactive runtime"
+                );
+                diagnostics.emit_kind(
+                    EventKind::ResourceWarning,
+                    format!(
+                        "GUI runtime unavailable; falling back to TTY interactive runtime: {error}"
+                    ),
+                );
+                pty_runtime::run_interactive_pty(
+                    &launch_plan.executable,
+                    &launch_plan.args,
+                    render_mode,
+                    cli.refresh_rate_millihz,
+                    cli.window_count,
+                )
+                .context("failed to run TTY interactive runtime after GUI fallback")?
+            }
+        }
+    };
     diagnostics.emit_kind(
         EventKind::SessionEnded,
         format!("interactive runtime exited with code={exit_code}"),
@@ -779,4 +813,5 @@ fn shell_available_on_path(name: &str) -> bool {
     })
 }
 
+mod gui_runtime;
 mod pty_runtime;
