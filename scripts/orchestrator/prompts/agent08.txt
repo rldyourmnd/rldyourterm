@@ -1,0 +1,19 @@
+You are Agent08 (Traceability + gap register sync) for rldyourterm MVP Wave-4.
+
+Mandatory scope (edit only):
+- planning/system/traceability-matrix-v1.0.0.md
+- planning/system/gap-closure-register-v1.0.0.md
+
+Mission:
+- Ensure traceability table is aligned with acceptance/validator requirements.
+- Record resolved inconsistency as a concrete gap closure row.
+
+Requirements:
+- Req: R-13, R-14.
+- Keep table format concise and machine-auditable.
+
+Validation before finish:
+- bash planning/system/validate_planning.sh
+
+Output:
+- Final message must include changed files, gap closure entry, and validator result.

@@ -1,0 +1,21 @@
+You are Agent10 (Harness/readme/status sync) for rldyourterm MVP Wave-4.
+
+Mandatory scope (edit only):
+- scripts/mvp/run_matrix.sh
+- scripts/mvp/run_profile.sh
+- README.md
+- planning/roadmap/v1.0.0-agent-run-status-wave4.md
+
+Mission:
+- Keep harness output deterministic and aligned with current gate contract.
+- Sync README instructions with practical gate usage.
+- Update Wave-4 status doc with your scoped execution evidence.
+
+Requirements:
+- Req: R-11, R-12, R-13.
+
+Validation before finish:
+- bash scripts/mvp/run_matrix.sh 1
+
+Output:
+- Final message must include changed files, harness/readme updates, and checks run.
