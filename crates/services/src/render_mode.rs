@@ -179,7 +179,9 @@ impl RenderModeController {
         }
 
         let failure_streak = self.record_failure(observed_at);
-        if failure_kind.is_immediate_fallback() || failure_streak > self.policy.retry_budget {
+        if failure_kind.is_immediate_fallback()
+            || self.retry_budget_exhausted(failure_streak, self.policy.retry_budget)
+        {
             return self.switch_to_cpu_from_auto(failure_kind, observed_at, failure_streak);
         }
 
@@ -218,6 +220,10 @@ impl RenderModeController {
     fn reset_failure_window(&mut self) {
         self.failure_streak = 0;
         self.failure_window_start = None;
+    }
+
+    fn retry_budget_exhausted(&self, failure_streak: u8, retry_budget: u8) -> bool {
+        failure_streak > retry_budget || (failure_streak == u8::MAX && retry_budget == u8::MAX)
     }
 
     fn switch_to_cpu_from_auto(
@@ -545,6 +551,43 @@ mod tests {
                 );
             }
             other => panic!("unexpected decision: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_retry_budget_still_has_bounded_fallback_path() {
+        let mut controller = RenderModeController::new(RenderMode::Auto);
+        controller.set_fallback_policy(AutoFallbackPolicy {
+            retry_budget: u8::MAX,
+            failure_window: Duration::from_millis(500),
+        });
+
+        for observed_ms in 1..u16::from(u8::MAX) {
+            assert!(matches!(
+                controller.on_gpu_failure(
+                    GpuFailureKind::SurfaceError,
+                    Duration::from_millis(u64::from(observed_ms))
+                ),
+                FallbackDecision::RetryGpu { .. }
+            ));
+        }
+
+        match controller.on_gpu_failure(GpuFailureKind::SurfaceError, Duration::from_millis(255)) {
+            FallbackDecision::SwitchToCpu(transition) => {
+                assert_eq!(transition.from, ActiveRenderPath::Gpu);
+                assert_eq!(transition.to, ActiveRenderPath::Cpu);
+                assert!(matches!(
+                    transition.reason,
+                    RenderTransitionReason::AutoGpuFallback {
+                        metadata: AutoFallbackMetadata {
+                            failure_streak: u8::MAX,
+                            retry_budget: u8::MAX,
+                            ..
+                        }
+                    }
+                ));
+            }
+            other => panic!("unexpected decision at saturated retry budget: {other:?}"),
         }
     }
 
