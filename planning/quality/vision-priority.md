@@ -1,36 +1,31 @@
 # Vision Priorities (Core Quality Contract)
 
-## 2026-02-24 Priority Order
+## 2026-03-02 Priority Order
 
-1. `СТАБИЛЬНОСТЬ`
-- No session drops in both CPU and GPU modes.
-- Deterministic core state machine with explicit error boundaries.
-- GPU crash must auto-fallback to CPU without terminating the shell session.
+1. `СТАБИЛЬНОСТЬ (CRASH-INTOLERANT)`
+- Runtime target: no known crash path in normal/degraded states.
+- Recoverable GPU/PTY/runtime errors never terminate active shell sessions.
+- Panic/crash is `Sev-0` and release blocking.
 
-2. `BEST PRACTICES FOR AI TOOLS`
-- Command-line ergonomics tuned for: CodeX, OpenCode, Claude Code, Gemini CLI.
-- Fast shell round-trip, low-latency copy/paste, predictable command completion behavior.
-- Minimal startup friction for terminal automation workflows.
+2. `AI CLI COMPATIBILITY`
+- Core tool targets: `Claude Code`, `Codex`, `Gemini CLI`.
+- Deterministic command loop behavior, low operational noise, stable long-run sessions.
+- Prompt, copy/paste, and output behavior must stay predictable under load.
 
-3. `СКОРОСТЬ`
-- Baseline responsiveness over raw feature count.
-- Two render modes:
-  - `--render-mode cpu`
-  - `--render-mode gpu`
-  - `--render-mode auto` (GPU if healthy, fallback CPU on failure)
-- Explicit RAM/perf budget discipline and monitor-driven frame pacing strategy.
+3. `СКОРОСТЬ (ULTRA-LOW LATENCY)`
+- Prioritize minimal prompt-to-paint and command round-trip latency.
+- Enforce bounded CPU/RAM growth.
+- Use monitor-driven cadence with deterministic re-sync on monitor transfer.
 
 ## Non-Goals (v1)
-- No full multiplexer on v1 (single-terminal baseline first).
-- No external config-file-only UX; settings are first-class in-terminal controls.
+- No multiplexer/multi-window parity.
+- No heavy visual effects baseline.
+- No config-file-first UX.
+
+## Engineering Bias
+- Self-authored runtime logic first.
+- External dependencies only where integration boundaries require them.
 
 Quality gates mapping:
 - `planning/quality/v1.0.0-quality-gates.md`
 - `planning/quality/v1.0.0-acceptance-matrix.md`
-
-## Feature Baseline
-- OS: Linux (Ubuntu/deb) and macOS.
-- Shell baseline: fish + Starship by default with opt-in auto-init.
-- Shell fallback path: zsh fallback is allowed; bash is not a default v1.0 target on Linux/macOS.
-- Compatibility contract: ANSI/terminal baseline behavior first (colors, cursor, clear/redraw, scroll/paste stability), with controlled degradation for rare legacy extensions.
-- UI target: modern visual language, cube-like/cuberpunk theme baseline.
