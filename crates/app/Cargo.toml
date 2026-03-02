@@ -10,8 +10,11 @@ anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+crossterm.workspace = true
 rldyourterm-ui = { path = "../ui" }
 rldyourterm-core = { path = "../core" }
+rldyourterm-foundation = { path = "../foundation" }
+rldyourterm-foundation-platform = { path = "../foundation-platform" }
 rldyourterm-services = { path = "../services" }
 rldyourterm-render-cpu = { path = "../features/render_cpu" }
 rldyourterm-render-gpu = { path = "../features/render_gpu" }
