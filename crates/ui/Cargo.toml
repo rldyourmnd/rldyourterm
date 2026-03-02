@@ -1,0 +1,11 @@
+[package]
+name = "rldyourterm-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rldyourterm-core = { path = "../core" }
+rldyourterm-services = { path = "../services" }
+tracing.workspace = true

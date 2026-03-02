@@ -1,0 +1,11 @@
+[package]
+name = "rldyourterm-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+rldyourterm-services = { path = "../../services" }
+tracing.workspace = true

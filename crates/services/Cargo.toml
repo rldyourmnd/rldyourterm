@@ -1,0 +1,13 @@
+[package]
+name = "rldyourterm-services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rldyourterm-core = { path = "../core" }
+rldyourterm-foundation = { path = "../foundation" }

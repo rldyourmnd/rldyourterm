@@ -1,0 +1,10 @@
+[package]
+name = "rldyourterm-shell-integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rldyourterm-services = { path = "../../services" }
+tracing.workspace = true
