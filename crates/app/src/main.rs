@@ -3,9 +3,11 @@ use clap::{Parser, ValueEnum};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_render_cpu::CpuRenderer;
 use rldyourterm_render_gpu::GpuRenderer;
-use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode, RenderTransitionReason};
 use rldyourterm_services::session::{SessionBoundary, SessionState};
-use rldyourterm_settings::{SettingsApplyOutcome, SettingsCommand, SettingsService};
+use rldyourterm_settings::{
+    SettingsApplyOutcome, SettingsCommand, SettingsPaletteApplyOutcome, SettingsService,
+};
 use rldyourterm_shell_integration::{
     ShellAvailability, ShellResolution, ShellResolutionReason, ShellTarget, resolve_shell,
 };
@@ -84,6 +86,8 @@ struct Cli {
     mvp_profile: Option<MvpProfileArg>,
     #[arg(long = "mvp-command")]
     mvp_command: Vec<String>,
+    #[arg(long = "palette-command")]
+    palette_command: Vec<String>,
     #[arg(long, default_value_t = 1)]
     mvp_repeat: u16,
 }
@@ -113,6 +117,7 @@ fn run(cli: Cli) -> Result<()> {
     diagnostics.emit_kind(EventKind::SessionStarted, "app bootstrap start");
 
     let mut settings = SettingsService::default();
+    apply_palette_commands(&diagnostics, &mut settings, &cli.palette_command);
     let startup_settings = settings.apply(settings_command_for_mode(render_mode));
     emit_settings_outcome(&diagnostics, startup_settings);
 
@@ -245,17 +250,27 @@ fn default_profile_commands(profile: Option<MvpProfileArg>) -> Vec<UiRuntimeComm
         Some(MvpProfileArg::Codex) => vec![
             UiRuntimeCommand::Tick,
             UiRuntimeCommand::SetRenderMode(RenderMode::Auto),
-            UiRuntimeCommand::RecoverableBoundary(SessionBoundary::PtyWrite),
+            UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SurfaceError,
+                observed_at_millis: 1_000,
+            },
+            UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SubmitError,
+                observed_at_millis: 1_500,
+            },
+            UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SwapchainOutOfDate,
+                observed_at_millis: 2_000,
+            },
             UiRuntimeCommand::Tick,
-            UiRuntimeCommand::SetRenderMode(RenderMode::Cpu),
         ],
         Some(MvpProfileArg::Gemini) => vec![
             UiRuntimeCommand::Tick,
             UiRuntimeCommand::SetRenderMode(RenderMode::Auto),
-            UiRuntimeCommand::ResyncCadence {
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
                 refresh_rate_millihz: HIGH_REFRESH_RATE_MILLIHZ,
             },
-            UiRuntimeCommand::ResyncCadence {
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
                 refresh_rate_millihz: DEFAULT_REFRESH_RATE_MILLIHZ,
             },
         ],
@@ -281,6 +296,7 @@ fn parse_mvp_command(raw: &str) -> Result<UiRuntimeCommand> {
         "tick" => return Ok(UiRuntimeCommand::Tick),
         "stop" => return Ok(UiRuntimeCommand::RequestStop),
         "stopped" => return Ok(UiRuntimeCommand::MarkStopped),
+        "gpu-frame-ok" => return Ok(UiRuntimeCommand::GpuFramePresented),
         "single-window" => {
             return Ok(UiRuntimeCommand::AssertSingleWindow {
                 requested: SINGLE_WINDOW_BASELINE,
@@ -306,6 +322,17 @@ fn parse_mvp_command(raw: &str) -> Result<UiRuntimeCommand> {
             refresh_rate_millihz,
         });
     }
+    if let Some(value) = normalized.strip_prefix("transfer-cadence:") {
+        let refresh_rate_millihz = value.parse::<u32>().context(
+            "invalid transfer cadence command: expected transfer-cadence:<refresh-rate-millihz>",
+        )?;
+        return Ok(UiRuntimeCommand::ResyncCadenceAfterTransfer {
+            refresh_rate_millihz,
+        });
+    }
+    if let Some(value) = normalized.strip_prefix("gpu-failure:") {
+        return parse_gpu_failure_command(value);
+    }
     if let Some(value) = normalized.strip_prefix("recoverable:") {
         return Ok(UiRuntimeCommand::RecoverableBoundary(parse_boundary(
             value,
@@ -317,9 +344,46 @@ fn parse_mvp_command(raw: &str) -> Result<UiRuntimeCommand> {
 
     Err(anyhow!(
         "unsupported --mvp-command `{raw}`; supported forms: \
-tick, stop, stopped, single-window[:N], mode:<cpu|gpu|auto>, cadence:<millihz>, \
+tick, stop, stopped, gpu-frame-ok, single-window[:N], mode:<cpu|gpu|auto>, \
+cadence:<millihz>, transfer-cadence:<millihz>, gpu-failure:<kind>[:observed-ms], \
 recoverable:<boundary>, fatal:<boundary>"
     ))
+}
+
+fn parse_gpu_failure_command(raw: &str) -> Result<UiRuntimeCommand> {
+    let mut parts = raw.split(':');
+    let kind_token = parts
+        .next()
+        .ok_or_else(|| anyhow!("gpu-failure command requires failure kind"))?;
+    let observed_at_millis = match parts.next() {
+        Some(token) => token
+            .parse::<u64>()
+            .context("invalid gpu-failure command: observed-ms must be an integer")?,
+        None => 1_000,
+    };
+    if parts.next().is_some() {
+        return Err(anyhow!(
+            "invalid gpu-failure command: expected gpu-failure:<kind>[:observed-ms]"
+        ));
+    }
+
+    let kind = match kind_token {
+        "device-lost" => GpuFailureKind::DeviceLost,
+        "surface-error" => GpuFailureKind::SurfaceError,
+        "submit-error" => GpuFailureKind::SubmitError,
+        "swapchain-out-of-date" => GpuFailureKind::SwapchainOutOfDate,
+        _ => {
+            return Err(anyhow!(
+                "unsupported gpu failure kind `{kind_token}`; expected one of: \
+device-lost, surface-error, submit-error, swapchain-out-of-date"
+            ));
+        }
+    };
+
+    Ok(UiRuntimeCommand::GpuFailure {
+        kind,
+        observed_at_millis,
+    })
 }
 
 fn parse_render_mode(token: &str) -> Result<RenderMode> {
@@ -375,6 +439,44 @@ fn emit_command_receipts(diagnostics: &DiagnosticsSink, receipts: &[UiCommandRec
                 receipt.window_count
             ),
         );
+
+        match receipt.outcome {
+            rldyourterm_ui::UiCommandOutcome::RenderModeTransition(transition) => {
+                if matches!(
+                    transition.reason,
+                    RenderTransitionReason::AutoGpuFallback { .. }
+                ) {
+                    diagnostics.emit_kind(
+                        EventKind::ResourceWarning,
+                        format!(
+                            "gpu auto-fallback applied step={} command={} mode={} state={}",
+                            index + 1,
+                            command,
+                            render_mode_token(receipt.render_mode),
+                            state_token(receipt.state),
+                        ),
+                    );
+                }
+            }
+            rldyourterm_ui::UiCommandOutcome::GpuRetryScheduled {
+                failure_kind,
+                failure_streak,
+                retry_budget_remaining,
+            } => {
+                diagnostics.emit_kind(
+                    EventKind::ResourceWarning,
+                    format!(
+                        "gpu retry scheduled step={} command={} kind={} streak={} remaining={}",
+                        index + 1,
+                        command,
+                        gpu_failure_kind_token(failure_kind),
+                        failure_streak,
+                        retry_budget_remaining,
+                    ),
+                );
+            }
+            _ => {}
+        }
     }
 }
 
@@ -402,8 +504,62 @@ fn emit_settings_outcome(diagnostics: &DiagnosticsSink, outcome: SettingsApplyOu
     }
 }
 
+fn apply_palette_commands(
+    diagnostics: &DiagnosticsSink,
+    settings: &mut SettingsService,
+    commands: &[String],
+) {
+    for (index, command) in commands.iter().enumerate() {
+        let outcome = settings.apply_palette_command(command);
+        match outcome {
+            SettingsPaletteApplyOutcome::Applied { input, current, .. } => {
+                diagnostics.emit_kind(
+                    EventKind::SettingsApply,
+                    format!(
+                        "palette command applied step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
+                        index + 1,
+                        input,
+                        render_mode_token(current.mode),
+                        current.shell_target,
+                        current.shell_auto_init,
+                        current.render_cadence_policy,
+                    ),
+                );
+            }
+            SettingsPaletteApplyOutcome::Noop { input, state, .. } => {
+                diagnostics.emit_kind(
+                    EventKind::SettingsApply,
+                    format!(
+                        "palette command noop step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
+                        index + 1,
+                        input,
+                        render_mode_token(state.mode),
+                        state.shell_target,
+                        state.shell_auto_init,
+                        state.render_cadence_policy,
+                    ),
+                );
+            }
+            SettingsPaletteApplyOutcome::Rejected { input, reason, .. } => {
+                diagnostics.emit_kind(
+                    EventKind::SettingsRejected,
+                    format!(
+                        "palette command rejected step={} input={} reason={:?}",
+                        index + 1,
+                        input,
+                        reason
+                    ),
+                );
+            }
+        }
+    }
+}
+
 fn should_print_mvp_output(cli: &Cli) -> bool {
-    cli.mvp_profile.is_some() || !cli.mvp_command.is_empty() || cli.mvp_repeat > 1
+    cli.mvp_profile.is_some()
+        || !cli.mvp_command.is_empty()
+        || !cli.palette_command.is_empty()
+        || cli.mvp_repeat > 1
 }
 
 fn print_mvp_output(
@@ -412,6 +568,44 @@ fn print_mvp_output(
     ui: &UiRuntime,
     resolved_shell: ShellTarget,
 ) {
+    let recoverable_observed = receipts.iter().any(|receipt| {
+        matches!(
+            receipt.outcome,
+            rldyourterm_ui::UiCommandOutcome::SessionTransition(
+                rldyourterm_services::session::SessionTransition {
+                    outcome: rldyourterm_services::session::SessionTransitionOutcome::RecoverableBoundary { .. },
+                    ..
+                }
+            )
+        )
+    });
+    let cadence_resync_observed = receipts.iter().any(|receipt| {
+        matches!(
+            receipt.outcome,
+            rldyourterm_ui::UiCommandOutcome::CadenceResynced { .. }
+        )
+    });
+    let gpu_retry_observed = receipts.iter().any(|receipt| {
+        matches!(
+            receipt.outcome,
+            rldyourterm_ui::UiCommandOutcome::GpuRetryScheduled { .. }
+        )
+    });
+    let fallback_observed = receipts.iter().any(|receipt| {
+        matches!(
+            receipt.outcome,
+            rldyourterm_ui::UiCommandOutcome::RenderModeTransition(
+                rldyourterm_services::render_mode::RenderModeTransition {
+                    reason: RenderTransitionReason::AutoGpuFallback { .. },
+                    ..
+                }
+            )
+        )
+    });
+    let running_step_observed = receipts
+        .iter()
+        .any(|receipt| receipt.state == SessionState::Running);
+
     for (index, receipt) in receipts.iter().enumerate() {
         println!(
             "{MVP_STEP_LABEL} index={} command={} state={} mode={} cadence_millihz={} windows={} single_window_required={} single_window_enforced={} outcome={:?}",
@@ -428,7 +622,7 @@ fn print_mvp_output(
     }
 
     println!(
-        "{MVP_RESULT_LABEL} profile={} repeats={} commands={} state={} mode={} cadence_millihz={} windows={} shell={} single_window_required={} single_window_enforced={} release_governance={}",
+        "{MVP_RESULT_LABEL} profile={} repeats={} commands={} state={} mode={} cadence_millihz={} windows={} shell={} single_window_required={} single_window_enforced={} release_governance={} recoverable_observed={} cadence_resync_observed={} gpu_retry_observed={} fallback_observed={} running_step_observed={}",
         cli.mvp_profile
             .map(MvpProfileArg::as_str)
             .unwrap_or("custom"),
@@ -441,7 +635,12 @@ fn print_mvp_output(
         shell_token(resolved_shell),
         SINGLE_WINDOW_BASELINE,
         single_window_enforced_token(ui.window_count()),
-        release_governance_token(ui.release_governance())
+        release_governance_token(ui.release_governance()),
+        yes_no_token(recoverable_observed),
+        yes_no_token(cadence_resync_observed),
+        yes_no_token(gpu_retry_observed),
+        yes_no_token(fallback_observed),
+        yes_no_token(running_step_observed),
     );
 }
 
@@ -455,9 +654,21 @@ fn command_token(command: UiRuntimeCommand) -> String {
         UiRuntimeCommand::RequestStop => "stop".to_string(),
         UiRuntimeCommand::MarkStopped => "stopped".to_string(),
         UiRuntimeCommand::SetRenderMode(mode) => format!("mode:{}", render_mode_token(mode)),
+        UiRuntimeCommand::GpuFailure {
+            kind,
+            observed_at_millis,
+        } => format!(
+            "gpu-failure:{}:{}",
+            gpu_failure_kind_token(kind),
+            observed_at_millis
+        ),
+        UiRuntimeCommand::GpuFramePresented => "gpu-frame-ok".to_string(),
         UiRuntimeCommand::ResyncCadence {
             refresh_rate_millihz,
         } => format!("cadence:{refresh_rate_millihz}"),
+        UiRuntimeCommand::ResyncCadenceAfterTransfer {
+            refresh_rate_millihz,
+        } => format!("transfer-cadence:{refresh_rate_millihz}"),
         UiRuntimeCommand::AssertSingleWindow { requested } => format!("single-window:{requested}"),
     }
 }
@@ -479,6 +690,15 @@ fn render_mode_token(mode: RenderMode) -> &'static str {
         RenderMode::Cpu => "cpu",
         RenderMode::Gpu => "gpu",
         RenderMode::Auto => "auto",
+    }
+}
+
+fn gpu_failure_kind_token(kind: GpuFailureKind) -> &'static str {
+    match kind {
+        GpuFailureKind::DeviceLost => "device-lost",
+        GpuFailureKind::SurfaceError => "surface-error",
+        GpuFailureKind::SubmitError => "submit-error",
+        GpuFailureKind::SwapchainOutOfDate => "swapchain-out-of-date",
     }
 }
 
@@ -506,6 +726,10 @@ fn release_governance_token(governance: ReleaseGovernance) -> &'static str {
     match governance {
         ReleaseGovernance::ManualOnly => "manual-only",
     }
+}
+
+fn yes_no_token(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn settings_command_for_mode(mode: RenderMode) -> SettingsCommand {
