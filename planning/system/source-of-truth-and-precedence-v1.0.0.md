@@ -1,4 +1,4 @@
-# Source Of Truth And Precedence (v1.0.0)
+# Source Of Truth And Precedence (v1.0.0 reset sync)
 
 ## Scope
 
@@ -12,13 +12,13 @@ Defines how Codex resolves conflicts between documents in `planning/`.
 4. Architecture and integration contracts:
 - `planning/architecture/*`
 - `planning/stack/*`
-5. Quality/risk/operations/roadmap execution docs:
+5. Quality/risk/operations/roadmap docs:
 - `planning/quality/*`
 - `planning/risk/*`
 - `planning/operations/*`
 - `planning/roadmap/*`
-6. Metrics mirror docs:
-- `metrics/version/1.0.0/*`
+6. System governance docs:
+- `planning/system/*`
 
 ## Conflict Resolution Algorithm
 
@@ -31,6 +31,7 @@ Defines how Codex resolves conflicts between documents in `planning/`.
 
 ## Normative Invariants (Must Never Drift)
 
+- Hard priority order: stability -> AI CLI compatibility -> speed.
 - VSA dependency flow: `app -> features -> services -> core`.
 - `foundation` exposed through explicit API traits/adapters only.
 - Render modes: `cpu`, `gpu`, `auto`.
@@ -41,6 +42,7 @@ Defines how Codex resolves conflicts between documents in `planning/`.
 - Frame pacing is monitor-driven (system refresh-rate), no hardcoded fps in primary path.
 - Window transfer between monitors (e.g., 144Hz <-> 60Hz) must re-sync cadence without session drop.
 - v1.0.0 scope: single window, no multiplexer.
+- Self-authored-first: project-owned runtime logic by default; external crates only for boundary integrations.
 
 ## Change Control
 
@@ -55,4 +57,4 @@ Use focused commits and keep change scope narrow:
 - Product constraints and priorities: `AGENTS.md`, discovery lock.
 - Runtime architecture: ADR + architecture contracts.
 - External dependency behavior: stack contracts + Context7 evidence.
-- Readiness/release: quality/risk/operations + metrics mirror.
+- Readiness/release: quality/risk/operations + system traceability.

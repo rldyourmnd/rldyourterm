@@ -1,4 +1,4 @@
-# AGENTS.md - rldyourterm Runtime Constitution (v1.0.0)
+# AGENTS.md - rldyourterm Runtime Constitution (v1.1.0-planning-reset)
 
 ## 0) Scope
 - Applies to the whole repository.
@@ -11,26 +11,31 @@ Use this order if documents disagree:
 2. `planning/discovery/v1.0.0-answer-lock.md`
 3. ADRs in `planning/adr/*`
 4. Architecture and integration contracts in `planning/architecture/*` and `planning/stack/*`
-5. Quality/risk/operations/roadmap in `planning/quality/*`, `planning/risk/*`, `planning/operations/*`, `planning/roadmap/*`
-6. Metrics mirrors in `metrics/version/1.0.0/*`
+5. Quality/risk/operations/roadmap docs in `planning/quality/*`, `planning/risk/*`, `planning/operations/*`, `planning/roadmap/*`
+6. System governance docs in `planning/system/*`
 
 Operational meta-rules are defined in:
 - `planning/system/source-of-truth-and-precedence-v1.0.0.md`
 
 ## 2) Product Priorities (Hard Order)
-1. `СТАБИЛЬНОСТЬ`
-- Session continuity over feature velocity.
-- GPU/runtime failures must not terminate active shell sessions when recoverable.
-- Retry/backoff and observability at each critical boundary.
+1. `СТАБИЛЬНОСТЬ (CRASH-INTOLERANT)`
+- Primary objective: no known crash path in normal and degraded runtime states.
+- Recoverable GPU/PTY/runtime faults must not terminate active shell sessions.
+- Any panic/crash is `Sev-0` and blocks release.
+- Bounded retry, deterministic fallback, and event-correlated observability at each critical boundary are mandatory.
 
-2. `AI TOOL COMPATIBILITY`
-- Reliable CLI behavior for Codex/OpenCode/Claude Code/Gemini CLI workloads.
-- Deterministic input/output timing for long-running automation sessions.
-- Minimal operational noise during agent-driven workflows.
+2. `AI CLI COMPATIBILITY`
+- First-class compatibility for long-running workloads in:
+  - `Claude Code`
+  - `Codex`
+  - `Gemini CLI`
+- Deterministic prompt/input/output behavior under long sessions.
+- Minimal operational noise during agent-driven automation.
 
-3. `СКОРОСТЬ`
-- Low input-to-frame latency with bounded CPU/RAM growth.
-- Stable frame pacing and responsive rendering under load.
+3. `СКОРОСТЬ (ULTRA-LOW LATENCY)`
+- Minimize input-to-render latency and shell round-trip latency.
+- Keep CPU/RAM growth bounded under sustained load.
+- Preserve stable frame pacing and responsive rendering during monitor transfers and burst workloads.
 
 ## 3) Product Persona and Platform Scope
 - Primary user (v1.0): visual product owner and AI CLI power-user.
@@ -67,10 +72,16 @@ Frame pacing invariant:
 - No hardcoded FPS target in the primary runtime path.
 - Window transfer between displays with different refresh rates (e.g., 144Hz <-> 60Hz) must re-sync cadence without session drop.
 
-## 6) External Dependency Policy (Context7 First)
+## 6) Self-Authored-First Engineering Policy
+- By default, performance-critical runtime behavior must be implemented in project-owned code.
+- External crates are allowed only where direct OS/GPU/PTY integration is required or where safety/correctness would regress if reimplemented.
+- Using third-party terminal-core engines is forbidden in v1.0.
+- Every external dependency must have a written contract and explicit fallback/degradation semantics.
+
+## 7) External Dependency Policy (Context7 First)
 Before changing dependency-driven contracts or behavior, use Context7 against authoritative docs and update evidence docs.
 
-Current authoritative dependency references:
+Authoritative dependency references:
 - `portable-pty` (`/websites/rs_portable-pty`): PTY lifecycle (`openpty`, `spawn_command`, `try_clone_reader`, `take_writer`, `resize`, `wait/kill`).
 - `winit` (`/websites/rs_winit_winit`): window/event model (`Moved`, `Resized`, `ScaleFactorChanged`, `RedrawRequested`) and monitor APIs.
 - `wgpu` (`/websites/rs_wgpu`): `SurfaceConfiguration`, `present_mode`, frame latency hints, surface error handling.
@@ -78,7 +89,7 @@ Current authoritative dependency references:
 Evidence registry:
 - `planning/system/dependency-evidence-context7-v1.0.0.md`
 
-## 7) Planning Knowledge System (Codex Workflow)
+## 8) Planning Knowledge System (Codex Workflow)
 Start each serious development session with:
 1. `AGENTS.md`
 2. `planning/README.md`
@@ -88,16 +99,15 @@ Start each serious development session with:
 
 If validation fails, fix planning/docs consistency before coding.
 
-## 8) Documentation and Change Governance
+## 9) Documentation and Change Governance
 Any architecture/runtime behavior change must be synchronized across docs in this order:
 1. ADR/contracts (`planning/adr`, `planning/architecture`, `planning/stack`)
-2. Quality/risk/operations (`planning/quality`, `planning/risk`, `planning/operations`, `planning/roadmap`)
-3. Metrics mirrors (`metrics/version/1.0.0/*`)
-4. System layer (`planning/system/traceability-matrix-v1.0.0.md`, `planning/system/gap-closure-register-v1.0.0.md`)
+2. Quality/risk/operations/roadmap (`planning/quality`, `planning/risk`, `planning/operations`, `planning/roadmap`)
+3. System layer (`planning/system/traceability-matrix-v1.0.0.md`, `planning/system/gap-closure-register-v1.0.0.md`)
 
 Do not leave unresolved placeholders in authoritative docs.
 
-## 9) Quality and Release Governance
+## 10) Quality and Release Governance
 - v1.0 release process is manual (no CI gate in baseline).
 - Release readiness requires completed artifacts:
   - `planning/quality/v1.0.0-quality-gates.md`
@@ -107,18 +117,18 @@ Do not leave unresolved placeholders in authoritative docs.
 - Start-gate authority for coding:
   - `planning/operations/v1.0.0-start-readiness-index.md`
 
-## 10) Commit and Collaboration Rules
+## 11) Commit and Collaboration Rules
 - Keep commits small, thematic, and traceable.
 - Include requirement references (`Req: R-XX`) when applicable.
 - Prefer multiple focused commits over one large mixed commit.
 - Never push partial architecture changes without aligned docs updates.
 
-## 11) Non-Goals for v1.0
+## 12) Non-Goals for v1.0
 - Full multiplexer mode.
 - Full multi-window user scenarios.
 - Heavy visual effects (blur/shadow/complex gradients) as baseline behavior.
 - External config-file-first UX.
 - Full Windows runtime parity.
 
-## 12) Practical Rule Of Thumb
-If a change could impact session stability, fallback behavior, monitor-transfer pacing, or shell continuity, treat it as architecture-sensitive and update ADR/contracts/tests docs before code merge.
+## 13) Practical Rule Of Thumb
+If a change could impact session stability, fallback behavior, monitor-transfer pacing, AI CLI compatibility, or shell continuity, treat it as architecture-sensitive and update ADR/contracts/tests docs before code merge.

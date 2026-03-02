@@ -1,8 +1,8 @@
-# Planning Knowledge System (v1.0.0)
+# Planning Knowledge System (v1.0.0 reset sync)
 
 ## Purpose
 
-`planning/` is the operational knowledge base for `rldyourterm` v1.0.0.
+`planning/` is the operational source of truth for `rldyourterm` v1.0.0.
 It is designed so Codex can start a session, recover full context quickly, and make implementation decisions without ambiguity.
 
 ## Fast Start For Codex
@@ -11,7 +11,7 @@ It is designed so Codex can start a session, recover full context quickly, and m
 2. Read `planning/discovery/v1.0.0-answer-lock.md` (locked product decisions).
 3. Read `planning/v1.0.0-development-blueprint.md` (execution baseline).
 4. Read `planning/system/source-of-truth-and-precedence-v1.0.0.md` (conflict resolution and edit rules).
-5. Read `planning/system/traceability-matrix-v1.0.0.md` (requirement-to-implementation map).
+5. Read `planning/system/traceability-matrix-v1.0.0.md` (requirement-to-validation map).
 6. Read `planning/operations/v1.0.0-start-readiness-index.md` (start gate).
 
 ## Directory Structure
@@ -19,7 +19,7 @@ It is designed so Codex can start a session, recover full context quickly, and m
 - `planning/discovery/`: finalized requirements and lock answers.
 - `planning/adr/`: accepted architectural decisions.
 - `planning/architecture/`: contracts, boundaries, and implementation design.
-- `planning/stack/`: external integration contracts and dependency rationale.
+- `planning/stack/`: dependency and integration contracts.
 - `planning/quality/`: quality gates and acceptance criteria.
 - `planning/risk/`: risk matrix and mitigation strategy.
 - `planning/roadmap/`: staged implementation schedule.
@@ -35,6 +35,7 @@ Use this order when documents disagree:
 3. ADR (`planning/adr/*`)
 4. Layer/contracts (`planning/architecture/*`, `planning/stack/*`)
 5. Execution/process (`planning/roadmap/*`, `planning/quality/*`, `planning/risk/*`, `planning/operations/*`)
+6. System governance (`planning/system/*`)
 
 Authoritative details are consolidated in:
 - `planning/system/source-of-truth-and-precedence-v1.0.0.md`
