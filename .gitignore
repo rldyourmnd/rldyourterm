@@ -1,0 +1,16 @@
+# OS / editor
+.DS_Store
+
+# Local agent/session state
+.serena/
+
+# Rust build artifacts
+target/
+
+# Orchestrator runtime outputs
+scripts/orchestrator/logs/
+scripts/orchestrator/outputs/
+scripts/orchestrator/pids/
+
+# MVP runtime outputs
+scripts/mvp/output/
