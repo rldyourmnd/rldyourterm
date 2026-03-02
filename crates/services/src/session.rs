@@ -62,9 +62,13 @@ impl SessionBoundary {
                     SessionState::Stopping | SessionState::Stopped => BoundarySeverity::Fatal,
                 }
             }
-            SessionBoundary::PtyWait
-            | SessionBoundary::PtyWriterAcquire
-            | SessionBoundary::Stop => BoundarySeverity::Fatal,
+            SessionBoundary::PtyWriterAcquire => match state {
+                SessionState::Starting | SessionState::Running | SessionState::Degraded => {
+                    BoundarySeverity::Recoverable
+                }
+                SessionState::Stopping | SessionState::Stopped => BoundarySeverity::Fatal,
+            },
+            SessionBoundary::PtyWait | SessionBoundary::Stop => BoundarySeverity::Fatal,
         }
     }
 
@@ -201,14 +205,9 @@ impl SessionController {
     pub fn start_succeeded(&mut self) -> Result<SessionTransition, ServiceError> {
         match self.state {
             SessionState::Starting | SessionState::Degraded => {
-                let startup_completion = matches!(self.state, SessionState::Starting)
-                    || (matches!(self.state, SessionState::Degraded)
-                        && self.active_shell.is_none());
                 let shell = self.active_shell.unwrap_or(self.requested_shell);
                 self.active_shell = Some(shell);
-                if startup_completion {
-                    self.recoverable_boundaries = 0;
-                }
+                self.recoverable_boundaries = 0;
                 Ok(self.transition(
                     SessionState::Running,
                     SessionTransitionOutcome::Started { shell },
@@ -436,7 +435,7 @@ mod tests {
         );
         assert_eq!(
             SessionBoundary::PtyWriterAcquire.classify_for_state(SessionState::Running),
-            BoundaryClassification::new(BoundaryStage::Run, BoundarySeverity::Fatal)
+            BoundaryClassification::new(BoundaryStage::Run, BoundarySeverity::Recoverable)
         );
     }
 
@@ -460,13 +459,30 @@ mod tests {
         assert_eq!(controller.active_shell(), Some(SessionShell::Fish));
         controller.mark_running().expect("session should resume");
 
-        let fatal = controller
+        let writer_boundary = controller
             .handle_boundary_failure(SessionBoundary::PtyWriterAcquire)
-            .expect("writer invariant violations should be fatal");
+            .expect("writer invariant violations should remain recoverable while running");
+        assert_eq!(
+            writer_boundary.outcome,
+            SessionTransitionOutcome::RecoverableBoundary {
+                boundary: SessionBoundary::PtyWriterAcquire,
+                action: RecoverableAction::RetryCurrentPath,
+                attempt: 1,
+                remaining_budget: 1,
+            }
+        );
+        assert_eq!(controller.active_shell(), Some(SessionShell::Fish));
+        controller
+            .mark_running()
+            .expect("session should resume after recoverable writer boundary");
+
+        let fatal = controller
+            .handle_boundary_failure(SessionBoundary::PtyWait)
+            .expect("wait boundary should remain fatal");
         assert_eq!(
             fatal.outcome,
             SessionTransitionOutcome::FatalBoundary {
-                boundary: SessionBoundary::PtyWriterAcquire,
+                boundary: SessionBoundary::PtyWait,
                 reason: FatalBoundaryReason::BoundaryFatal,
             }
         );
@@ -529,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn recoverable_budget_exhaustion_persists_across_recovery_cycles() {
+    fn recoverable_budget_resets_after_recovery_cycles() {
         let mut controller = SessionController::with_recoverable_budget(2);
         controller.start_succeeded().expect("start should succeed");
 
@@ -548,7 +564,7 @@ mod tests {
         controller
             .mark_running()
             .expect("session should resume after first recoverable boundary");
-        assert_eq!(controller.recoverable_boundaries(), 1);
+        assert_eq!(controller.recoverable_boundaries(), 0);
 
         let second = controller
             .handle_boundary_failure(SessionBoundary::PtyWrite)
@@ -558,29 +574,31 @@ mod tests {
             SessionTransitionOutcome::RecoverableBoundary {
                 boundary: SessionBoundary::PtyWrite,
                 action: RecoverableAction::RetryCurrentPath,
-                attempt: 2,
-                remaining_budget: 0,
+                attempt: 1,
+                remaining_budget: 1,
             }
         );
         controller
             .mark_running()
             .expect("session should resume after second recoverable boundary");
-        assert_eq!(controller.recoverable_boundaries(), 2);
+        assert_eq!(controller.recoverable_boundaries(), 0);
 
         let third = controller
             .handle_boundary_failure(SessionBoundary::PtyResize)
-            .expect("third recoverable boundary should exhaust budget");
+            .expect("third recoverable boundary should still be within refreshed budget");
         assert_eq!(third.from, SessionState::Running);
-        assert_eq!(third.to, SessionState::Stopping);
+        assert_eq!(third.to, SessionState::Degraded);
         assert_eq!(
             third.outcome,
-            SessionTransitionOutcome::FatalBoundary {
+            SessionTransitionOutcome::RecoverableBoundary {
                 boundary: SessionBoundary::PtyResize,
-                reason: FatalBoundaryReason::RecoverableBudgetExhausted,
+                action: RecoverableAction::RetryCurrentPath,
+                attempt: 1,
+                remaining_budget: 1,
             }
         );
-        assert_eq!(controller.active_shell(), None);
-        assert_eq!(controller.state(), SessionState::Stopping);
+        assert_eq!(controller.active_shell(), Some(SessionShell::Fish));
+        assert_eq!(controller.state(), SessionState::Degraded);
     }
 
     #[test]
@@ -713,7 +731,7 @@ mod tests {
             writer_error,
             ServiceError::Boundary {
                 stage: BoundaryStage::Run,
-                severity: BoundarySeverity::Fatal,
+                severity: BoundarySeverity::Recoverable,
                 details: "writer already acquired".to_string(),
             }
         );
