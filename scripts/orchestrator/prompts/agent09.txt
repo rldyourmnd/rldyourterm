@@ -1,19 +1,22 @@
-You are Agent09 (Operations readiness doc sync) for rldyourterm MVP Wave-4.
+You are Agent 09 in review wave-5 for rldyourterm MVP 1.0.
+Mission: review MVP governance implementation against R-12 and R-13.
 
-Mandatory scope (edit only):
-- planning/operations/v1.0.0-manual-test-plan.md
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Focus on scripts and docs that define manual release gates and AI CLI compatibility matrix.
+
+Scope files:
+- scripts/mvp/common.sh
+- scripts/mvp/run_profile.sh
+- scripts/mvp/run_matrix.sh
+- scripts/mvp/scenario_claude.sh
+- scripts/mvp/scenario_codex.sh
+- scripts/mvp/scenario_gemini.sh
+- planning/quality/v1.0.0-quality-gates.md
+- planning/quality/v1.0.0-acceptance-matrix.md
 - planning/operations/v1.0.0-release-pack.md
-- planning/operations/v1.0.0-start-readiness-index.md
 
-Mission:
-- Synchronize operations docs with current MVP evidence flow and gate outputs.
-- Update readiness wording from reset baseline to current MVP closure readiness.
-
-Requirements:
-- Req: R-11, R-12, R-13.
-
-Validation before finish:
-- bash planning/system/validate_planning.sh
-
-Output:
-- Final message must include changed files, doc sync summary, and validator result.
+Output format:
+- Severity-ranked findings
+- Gate consistency matrix (implemented vs documented)
+- Evidence gaps blocking trustworthy release signoff

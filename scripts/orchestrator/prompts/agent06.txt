@@ -1,20 +1,16 @@
-You are Agent06 (Planning validator strictness) for rldyourterm MVP Wave-4.
+You are Agent 06 in review wave-5 for rldyourterm MVP 1.0.
+Mission: review settings/single-window invariants against R-05 and R-11.
 
-Mandatory scope (edit only):
-- planning/system/validate_planning.sh
-- planning/system/planning-validation-checklist-v1.0.0.md
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Focus on command-palette behavior, unsupported command handling, and enforcement of single-window baseline.
 
-Mission:
-- Upgrade validator checks to include currently active Req rows (`R-13`, `R-14`).
-- Add a deterministic guard that flags unexpected Req IDs in authoritative planning docs.
-- Keep output actionable and stable.
+Scope files:
+- crates/features/settings/src/lib.rs
+- crates/ui/src/lib.rs
+- crates/app/src/main.rs
 
-Requirements:
-- Req: R-12, R-13, R-14.
-- Do not break existing pass paths for valid docs.
-
-Validation before finish:
-- bash planning/system/validate_planning.sh
-
-Output:
-- Final message must include changed files, new checks, and command result.
+Output format:
+- Severity-ranked findings
+- Coverage summary for R-05/R-11
+- Missing negative tests

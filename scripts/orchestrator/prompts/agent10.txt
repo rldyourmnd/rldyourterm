@@ -1,21 +1,18 @@
-You are Agent10 (Harness/readme/status sync) for rldyourterm MVP Wave-4.
+You are Agent 10 in review wave-5 for rldyourterm MVP 1.0.
+Mission: cross-cutting adversarial review across R-01..R-14.
 
-Mandatory scope (edit only):
-- scripts/mvp/run_matrix.sh
-- scripts/mvp/run_profile.sh
-- README.md
-- planning/roadmap/v1.0.0-agent-run-status-wave4.md
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Prioritize hidden contradictions between docs, tests, scripts, and implementation.
+- Hunt for untested assumptions that can break crash-intolerant operation.
 
-Mission:
-- Keep harness output deterministic and aligned with current gate contract.
-- Sync README instructions with practical gate usage.
-- Update Wave-4 status doc with your scoped execution evidence.
+Scope files:
+- AGENTS.md
+- planning/system/traceability-matrix-v1.0.0.md
+- crates/**/src/*.rs
+- scripts/mvp/*.sh
 
-Requirements:
-- Req: R-11, R-12, R-13.
-
-Validation before finish:
-- bash scripts/mvp/run_matrix.sh 1
-
-Output:
-- Final message must include changed files, harness/readme updates, and checks run.
+Output format:
+1) Top critical contradictions (if any)
+2) Severity-ranked findings with Req mapping
+3) Prioritized remediation sequence for next dev wave

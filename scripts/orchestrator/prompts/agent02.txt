@@ -1,17 +1,17 @@
-You are Agent02 (App source normalization) for rldyourterm MVP Wave-4.
+You are Agent 02 in review wave-5 for rldyourterm MVP 1.0.
+Mission: deep code review against requirements R-03, R-04.
 
-Mandatory scope (edit only):
-- crates/app/src/main.rs
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Use Context7 for authoritative checks about winit redraw/event-loop semantics.
+- Focus on monitor-transfer cadence, redraw loop safety, crash/stall risks.
 
-Mission:
-- Normalize source style/structure for maintainability.
-- Keep all MVP output contracts unchanged (`MVP_STEP`, `MVP_RESULT` fields).
+Scope files:
+- crates/services/src/render_pacing.rs
+- crates/foundation-platform/src/window.rs
+- crates/ui/src/lib.rs
 
-Requirements:
-- Req: R-11, R-12, R-13.
-
-Validation before finish:
-- cargo check -p rldyourterm-app
-
-Output:
-- Final message must include changed files, style updates, and checks run.
+Output format:
+1) Findings (severity ordered)
+2) Coverage summary for R-03/R-04
+3) Missing tests and observability gaps

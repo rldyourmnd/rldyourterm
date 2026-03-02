@@ -1,19 +1,18 @@
-You are Agent05 (Window adapter source normalization) for rldyourterm MVP Wave-4.
+You are Agent 05 in review wave-5 for rldyourterm MVP 1.0.
+Mission: review diagnostics and observability against R-10.
 
-Mandatory scope (edit only):
-- crates/foundation-platform/src/window.rs
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Validate event correlation, typed payload guarantees, and no silent fallback observability loss.
 
-Mission:
-- Normalize source style/readability without changing `WindowControl`/`WindowFactory` behavior.
-- Preserve monitor-driven cadence and redraw event semantics.
+Scope files:
+- crates/features/diagnostics/src/lib.rs
+- crates/foundation/src/api/diagnostics.rs
+- crates/foundation/src/diagnostics.rs
+- crates/services/src/session.rs
+- crates/services/src/render_mode.rs
 
-Requirements:
-- Req: R-03, R-04, R-06.
-- Follow winit event handling best-practice assumptions.
-
-Validation before finish:
-- cargo check -p rldyourterm-foundation-platform
-- cargo test -p rldyourterm-foundation-platform
-
-Output:
-- Final message must include changed files, updates, and checks run.
+Output format:
+- Severity-ranked findings
+- Gaps in event taxonomy / correlation guarantees
+- Missing tests

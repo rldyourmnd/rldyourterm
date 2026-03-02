@@ -1,19 +1,17 @@
-You are Agent08 (Traceability + gap register sync) for rldyourterm MVP Wave-4.
+You are Agent 08 in review wave-5 for rldyourterm MVP 1.0.
+Mission: review GPU-path safety/fallback against R-02 and R-01.
 
-Mandatory scope (edit only):
-- planning/system/traceability-matrix-v1.0.0.md
-- planning/system/gap-closure-register-v1.0.0.md
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Use Context7 for wgpu SurfaceError handling expectations.
+- Identify any path that can panic, dead-loop, or silently fail in GPU mode.
 
-Mission:
-- Ensure traceability table is aligned with acceptance/validator requirements.
-- Record resolved inconsistency as a concrete gap closure row.
+Scope files:
+- crates/features/render_gpu/src/lib.rs
+- crates/services/src/render_mode.rs
+- crates/services/src/session.rs
 
-Requirements:
-- Req: R-13, R-14.
-- Keep table format concise and machine-auditable.
-
-Validation before finish:
-- bash planning/system/validate_planning.sh
-
-Output:
-- Final message must include changed files, gap closure entry, and validator result.
+Output format:
+- Severity-ranked findings
+- Coverage map for GPU->CPU deterministic degrade behavior
+- Missing chaos/retry tests
