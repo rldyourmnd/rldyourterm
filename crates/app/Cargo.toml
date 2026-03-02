@@ -1,0 +1,20 @@
+[package]
+name = "rldyourterm-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rldyourterm-ui = { path = "../ui" }
+rldyourterm-core = { path = "../core" }
+rldyourterm-services = { path = "../services" }
+rldyourterm-render-cpu = { path = "../features/render_cpu" }
+rldyourterm-render-gpu = { path = "../features/render_gpu" }
+rldyourterm-settings = { path = "../features/settings" }
+rldyourterm-shell-integration = { path = "../features/shell_integration" }
+rldyourterm-diagnostics = { path = "../features/diagnostics" }
