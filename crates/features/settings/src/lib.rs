@@ -19,6 +19,22 @@ pub enum RenderCadencePolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum ThemePreset {
+    Cuberpunk,
+    Aurora,
+    Monochrome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeProfilePreset {
+    Balanced,
+    Throughput,
+    Stability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PersistedRenderMode {
     Cpu,
     Gpu,
@@ -51,6 +67,9 @@ pub enum SettingsCommand {
     SetShellTarget(ShellTarget),
     SetShellAutoInit(bool),
     SetRenderCadencePolicy(RenderCadencePolicy),
+    SetTheme(ThemePreset),
+    SetRuntimeProfile(RuntimeProfilePreset),
+    SetDebugMode(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +78,9 @@ pub struct SettingsState {
     pub shell_target: ShellTarget,
     pub shell_auto_init: bool,
     pub render_cadence_policy: RenderCadencePolicy,
+    pub theme: ThemePreset,
+    pub runtime_profile: RuntimeProfilePreset,
+    pub debug_mode: bool,
 }
 
 impl Default for SettingsState {
@@ -68,6 +90,9 @@ impl Default for SettingsState {
             shell_target: ShellTarget::Auto,
             shell_auto_init: true,
             render_cadence_policy: RenderCadencePolicy::MonitorAuto,
+            theme: ThemePreset::Cuberpunk,
+            runtime_profile: RuntimeProfilePreset::Balanced,
+            debug_mode: false,
         }
     }
 }
@@ -79,6 +104,9 @@ pub struct RuntimeProfileState {
     pub shell_target: ShellTarget,
     pub shell_auto_init: bool,
     pub render_cadence_policy: RenderCadencePolicy,
+    pub theme: ThemePreset,
+    pub runtime_profile: RuntimeProfilePreset,
+    pub debug_mode: bool,
 }
 
 impl RuntimeProfileState {
@@ -89,6 +117,9 @@ impl RuntimeProfileState {
             shell_target: state.shell_target,
             shell_auto_init: state.shell_auto_init,
             render_cadence_policy: state.render_cadence_policy,
+            theme: state.theme,
+            runtime_profile: state.runtime_profile,
+            debug_mode: state.debug_mode,
         }
     }
 
@@ -114,6 +145,9 @@ impl RuntimeProfileState {
             shell_target: self.shell_target,
             shell_auto_init: self.shell_auto_init,
             render_cadence_policy: self.render_cadence_policy,
+            theme: self.theme,
+            runtime_profile: self.runtime_profile,
+            debug_mode: self.debug_mode,
         })
     }
 }
@@ -236,9 +270,9 @@ pub fn parse_palette_command(input: &str) -> Result<SettingsCommand, SettingsCom
         "mode" => parse_mode_command(&tokens),
         "shell" => parse_shell_command(&tokens),
         "render" => parse_render_command(&tokens),
-        "theme" | "profile" | "debug" => {
-            Err(SettingsCommandParseError::UnsupportedCommandNamespace { command })
-        }
+        "theme" => parse_theme_command(&tokens),
+        "profile" => parse_profile_command(&tokens),
+        "debug" => parse_debug_command(&tokens),
         _ => Err(SettingsCommandParseError::UnknownCommand { command }),
     }
 }
@@ -378,6 +412,18 @@ impl SettingsService {
             }
             SettingsCommand::SetRenderCadencePolicy(policy) => {
                 candidate.render_cadence_policy = policy;
+                None
+            }
+            SettingsCommand::SetTheme(theme) => {
+                candidate.theme = theme;
+                None
+            }
+            SettingsCommand::SetRuntimeProfile(profile) => {
+                candidate.runtime_profile = profile;
+                None
+            }
+            SettingsCommand::SetDebugMode(enabled) => {
+                candidate.debug_mode = enabled;
                 None
             }
         };
@@ -545,6 +591,102 @@ fn parse_render_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsComm
     }
 }
 
+fn parse_theme_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsCommandParseError> {
+    if tokens.len() < 3 {
+        return Err(SettingsCommandParseError::MissingArgument {
+            command: "theme".to_string(),
+            expected: "set <cuberpunk|aurora|monochrome>",
+        });
+    }
+    if normalize_token(tokens[1]) != "set" {
+        return Err(SettingsCommandParseError::InvalidValue {
+            field: "theme",
+            value: normalize_token(tokens[1]),
+            expected: "set <cuberpunk|aurora|monochrome>",
+        });
+    }
+    if tokens.len() > 3 {
+        return Err(SettingsCommandParseError::UnexpectedTrailingInput {
+            command: "theme set".to_string(),
+            trailing: normalize_trailing_tokens(tokens, 3),
+        });
+    }
+
+    let theme = match normalize_token(tokens[2]).as_str() {
+        "cuberpunk" => ThemePreset::Cuberpunk,
+        "aurora" => ThemePreset::Aurora,
+        "monochrome" => ThemePreset::Monochrome,
+        value => {
+            return Err(SettingsCommandParseError::InvalidValue {
+                field: "theme",
+                value: value.to_string(),
+                expected: "cuberpunk|aurora|monochrome",
+            });
+        }
+    };
+
+    Ok(SettingsCommand::SetTheme(theme))
+}
+
+fn parse_profile_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsCommandParseError> {
+    if tokens.len() < 2 {
+        return Err(SettingsCommandParseError::MissingArgument {
+            command: "profile".to_string(),
+            expected: "balanced|throughput|stability",
+        });
+    }
+    if tokens.len() > 2 {
+        return Err(SettingsCommandParseError::UnexpectedTrailingInput {
+            command: "profile".to_string(),
+            trailing: normalize_trailing_tokens(tokens, 2),
+        });
+    }
+
+    let profile = match normalize_token(tokens[1]).as_str() {
+        "balanced" => RuntimeProfilePreset::Balanced,
+        "throughput" => RuntimeProfilePreset::Throughput,
+        "stability" => RuntimeProfilePreset::Stability,
+        value => {
+            return Err(SettingsCommandParseError::InvalidValue {
+                field: "profile",
+                value: value.to_string(),
+                expected: "balanced|throughput|stability",
+            });
+        }
+    };
+
+    Ok(SettingsCommand::SetRuntimeProfile(profile))
+}
+
+fn parse_debug_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsCommandParseError> {
+    if tokens.len() < 2 {
+        return Err(SettingsCommandParseError::MissingArgument {
+            command: "debug".to_string(),
+            expected: "on|off",
+        });
+    }
+    if tokens.len() > 2 {
+        return Err(SettingsCommandParseError::UnexpectedTrailingInput {
+            command: "debug".to_string(),
+            trailing: normalize_trailing_tokens(tokens, 2),
+        });
+    }
+
+    let enabled = match normalize_token(tokens[1]).as_str() {
+        "on" => true,
+        "off" => false,
+        value => {
+            return Err(SettingsCommandParseError::InvalidValue {
+                field: "debug",
+                value: value.to_string(),
+                expected: "on|off",
+            });
+        }
+    };
+
+    Ok(SettingsCommand::SetDebugMode(enabled))
+}
+
 fn normalize_token(token: &str) -> String {
     token.trim().to_ascii_lowercase()
 }
@@ -683,15 +825,29 @@ mod tests {
             parse_palette_command("  MODE\tGPU\n").unwrap(),
             SettingsCommand::SetMode(RenderMode::Gpu)
         );
+        assert_eq!(
+            parse_palette_command("theme set cuberpunk").unwrap(),
+            SettingsCommand::SetTheme(ThemePreset::Cuberpunk)
+        );
+        assert_eq!(
+            parse_palette_command("profile throughput").unwrap(),
+            SettingsCommand::SetRuntimeProfile(RuntimeProfilePreset::Throughput)
+        );
+        assert_eq!(
+            parse_palette_command("debug on").unwrap(),
+            SettingsCommand::SetDebugMode(true)
+        );
     }
 
     #[test]
-    fn parser_rejects_theme_namespace_as_unsupported() {
-        let err = parse_palette_command("theme set cuberpunk").unwrap_err();
+    fn parser_rejects_invalid_theme_value() {
+        let err = parse_palette_command("theme set neon").unwrap_err();
         assert_eq!(
             err,
-            SettingsCommandParseError::UnsupportedCommandNamespace {
-                command: "theme".to_string()
+            SettingsCommandParseError::InvalidValue {
+                field: "theme",
+                value: "neon".to_string(),
+                expected: "cuberpunk|aurora|monochrome",
             }
         );
     }
@@ -771,6 +927,9 @@ mod tests {
             shell_target: ShellTarget::Fish,
             shell_auto_init: true,
             render_cadence_policy: RenderCadencePolicy::MonitorAuto,
+            theme: ThemePreset::Aurora,
+            runtime_profile: RuntimeProfilePreset::Throughput,
+            debug_mode: true,
         };
 
         let profile = RuntimeProfileState::from_settings_state(&state);
@@ -788,6 +947,9 @@ mod tests {
             shell_target: ShellTarget::Zsh,
             shell_auto_init: true,
             render_cadence_policy: RenderCadencePolicy::MonitorAuto,
+            theme: ThemePreset::Cuberpunk,
+            runtime_profile: RuntimeProfilePreset::Balanced,
+            debug_mode: false,
         };
 
         let outcome = service.apply_runtime_profile_state(profile.clone());
