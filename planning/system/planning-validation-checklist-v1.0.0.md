@@ -1,26 +1,33 @@
-# Planning Validation Checklist (v1.0.0)
+# Planning Validation Checklist (v1.0.0 reset sync)
 
-## Usage
+## Priority and Scope
 
-Run this checklist before implementation and before release freeze.
+- [ ] Priority order is explicit and consistent: stability -> AI CLI compatibility -> speed.
+- [ ] Single-window scope is preserved and non-goals are unchanged.
+- [ ] Self-authored-first policy is explicitly present in top-level governance docs.
 
-## Checklist
+## Runtime Invariants
 
-- [ ] `AGENTS.md` constraints are not contradicted by planning docs.
-- [ ] Discovery lock remains aligned with ADR/contracts.
-- [ ] All critical requirements map to `Req ID` rows in traceability matrix.
-- [ ] Render policy is monitor-driven and does not require hardcoded fps target.
-- [ ] 60/144Hz monitor transfer behavior is covered in contracts, risk, and tests.
-- [ ] GPU fallback behavior (`gpu -> cpu`) is deterministic and observable.
-- [ ] PTY single-writer and teardown contracts are explicit.
+- [ ] Render modes `cpu/gpu/auto` are consistent across docs.
+- [ ] `gpu -> cpu` fallback behavior is deterministic and observable.
+- [ ] Frame pacing is monitor-driven and does not require hardcoded fps target.
+- [ ] Scrollback default cap is consistently `50_000`.
+
+## Architecture and Integration
+
+- [ ] VSA boundaries are consistent with dependency direction rules.
+- [ ] PTY/window/GPU dependency contracts are documented and referenced.
+- [ ] No stale source-of-truth references point to removed code artifacts.
+
+## Quality, Risk, Operations
+
 - [ ] Quality gates, acceptance matrix, and manual test plan are consistent.
-- [ ] Risk matrix has owner + mitigation for each high/medium risk.
-- [ ] Release pack references manual evidence and metrics docs.
-- [ ] Metrics docs mirror the same v1.0.0 constraints and targets.
-- [ ] No unresolved TODO/TBD/XXX placeholders in authoritative docs.
+- [ ] Risk matrix mitigations map to acceptance/release evidence.
+- [ ] Release pack references required manual evidence and traceability.
 
-## Automated Companion
+## System Consistency
 
-```bash
-bash planning/system/validate_planning.sh
-```
+- [ ] Traceability matrix covers `R-01`..`R-14` at minimum.
+- [ ] Authoritative planning docs include only expected Req IDs (`R-01`..`R-14`).
+- [ ] Gap closure register reflects latest resolved contradictions.
+- [ ] `bash planning/system/validate_planning.sh` passes.

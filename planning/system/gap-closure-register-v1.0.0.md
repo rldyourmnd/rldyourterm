@@ -1,26 +1,14 @@
-# Gap Closure Register (v1.0.0)
-
-## Purpose
-
-Track documentation inconsistencies, closures, and residual risk to keep planning context stable for Codex.
-
-## Closed Gaps
+# Gap Closure Register (v1.0.0 reset sync)
 
 | Gap ID | Problem | Resolution | Status |
 |---|---|---|---|
-| G-001 | Inconsistent frame-rate commands (`fps-target` variants) across docs. | Unified to monitor-driven cadence policy; command model aligned to `render cadence monitor-auto`. | Closed |
-| G-002 | Long-run validation duration conflicted (`1h` vs `30 min`). | Unified long-run baseline to `>=10 minutes` for v1.0 manual gate consistency. | Closed |
-| G-003 | Monitor transfer behavior (60/144Hz) lacked contract-level coverage. | Added monitor timing API/events, pacing controller contract, risk and test coverage. | Closed |
-| G-004 | Missing meta knowledge entrypoint for Codex sessions. | Added `planning/README.md` and `planning/system/*` governance docs. | Closed |
-| G-005 | No machine-checkable planning integrity guardrail. | Added `planning/system/validate_planning.sh` + checklist. | Closed |
-
-## Residual Gaps (Known, Acceptable For Pre-Code)
-
-| Gap ID | Residual Concern | Action | Owner | Status |
-|---|---|---|---|---|
-| RZ-001 | Dependency versions are not pinned because no Rust workspace manifest exists yet. | Pin versions at scaffolding start and update stack evidence docs. | architecture/stack | Open |
-| RZ-002 | Windows adapter parity is intentionally post-v1.0. | Keep compile-valid skeleton only; exclude from v1 functional gates. | foundation-platform/windows | Accepted |
+| G-001 | Legacy docs referenced removed `metrics/version/*` layer after repository reset. | Precedence and governance moved to planning/system layer; all mandatory references updated. | Closed |
+| G-002 | Traceability contained stale `crates/*` implementation links after code reset. | Traceability now points only to active planning contracts and evidence artifacts. | Closed |
+| G-003 | Validation script searched non-existent `metrics` path and produced false failure. | `validate_planning.sh` updated to planning/AGENTS/README scope with stable markers. | Closed |
+| G-004 | Product goal wording was weaker than new vision (crash-intolerant + AI CLI-first + ultra-low latency). | Updated AGENTS, answer-lock, quality gates, acceptance matrix, roadmap and readiness docs. | Closed |
+| G-005 | Self-authored-first policy was implicit and inconsistent across docs. | Policy formalized in AGENTS, discovery lock, stack contracts, risk and traceability artifacts. | Closed |
+| G-006 | Requirement IDs drifted: acceptance referenced undefined `R-16`, and validator enforced only `R-01..R-12` despite active `R-13/R-14`. | Acceptance and quality docs aligned to `R-01..R-14`; validator updated to enforce `R-01..R-14` and reject unexpected Req IDs in authoritative docs. | Closed |
 
 ## Rule
 
-Any new inconsistency found during implementation must be logged here with a closure note in the same or next commit.
+Every new planning inconsistency discovered in v1.0 must be recorded here with explicit closure action and status.

@@ -1,8 +1,8 @@
-# Codex Session Playbook (v1.0.0)
+# Codex Session Playbook (v1.0.0 reset sync)
 
 ## Purpose
 
-Defines a deterministic workflow for every Codex development session so context does not drift.
+Defines a deterministic workflow for every Codex session so planning and implementation do not drift.
 
 ## Session Start (Mandatory)
 
@@ -21,9 +21,9 @@ If validation fails, fix docs before implementation.
 ## Implementation Planning Protocol
 
 1. Identify impacted `Req ID` from traceability matrix.
-2. Identify impacted layer boundaries (`foundation/core/services/features/ui/app`).
+2. Identify impacted VSA layer boundaries.
 3. Identify affected ADR/contracts.
-4. Identify affected risk entries and expected test evidence.
+4. Identify affected risks and required manual evidence.
 5. Define smallest safe implementation slice.
 
 ## Coding Protocol
@@ -32,6 +32,7 @@ If validation fails, fix docs before implementation.
 2. Keep OS specifics behind `foundation/api` and platform adapters.
 3. Preserve fallback/diagnostics invariants.
 4. Avoid introducing hardcoded frame-rate values in primary render path.
+5. Keep self-authored runtime logic as default.
 
 ## Documentation Update Protocol
 
@@ -39,14 +40,13 @@ Update docs in this order:
 
 1. ADR/contracts (`planning/adr`, `planning/architecture`, `planning/stack`).
 2. Quality/risk/operations docs.
-3. Metrics mirror docs in `metrics/version/1.0.0`.
-4. `planning/system/traceability-matrix-v1.0.0.md` and `gap-closure-register`.
+3. System docs (`traceability`, `gap-closure`, validation/checklist where needed).
 
 ## Commit Protocol
 
 1. Use small thematic commits.
-2. One commit per logical documentation slice or implementation slice.
-3. Every commit message must explain intent and impacted requirement IDs.
+2. One commit per logical doc/implementation slice.
+3. Include impacted requirement IDs.
 
 Recommended format:
 
@@ -61,5 +61,5 @@ Docs: <key files>
 
 1. Re-run `bash planning/system/validate_planning.sh`.
 2. Confirm changed docs still respect precedence and traceability.
-3. Confirm no unresolved TODO/TBD placeholders in authoritative docs.
+3. Confirm no unresolved placeholder markers remain.
 4. Update `planning/system/gap-closure-register-v1.0.0.md`.
