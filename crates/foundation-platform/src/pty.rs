@@ -1,5 +1,5 @@
 use std::io::{self, ErrorKind, Read, Write};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -49,6 +49,10 @@ impl PlatformPtyIo {
                 None,
             )
         })
+    }
+
+    fn has_final_exit(inner: &PtyInner) -> bool {
+        matches!(inner.exit_code, Some(code) if code != UNKNOWN_EXIT_CODE)
     }
 
     fn close_handles(inner: &mut PtyInner) {
@@ -106,7 +110,9 @@ impl PlatformPtyIo {
         inner: &mut PtyInner,
         operation: PtyOperation,
     ) -> FoundationResult<Option<i32>> {
-        if let Some(code) = inner.exit_code {
+        if let Some(code) = inner.exit_code
+            && code != UNKNOWN_EXIT_CODE
+        {
             return Ok(Some(code));
         }
 
@@ -131,7 +137,7 @@ impl PlatformPtyIo {
 
     fn terminate_child(inner: &mut PtyInner, operation: PtyOperation) -> FoundationResult<()> {
         Self::close_handles(inner);
-        if inner.exit_code.is_some() {
+        if Self::has_final_exit(inner) {
             return Ok(());
         }
 
@@ -149,9 +155,24 @@ impl PlatformPtyIo {
         }
 
         for attempt in 0..POST_KILL_REAP_ATTEMPTS {
-            let wait_result = {
-                let mut child = Self::lock_child(&inner.process, PtyOperation::TryWait)?;
-                child.try_wait()
+            let wait_result = match inner.process.child.try_lock() {
+                Ok(mut child) => child.try_wait(),
+                Err(TryLockError::WouldBlock) => {
+                    if attempt + 1 < POST_KILL_REAP_ATTEMPTS {
+                        thread::sleep(POST_KILL_REAP_BACKOFF);
+                        continue;
+                    }
+                    break;
+                }
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(FoundationError::pty(
+                        PtyOperation::TryWait,
+                        PtyFailureCode::BoundaryFault,
+                        Recoverability::Fatal,
+                        "pty child lock poisoned",
+                        None,
+                    ));
+                }
             };
             match wait_result {
                 Ok(Some(status)) => {
@@ -173,7 +194,7 @@ impl PlatformPtyIo {
         tracing::warn!(
             operation = %operation.as_str(),
             attempts = POST_KILL_REAP_ATTEMPTS,
-            "pty child did not report exit after kill; caching unknown exit"
+            "pty child did not report exit after kill; exit remains unknown"
         );
         inner.exit_code = Some(UNKNOWN_EXIT_CODE);
         Ok(())
@@ -255,7 +276,8 @@ impl PtyIo for PlatformPtyIo {
 
     fn kill(&self) -> FoundationResult<()> {
         let mut inner = self.lock_inner(PtyOperation::Kill)?;
-        if Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?.is_some() {
+        if Self::has_final_exit(&inner) {
+            Self::close_handles(&mut inner);
             return Ok(());
         }
 
@@ -274,7 +296,7 @@ impl PtyIo for PlatformPtyIo {
         match Self::wait_for_exit(process, PtyOperation::TryWait) {
             Ok(code) => {
                 let mut inner = self.lock_inner(PtyOperation::TryWait)?;
-                if inner.exit_code.is_none() {
+                if !Self::has_final_exit(&inner) {
                     let _ = Self::cache_exit_code(&mut inner, code);
                 }
                 Ok(inner.exit_code.unwrap_or(code))
@@ -290,7 +312,7 @@ impl PtyIo for PlatformPtyIo {
 
     fn close(&self) -> FoundationResult<()> {
         let mut inner = self.lock_inner(PtyOperation::Kill)?;
-        if inner.exit_code.is_none() {
+        if !Self::has_final_exit(&inner) {
             Self::terminate_child(&mut inner, PtyOperation::Kill)?;
         } else {
             Self::close_handles(&mut inner);
@@ -303,7 +325,7 @@ impl PtyIo for PlatformPtyIo {
 impl Drop for PlatformPtyIo {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
-            if inner.exit_code.is_none() {
+            if !Self::has_final_exit(&inner) {
                 let _ = Self::terminate_child(&mut inner, PtyOperation::Kill);
             } else {
                 Self::close_handles(&mut inner);
@@ -346,14 +368,12 @@ impl PtyFactory for PlatformPtyFactory {
         let mut killer = child.clone_killer();
 
         let reader = pair.master.try_clone_reader().map_err(|error| {
-            let _ = killer.kill();
-            let _ = child.wait();
+            bounded_spawn_cleanup(&mut killer, &mut child);
             io_failure(PtyOperation::SpawnShell, error)
         })?;
 
         let writer = pair.master.take_writer().map_err(|error| {
-            let _ = killer.kill();
-            let _ = child.wait();
+            bounded_spawn_cleanup(&mut killer, &mut child);
             io_failure(PtyOperation::SpawnShell, error)
         })?;
 
@@ -396,6 +416,24 @@ fn to_portable_size(size: PtySize) -> PortablePtySize {
 
 fn normalize_exit_code(code: u32) -> i32 {
     i32::try_from(code).unwrap_or(i32::MAX)
+}
+
+fn bounded_spawn_cleanup(
+    killer: &mut Box<dyn ChildKiller + Send + Sync>,
+    child: &mut Box<dyn Child + Send + Sync>,
+) {
+    let _ = killer.kill();
+    for attempt in 0..POST_KILL_REAP_ATTEMPTS {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(error) if is_child_lifecycle_race(&error) => return,
+            Err(_) => return,
+        }
+        if attempt + 1 < POST_KILL_REAP_ATTEMPTS {
+            thread::sleep(POST_KILL_REAP_BACKOFF);
+        }
+    }
 }
 
 fn io_failure(operation: PtyOperation, error: impl std::fmt::Display) -> FoundationError {
