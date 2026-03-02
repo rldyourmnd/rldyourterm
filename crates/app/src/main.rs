@@ -9,7 +9,8 @@ use rldyourterm_settings::{
     SettingsApplyOutcome, SettingsCommand, SettingsPaletteApplyOutcome, SettingsService,
 };
 use rldyourterm_shell_integration::{
-    ShellAvailability, ShellResolution, ShellResolutionReason, ShellTarget, resolve_shell,
+    ShellAvailability, ShellLaunchPlan, ShellResolution, ShellResolutionReason, ShellTarget,
+    resolve_shell,
 };
 use rldyourterm_ui::{
     DEFAULT_SCROLLBACK_CAP, ReleaseGovernance, SINGLE_WINDOW_BASELINE, UiBootstrapConfig,
@@ -92,10 +93,19 @@ struct Cli {
     mvp_repeat: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunOutcome {
+    Harness,
+    Interactive { exit_code: i32 },
+}
+
 fn main() -> Result<()> {
     init_tracing();
     let cli = Cli::parse();
-    run(cli)
+    match run(cli)? {
+        RunOutcome::Harness => Ok(()),
+        RunOutcome::Interactive { exit_code } => std::process::exit(exit_code),
+    }
 }
 
 fn init_tracing() {
@@ -108,7 +118,7 @@ fn init_tracing() {
         .try_init();
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<RunOutcome> {
     let render_mode: RenderMode = cli.mode.into();
     let preferred_shell: ShellTarget = cli.shell.into();
     let selected_shell = resolve_startup_shell(preferred_shell)?;
@@ -121,54 +131,72 @@ fn run(cli: Cli) -> Result<()> {
     let startup_settings = settings.apply(settings_command_for_mode(render_mode));
     emit_settings_outcome(&diagnostics, startup_settings);
 
-    let bootstrap_commands = build_bootstrap_commands(&cli)?;
-    let hooks = UiBootstrapHooks::from_commands(bootstrap_commands);
+    if harness_enabled(&cli) {
+        let bootstrap_commands = build_bootstrap_commands(&cli)?;
+        let hooks = UiBootstrapHooks::from_commands(bootstrap_commands);
 
-    let (ui, command_receipts) = UiRuntime::bootstrap_with_hooks(
-        UiBootstrapConfig {
-            render_mode,
-            refresh_rate_millihz: cli.refresh_rate_millihz,
-            window_count: cli.window_count,
-            scrollback_cap: DEFAULT_SCROLLBACK_CAP,
-        },
-        &hooks,
-    )
-    .context("failed to bootstrap UI runtime")?;
-    emit_command_receipts(&diagnostics, &command_receipts);
+        let (ui, command_receipts) = UiRuntime::bootstrap_with_hooks(
+            UiBootstrapConfig {
+                render_mode,
+                refresh_rate_millihz: cli.refresh_rate_millihz,
+                window_count: cli.window_count,
+                scrollback_cap: DEFAULT_SCROLLBACK_CAP,
+            },
+            &hooks,
+        )
+        .context("failed to bootstrap UI runtime")?;
+        emit_command_receipts(&diagnostics, &command_receipts);
 
-    let post_hook_settings = settings.apply(settings_command_for_mode(ui.render_mode()));
-    emit_settings_outcome(&diagnostics, post_hook_settings);
+        let post_hook_settings = settings.apply(settings_command_for_mode(ui.render_mode()));
+        emit_settings_outcome(&diagnostics, post_hook_settings);
 
-    let cpu_renderer = CpuRenderer::default();
-    let gpu_renderer = GpuRenderer::default();
-    render_initial_frame(&ui, &cpu_renderer, &gpu_renderer);
+        let cpu_renderer = CpuRenderer::default();
+        let gpu_renderer = GpuRenderer::default();
+        render_initial_frame(&ui, &cpu_renderer, &gpu_renderer);
+        emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
+
+        if ui.release_governance() == ReleaseGovernance::ManualOnly {
+            diagnostics.emit_kind(EventKind::ResourceWarning, "manual-only release governance");
+        }
+
+        info!(
+            mvp_profile = cli.mvp_profile.map(MvpProfileArg::as_str).unwrap_or("none"),
+            mvp_commands = command_receipts.len(),
+            mode = ?ui.render_mode(),
+            state = ?ui.state(),
+            shell = ?selected_shell.resolved,
+            cadence_millihz = ui.cadence().refresh_rate_millihz,
+            windows = ui.window_count(),
+            single_window_required = SINGLE_WINDOW_BASELINE,
+            single_window_enforced = ui.window_count() == SINGLE_WINDOW_BASELINE,
+            release_governance = release_governance_token(ui.release_governance()),
+            scrollback_lines = ui.terminal().scrollback.len(),
+            "startup flow completed"
+        );
+
+        if should_print_mvp_output(&cli) {
+            print_mvp_output(&cli, &command_receipts, &ui, selected_shell.resolved);
+        }
+
+        diagnostics.emit_kind(EventKind::SessionEnded, "app bootstrap ready");
+        return Ok(RunOutcome::Harness);
+    }
+
     emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
-
-    if ui.release_governance() == ReleaseGovernance::ManualOnly {
-        diagnostics.emit_kind(EventKind::ResourceWarning, "manual-only release governance");
-    }
-
-    info!(
-        mvp_profile = cli.mvp_profile.map(MvpProfileArg::as_str).unwrap_or("none"),
-        mvp_commands = command_receipts.len(),
-        mode = ?ui.render_mode(),
-        state = ?ui.state(),
-        shell = ?selected_shell.resolved,
-        cadence_millihz = ui.cadence().refresh_rate_millihz,
-        windows = ui.window_count(),
-        single_window_required = SINGLE_WINDOW_BASELINE,
-        single_window_enforced = ui.window_count() == SINGLE_WINDOW_BASELINE,
-        release_governance = release_governance_token(ui.release_governance()),
-        scrollback_lines = ui.terminal().scrollback.len(),
-        "startup flow completed"
+    let launch_plan = ShellLaunchPlan::from_resolution(selected_shell);
+    let exit_code = pty_runtime::run_interactive_pty(
+        &launch_plan.executable,
+        &launch_plan.args,
+        render_mode,
+        cli.refresh_rate_millihz,
+        cli.window_count,
+    )
+    .context("failed to run interactive runtime")?;
+    diagnostics.emit_kind(
+        EventKind::SessionEnded,
+        format!("interactive runtime exited with code={exit_code}"),
     );
-
-    if should_print_mvp_output(&cli) {
-        print_mvp_output(&cli, &command_receipts, &ui, selected_shell.resolved);
-    }
-
-    diagnostics.emit_kind(EventKind::SessionEnded, "app bootstrap ready");
-    Ok(())
+    Ok(RunOutcome::Interactive { exit_code })
 }
 
 fn resolve_startup_shell(preferred_shell: ShellTarget) -> Result<ShellResolution> {
@@ -555,6 +583,10 @@ fn apply_palette_commands(
     }
 }
 
+fn harness_enabled(cli: &Cli) -> bool {
+    cli.mvp_profile.is_some() || !cli.mvp_command.is_empty() || cli.mvp_repeat > 1
+}
+
 fn should_print_mvp_output(cli: &Cli) -> bool {
     cli.mvp_profile.is_some()
         || !cli.mvp_command.is_empty()
@@ -746,3 +778,5 @@ fn shell_available_on_path(name: &str) -> bool {
         shell.is_file() || shell_exe.is_file()
     })
 }
+
+mod pty_runtime;

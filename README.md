@@ -32,24 +32,41 @@ cargo check -p rldyourterm-ui
 cargo check -p rldyourterm-app
 ```
 
-## MVP compatibility harness
+## Interactive Run
 
-Required manual release gate (covers `R-11`, `R-12`, `R-13`):
+Run the binary directly as the terminal runtime (outside the MVP harness):
 
 ```bash
-bash scripts/mvp/run_matrix.sh 1
+cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1
 ```
 
-Extended compatibility soak:
+Or build once and run the binary directly:
+
+```bash
+cargo build -p rldyourterm-app
+./target/debug/rldyourterm-app --mode auto --shell fish --window-count 1
+```
+
+## MVP compatibility harness
+
+MVP harness scenarios continue to run from `scripts/mvp/*` and do not replace interactive mode.
+
+Required manual release gate (covers `R-11`, `R-12`, `R-13`):
 
 ```bash
 bash scripts/mvp/run_matrix.sh 3
 ```
 
+Extended compatibility soak:
+
+```bash
+bash scripts/mvp/run_matrix.sh 5
+```
+
 Run a single profile with optional extra commands:
 
 ```bash
-bash scripts/mvp/run_profile.sh codex 2 recoverable:pty-write tick mode:cpu
+bash scripts/mvp/run_profile.sh codex 3 recoverable:pty-write tick mode:cpu
 ```
 
 Harness logs are written to `scripts/mvp/output/`.
