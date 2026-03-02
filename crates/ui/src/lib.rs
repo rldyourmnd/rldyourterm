@@ -1,10 +1,16 @@
+use std::time::Duration;
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use rldyourterm_core::state::TerminalState;
 use rldyourterm_services::error::ServiceError;
-use rldyourterm_services::render_mode::{RenderMode, RenderModeController, RenderModeTransition};
-use rldyourterm_services::render_pacing::RenderCadence;
+use rldyourterm_services::render_mode::{
+    FallbackDecision, GpuFailureKind, RenderMode, RenderModeController, RenderModeTransition,
+};
+use rldyourterm_services::render_pacing::{
+    CadenceResyncTrigger, RenderCadence, RenderPacingController,
+};
 use rldyourterm_services::session::{
     SessionBoundary, SessionController, SessionState, SessionTransition,
 };
@@ -105,8 +111,20 @@ pub enum UiRuntimeCommand {
     RequestStop,
     MarkStopped,
     SetRenderMode(RenderMode),
-    ResyncCadence { refresh_rate_millihz: u32 },
-    AssertSingleWindow { requested: u8 },
+    GpuFailure {
+        kind: GpuFailureKind,
+        observed_at_millis: u64,
+    },
+    GpuFramePresented,
+    ResyncCadence {
+        refresh_rate_millihz: u32,
+    },
+    ResyncCadenceAfterTransfer {
+        refresh_rate_millihz: u32,
+    },
+    AssertSingleWindow {
+        requested: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -135,8 +153,16 @@ pub enum UiCommandOutcome {
     SessionTransition(SessionTransition),
     RenderModeTransition(RenderModeTransition),
     CadenceResynced {
-        previous_refresh_rate_millihz: u32,
-        current_refresh_rate_millihz: u32,
+        previous_refresh_rate_millihz: Option<u32>,
+        current_refresh_rate_millihz: Option<u32>,
+        generation: u64,
+        schedule_invalidated: bool,
+        monitor_transfer: bool,
+    },
+    GpuRetryScheduled {
+        failure_kind: GpuFailureKind,
+        failure_streak: u8,
+        retry_budget_remaining: u8,
     },
     SingleWindowConfirmed {
         window_count: u8,
@@ -157,7 +183,7 @@ pub struct UiCommandReceipt {
 pub struct UiRuntime {
     session: SessionController,
     render_mode: RenderModeController,
-    cadence: RenderCadence,
+    pacing: RenderPacingController,
     terminal: TerminalState,
     window_count: u8,
     release_governance: ReleaseGovernance,
@@ -175,7 +201,11 @@ impl UiRuntime {
 
         let session = SessionController::new();
         let render_mode = RenderModeController::new(config.render_mode);
-        let cadence = RenderCadence::from_monitor(config.refresh_rate_millihz);
+        let pacing = RenderPacingController::new(Some(config.refresh_rate_millihz));
+        let cadence = pacing
+            .cadence()
+            .unwrap_or(RenderCadence::from_monitor(0))
+            .refresh_rate_millihz;
         let terminal = TerminalState::new(
             DEFAULT_TERMINAL_WIDTH,
             DEFAULT_TERMINAL_HEIGHT,
@@ -184,7 +214,7 @@ impl UiRuntime {
 
         info!(
             mode = ?render_mode.mode(),
-            cadence_millihz = cadence.refresh_rate_millihz,
+            cadence_millihz = cadence,
             windows = config.window_count,
             "ui bootstrap initialized"
         );
@@ -192,7 +222,7 @@ impl UiRuntime {
         Ok(Self {
             session,
             render_mode,
-            cadence,
+            pacing,
             terminal,
             window_count: config.window_count,
             release_governance: ReleaseGovernance::ManualOnly,
@@ -246,22 +276,75 @@ impl UiRuntime {
                     None => UiCommandOutcome::Noop,
                 }
             }
+            UiRuntimeCommand::GpuFailure {
+                kind,
+                observed_at_millis,
+            } => match self
+                .render_mode
+                .on_gpu_failure(kind, Duration::from_millis(observed_at_millis))
+            {
+                FallbackDecision::Noop => UiCommandOutcome::Noop,
+                FallbackDecision::RetryGpu {
+                    metadata,
+                    retry_budget_remaining,
+                } => UiCommandOutcome::GpuRetryScheduled {
+                    failure_kind: metadata.failure_kind,
+                    failure_streak: metadata.failure_streak,
+                    retry_budget_remaining,
+                },
+                FallbackDecision::SwitchToCpu(transition) => {
+                    UiCommandOutcome::RenderModeTransition(transition)
+                }
+            },
+            UiRuntimeCommand::GpuFramePresented => {
+                self.render_mode.on_gpu_frame_presented();
+                UiCommandOutcome::Noop
+            }
             UiRuntimeCommand::ResyncCadence {
                 refresh_rate_millihz,
             } => {
-                if refresh_rate_millihz == 0 {
-                    return Err(UiRuntimeError::Bootstrap(
-                        UiBootstrapError::InvalidRefreshRate,
-                    ));
-                }
-                if refresh_rate_millihz == self.cadence.refresh_rate_millihz {
+                let sample = (refresh_rate_millihz != 0).then_some(refresh_rate_millihz);
+                let resync = self.pacing.resync_from_monitor(sample);
+                if !resync.schedule_invalidated {
                     UiCommandOutcome::Noop
                 } else {
-                    let previous = self.cadence.refresh_rate_millihz;
-                    self.cadence = RenderCadence::from_monitor(refresh_rate_millihz);
                     UiCommandOutcome::CadenceResynced {
-                        previous_refresh_rate_millihz: previous,
-                        current_refresh_rate_millihz: self.cadence.refresh_rate_millihz,
+                        previous_refresh_rate_millihz: resync
+                            .previous
+                            .map(|cadence| cadence.refresh_rate_millihz),
+                        current_refresh_rate_millihz: resync
+                            .current
+                            .map(|cadence| cadence.refresh_rate_millihz),
+                        generation: resync.generation,
+                        schedule_invalidated: resync.schedule_invalidated,
+                        monitor_transfer: matches!(
+                            resync.trigger,
+                            CadenceResyncTrigger::MonitorTransfer
+                        ),
+                    }
+                }
+            }
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz,
+            } => {
+                let sample = (refresh_rate_millihz != 0).then_some(refresh_rate_millihz);
+                let resync = self.pacing.resync_after_monitor_transfer(sample);
+                if !resync.schedule_invalidated {
+                    UiCommandOutcome::Noop
+                } else {
+                    UiCommandOutcome::CadenceResynced {
+                        previous_refresh_rate_millihz: resync
+                            .previous
+                            .map(|cadence| cadence.refresh_rate_millihz),
+                        current_refresh_rate_millihz: resync
+                            .current
+                            .map(|cadence| cadence.refresh_rate_millihz),
+                        generation: resync.generation,
+                        schedule_invalidated: resync.schedule_invalidated,
+                        monitor_transfer: matches!(
+                            resync.trigger,
+                            CadenceResyncTrigger::MonitorTransfer
+                        ),
                     }
                 }
             }
@@ -278,7 +361,11 @@ impl UiRuntime {
             outcome,
             state: self.session.state(),
             render_mode: self.render_mode.mode(),
-            cadence_millihz: self.cadence.refresh_rate_millihz,
+            cadence_millihz: self
+                .pacing
+                .cadence()
+                .map(|cadence| cadence.refresh_rate_millihz)
+                .unwrap_or(0),
             window_count: self.window_count,
         })
     }
@@ -305,7 +392,9 @@ impl UiRuntime {
     }
 
     pub fn cadence(&self) -> RenderCadence {
-        self.cadence
+        self.pacing
+            .cadence()
+            .unwrap_or(RenderCadence::from_monitor(0))
     }
 
     pub fn terminal(&self) -> &TerminalState {
@@ -394,9 +483,85 @@ mod tests {
         assert!(matches!(
             receipt.outcome,
             UiCommandOutcome::CadenceResynced {
-                previous_refresh_rate_millihz: 60_000,
-                current_refresh_rate_millihz: 144_000
+                previous_refresh_rate_millihz: Some(60_000),
+                current_refresh_rate_millihz: Some(144_000),
+                schedule_invalidated: true,
+                monitor_transfer: false,
+                ..
             }
+        ));
+    }
+
+    #[test]
+    fn cadence_transfer_resync_invalidates_even_on_same_refresh() {
+        let mut runtime = UiRuntime::bootstrap(test_config()).expect("bootstrap");
+        let receipt = runtime
+            .handle_command(UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz: 60_000,
+            })
+            .expect("transfer resync");
+
+        assert!(matches!(
+            receipt.outcome,
+            UiCommandOutcome::CadenceResynced {
+                previous_refresh_rate_millihz: Some(60_000),
+                current_refresh_rate_millihz: Some(60_000),
+                schedule_invalidated: true,
+                monitor_transfer: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn gpu_failure_commands_drive_auto_fallback_path() {
+        let mut runtime = UiRuntime::bootstrap(test_config()).expect("bootstrap");
+
+        let first = runtime
+            .handle_command(UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SurfaceError,
+                observed_at_millis: 1_000,
+            })
+            .expect("first gpu failure");
+        assert!(matches!(
+            first.outcome,
+            UiCommandOutcome::GpuRetryScheduled {
+                failure_kind: GpuFailureKind::SurfaceError,
+                failure_streak: 1,
+                retry_budget_remaining: 1
+            }
+        ));
+
+        let second = runtime
+            .handle_command(UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SubmitError,
+                observed_at_millis: 1_500,
+            })
+            .expect("second gpu failure");
+        assert!(matches!(
+            second.outcome,
+            UiCommandOutcome::GpuRetryScheduled {
+                failure_kind: GpuFailureKind::SubmitError,
+                failure_streak: 2,
+                retry_budget_remaining: 0
+            }
+        ));
+
+        let third = runtime
+            .handle_command(UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SwapchainOutOfDate,
+                observed_at_millis: 2_000,
+            })
+            .expect("third gpu failure");
+        assert!(matches!(
+            third.outcome,
+            UiCommandOutcome::RenderModeTransition(RenderModeTransition {
+                from: rldyourterm_services::render_mode::ActiveRenderPath::Gpu,
+                to: rldyourterm_services::render_mode::ActiveRenderPath::Cpu,
+                reason:
+                    rldyourterm_services::render_mode::RenderTransitionReason::AutoGpuFallback { .. },
+                ..
+            })
         ));
     }
 
