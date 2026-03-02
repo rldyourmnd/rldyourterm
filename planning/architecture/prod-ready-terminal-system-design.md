@@ -29,7 +29,7 @@
 
 `foundation` интегрируется только через `foundation/api` traits.
 
-## 3) Prod-ready crate map
+## 3) Prod-ready crate map (target layout to be recreated after reset)
 
 ```text
 crates/

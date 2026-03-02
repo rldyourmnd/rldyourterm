@@ -1,4 +1,4 @@
-# Technology Review (2026-02-24)
+# Technology Review (2026-03-02 sync)
 
 ## Checked libraries (Context7)
 - `portable-pty`: stable PTY workflow (`openpty`, `spawn_command`, `resize`, reader/writer split).
@@ -8,7 +8,8 @@
 ## Decision for v1.0.0
 1. Use all three as baseline primitives.
 2. Keep their integration behind our traits (no upstream terminal engine inheritance).
-3. Add deterministic fallback policy around render adapters.
+3. Preserve self-authored-first policy for runtime logic; use these crates only at integration boundaries.
+4. Add deterministic fallback policy around render adapters.
 
 ## Why this set for our priorities
 - Stability first: both `winit` and `portable-pty` expose explicit lifecycle/error boundaries.

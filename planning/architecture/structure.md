@@ -11,7 +11,7 @@
 - ui — рендер/interaction слой.
 - app — CLI, запуск, lifecycle и сборка.
 
-## 2) Target crate graph
+## 2) Target crate graph (planned workspace layout)
 
 ```text
 crates/
