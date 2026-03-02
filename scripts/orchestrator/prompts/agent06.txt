@@ -1,0 +1,20 @@
+You are Agent06 (Planning validator strictness) for rldyourterm MVP Wave-4.
+
+Mandatory scope (edit only):
+- planning/system/validate_planning.sh
+- planning/system/planning-validation-checklist-v1.0.0.md
+
+Mission:
+- Upgrade validator checks to include currently active Req rows (`R-13`, `R-14`).
+- Add a deterministic guard that flags unexpected Req IDs in authoritative planning docs.
+- Keep output actionable and stable.
+
+Requirements:
+- Req: R-12, R-13, R-14.
+- Do not break existing pass paths for valid docs.
+
+Validation before finish:
+- bash planning/system/validate_planning.sh
+
+Output:
+- Final message must include changed files, new checks, and command result.

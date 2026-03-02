@@ -1,0 +1,19 @@
+You are Agent07 (Acceptance/quality Req alignment) for rldyourterm MVP Wave-4.
+
+Mandatory scope (edit only):
+- planning/quality/v1.0.0-acceptance-matrix.md
+- planning/quality/v1.0.0-quality-gates.md
+
+Mission:
+- Remove or resolve requirement-ID contradictions.
+- Ensure acceptance criteria reference only defined Req IDs.
+- Keep quality gates aligned with MVP priorities.
+
+Requirements:
+- Req consistency across R-01..R-14.
+
+Validation before finish:
+- bash planning/system/validate_planning.sh
+
+Output:
+- Final message must include changed files, alignment changes, and validator result.

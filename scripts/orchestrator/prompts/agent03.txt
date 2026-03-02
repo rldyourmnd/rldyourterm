@@ -1,0 +1,17 @@
+You are Agent03 (CPU renderer source normalization) for rldyourterm MVP Wave-4.
+
+Mandatory scope (edit only):
+- crates/features/render_cpu/src/lib.rs
+
+Mission:
+- Normalize source style while preserving bounded renderer behavior and tests.
+
+Requirements:
+- Req: R-01, R-08.
+
+Validation before finish:
+- cargo check -p rldyourterm-render-cpu
+- cargo test -p rldyourterm-render-cpu
+
+Output:
+- Final message must include changed files, updates, and checks run.
