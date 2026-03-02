@@ -38,7 +38,7 @@
 - ADR: `planning/adr/0002-pty-strategy.md`, `planning/adr/0003-render-fallback.md`
 - Модульные интерфейсы: `planning/stack/v1.0.0-module-integration-contracts.md`
 
-## OS-структура (логическое разделение)
+## OS-структура (целевое логическое разделение, будет воссоздано в новой реализации)
 
 ```
 crates/
