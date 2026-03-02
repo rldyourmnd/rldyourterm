@@ -13,6 +13,7 @@
 | `portable-pty` | `/websites/rs_portable-pty` | `docs.rs/portable-pty/latest` | PTY lifecycle interfaces: `openpty`, `spawn_command`, `try_clone_reader`, `take_writer`, `resize`, child lifecycle (`try_wait/wait/kill`). Supports single-writer ownership model and session-safe PTY orchestration. |
 | `winit` | `/websites/rs_winit_winit` | `docs.rs/winit/latest` | Window and monitor APIs/events: `WindowEvent::{Moved, Resized, ScaleFactorChanged, RedrawRequested}`, `Window::current_monitor`, monitor refresh-rate via `refresh_rate_millihertz`. Supports monitor-driven cadence and transfer re-sync. |
 | `wgpu` | `/websites/rs_wgpu` | `docs.rs/wgpu/latest` | Surface and presentation contracts: `SurfaceConfiguration` (`present_mode`, `desired_maximum_frame_latency`), `Surface::configure`, `SurfaceError::{Timeout, Outdated, Lost, OutOfMemory, Other}`. Supports deterministic degrade/fallback path design. |
+| `crossterm` | `/crossterm-rs/crossterm` | `github.com/crossterm-rs/crossterm` (API docs/wiki) | Interactive TTY control contracts: `terminal::{enable_raw_mode,disable_raw_mode}`, `event::{poll,read}`, `Event::Resize`, key-modifier model. Used only in app interactive runtime boundary path. |
 
 ## 2026-03-02 Runtime Revalidation Snapshot
 
@@ -25,12 +26,17 @@
   - duplicate redraw requests are coalesced by `winit`, which validates event-driven pacing without busy-loop redraw spam.
 - `wgpu` (`/websites/rs_wgpu`):
   - `SurfaceError::{Timeout, Outdated, Lost, OutOfMemory, Other}` semantics confirm retry/reconfigure/fallback classification boundaries in render failure handling.
+- `crossterm` (`/crossterm-rs/crossterm`):
+  - `enable_raw_mode`/`disable_raw_mode` are the canonical raw-mode lifecycle entry/exit points.
+  - `event::poll` + `event::read` provide bounded input loop handling without blocking forever on terminal events.
+  - `Event::Resize(cols, rows)` is the resize boundary used to propagate PTY size updates.
 
 Implementation alignment updated in:
 - `crates/foundation-platform/src/pty.rs`
 - `crates/services/src/render_mode.rs`
 - `crates/ui/src/lib.rs`
 - `crates/app/src/main.rs`
+- `crates/app/src/pty_runtime.rs`
 
 ## Policy Notes
 
