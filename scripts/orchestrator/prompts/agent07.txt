@@ -1,19 +1,19 @@
-You are Agent07 (Acceptance/quality Req alignment) for rldyourterm MVP Wave-4.
+You are Agent 07 in review wave-5 for rldyourterm MVP 1.0.
+Mission: review architecture boundaries and self-authored-first policy against R-06 and R-14.
 
-Mandatory scope (edit only):
-- planning/quality/v1.0.0-acceptance-matrix.md
-- planning/quality/v1.0.0-quality-gates.md
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Verify dependency direction (app->features->services->core) and that foundation adapters do not violate core boundary intent.
 
-Mission:
-- Remove or resolve requirement-ID contradictions.
-- Ensure acceptance criteria reference only defined Req IDs.
-- Keep quality gates aligned with MVP priorities.
+Scope files:
+- Cargo.toml
+- crates/*/Cargo.toml
+- crates/foundation/src/lib.rs
+- crates/services/src/lib.rs
+- crates/ui/src/lib.rs
+- planning/stack/v1.0.0-module-integration-contracts.md
 
-Requirements:
-- Req consistency across R-01..R-14.
-
-Validation before finish:
-- bash planning/system/validate_planning.sh
-
-Output:
-- Final message must include changed files, alignment changes, and validator result.
+Output format:
+- Severity-ranked findings with concrete dependency evidence
+- Boundary compliance map
+- Refactor priorities

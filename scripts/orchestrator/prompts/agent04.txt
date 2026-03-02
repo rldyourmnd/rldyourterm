@@ -1,18 +1,17 @@
-You are Agent04 (PTY adapter source normalization) for rldyourterm MVP Wave-4.
+You are Agent 04 in review wave-5 for rldyourterm MVP 1.0.
+Mission: deep code review against requirements R-09 and PTY lifecycle safety.
 
-Mandatory scope (edit only):
+Hard rules:
+- Do NOT edit files. Read-only review.
+- Use Context7 for portable-pty expectations: take_writer single ownership, resize signal path, child wait/kill semantics.
+
+Scope files:
+- crates/foundation/src/api/pty.rs
+- crates/foundation/src/pty.rs
 - crates/foundation-platform/src/pty.rs
+- crates/services/src/session.rs
 
-Mission:
-- Normalize source style/readability without changing lifecycle guarantees.
-
-Requirements:
-- Req: R-01, R-09.
-- Keep portable-pty single-writer and lifecycle semantics intact.
-
-Validation before finish:
-- cargo check -p rldyourterm-foundation-platform
-- cargo test -p rldyourterm-foundation-platform
-
-Output:
-- Final message must include changed files, updates, and checks run.
+Output format:
+- Findings sorted by severity
+- Requirement coverage map
+- Missing lifecycle tests
