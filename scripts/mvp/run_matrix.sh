@@ -6,8 +6,8 @@ repeat="${1:-3}"
 single_window_required="1"
 release_governance="manual-only"
 
-if ! [[ "$repeat" =~ ^[0-9]+$ ]] || [[ "$repeat" -lt 1 ]]; then
-  echo "invalid repeat value: $repeat (expected integer >= 1)" >&2
+if ! [[ "$repeat" =~ ^[0-9]+$ ]] || [[ "$repeat" -lt 3 ]]; then
+  echo "invalid repeat value: $repeat (expected integer >= 3 for sustained-run gate)" >&2
   exit 2
 fi
 
@@ -21,7 +21,7 @@ echo "MVP_MATRIX_START repeat=$repeat profiles=$profiles_csv single_window_requi
 
 for profile in "${profiles[@]}"; do
   echo "MVP_MATRIX_PROFILE profile=$profile repeat=$repeat single_window_required=$single_window_required release_governance=$release_governance"
-  if ! "$SCRIPT_DIR/run_profile.sh" "$profile" "$repeat"; then
+  if ! "$SCRIPT_DIR/scenario_${profile}.sh" "$repeat"; then
     failed_profiles+=("$profile")
     failed=$((failed + 1))
   else
