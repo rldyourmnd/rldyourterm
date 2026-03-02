@@ -8,6 +8,7 @@
 | G-004 | Product goal wording was weaker than new vision (crash-intolerant + AI CLI-first + ultra-low latency). | Updated AGENTS, answer-lock, quality gates, acceptance matrix, roadmap and readiness docs. | Closed |
 | G-005 | Self-authored-first policy was implicit and inconsistent across docs. | Policy formalized in AGENTS, discovery lock, stack contracts, risk and traceability artifacts. | Closed |
 | G-006 | Requirement IDs drifted: acceptance referenced undefined `R-16`, and validator enforced only `R-01..R-12` despite active `R-13/R-14`. | Acceptance and quality docs aligned to `R-01..R-14`; validator updated to enforce `R-01..R-14` and reject unexpected Req IDs in authoritative docs. | Closed |
+| G-007 | Manual test and readiness docs used stale `run_profile` examples with `repeat=2` and old cadence command names after harness hardening (`repeat >= 3`, monitor-transfer cadence token). | Updated operations docs to `repeat >= 3`, migrated cadence examples to `transfer-cadence:*`, and aligned readiness checks with workspace-level quality gate commands. | Closed |
 
 ## Rule
 

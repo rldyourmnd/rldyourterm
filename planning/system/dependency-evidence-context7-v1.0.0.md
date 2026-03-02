@@ -14,6 +14,24 @@
 | `winit` | `/websites/rs_winit_winit` | `docs.rs/winit/latest` | Window and monitor APIs/events: `WindowEvent::{Moved, Resized, ScaleFactorChanged, RedrawRequested}`, `Window::current_monitor`, monitor refresh-rate via `refresh_rate_millihertz`. Supports monitor-driven cadence and transfer re-sync. |
 | `wgpu` | `/websites/rs_wgpu` | `docs.rs/wgpu/latest` | Surface and presentation contracts: `SurfaceConfiguration` (`present_mode`, `desired_maximum_frame_latency`), `Surface::configure`, `SurfaceError::{Timeout, Outdated, Lost, OutOfMemory, Other}`. Supports deterministic degrade/fallback path design. |
 
+## 2026-03-02 Runtime Revalidation Snapshot
+
+- `portable-pty` (`/websites/rs_portable-pty`):
+  - `Child::try_wait` is non-blocking; `Child::wait` blocks until exit.
+  - `ChildKiller::clone_killer` is explicitly intended for independent signaling from a thread while another handle may be blocked in `wait`.
+  - `MasterPty::take_writer` is single-acquire (invalid to call more than once); `try_clone_reader` is the intended read-side duplication path.
+- `winit` (`/websites/rs_winit_winit`):
+  - `WindowEvent::RedrawRequested` is emitted both for OS invalidation and `request_redraw()`.
+  - duplicate redraw requests are coalesced by `winit`, which validates event-driven pacing without busy-loop redraw spam.
+- `wgpu` (`/websites/rs_wgpu`):
+  - `SurfaceError::{Timeout, Outdated, Lost, OutOfMemory, Other}` semantics confirm retry/reconfigure/fallback classification boundaries in render failure handling.
+
+Implementation alignment updated in:
+- `crates/foundation-platform/src/pty.rs`
+- `crates/services/src/render_mode.rs`
+- `crates/ui/src/lib.rs`
+- `crates/app/src/main.rs`
+
 ## Policy Notes
 
 - Self-authored-first remains mandatory for runtime logic.
