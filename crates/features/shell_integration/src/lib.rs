@@ -79,13 +79,14 @@ pub struct ShellLaunchPlan {
 
 impl ShellLaunchPlan {
     pub fn from_resolution(resolution: ShellResolution) -> Self {
+        let resolution = normalize_resolution_for_launch_plan(resolution);
         let (executable, profile) = match resolution.resolved {
             ShellTarget::Fish => ("fish", ShellLaunchProfile::FishStarshipBaseline),
             ShellTarget::Zsh if resolution.fallback_applied => {
                 ("zsh", ShellLaunchProfile::ZshFallback)
             }
             ShellTarget::Zsh => ("zsh", ShellLaunchProfile::ZshRequested),
-            ShellTarget::Auto => ("fish", ShellLaunchProfile::FishStarshipBaseline),
+            ShellTarget::Auto => ("zsh", ShellLaunchProfile::ZshFallback),
         };
 
         Self {
@@ -94,6 +95,53 @@ impl ShellLaunchPlan {
             args: vec!["-i".to_string(), "-l".to_string()],
             profile,
         }
+    }
+}
+
+fn normalize_resolution_for_launch_plan(mut resolution: ShellResolution) -> ShellResolution {
+    if resolution.requested == ShellTarget::Zsh {
+        return ShellResolution {
+            requested: ShellTarget::Zsh,
+            resolved: ShellTarget::Zsh,
+            fallback_applied: false,
+            reason: ShellResolutionReason::ZshRequested,
+            fallback_cause: None,
+        };
+    }
+
+    if fish_baseline_launch_ready(&resolution) {
+        return resolution;
+    }
+
+    let default_cause = if matches!(resolution.resolved, ShellTarget::Fish | ShellTarget::Auto) {
+        FishBaselineFailureCause::StarshipUnavailable
+    } else {
+        FishBaselineFailureCause::FishAndStarshipUnavailable
+    };
+
+    resolution.resolved = ShellTarget::Zsh;
+    resolution.fallback_applied = true;
+    resolution.reason = fallback_reason_for_fish_baseline_failure(resolution.requested);
+    resolution.fallback_cause = Some(resolution.fallback_cause.unwrap_or(default_cause));
+    resolution
+}
+
+fn fish_baseline_launch_ready(resolution: &ShellResolution) -> bool {
+    matches!(resolution.resolved, ShellTarget::Fish)
+        && !resolution.fallback_applied
+        && resolution.fallback_cause.is_none()
+        && matches!(
+            resolution.reason,
+            ShellResolutionReason::FishBaselineReady
+                | ShellResolutionReason::AutoSelectedFishBaseline
+        )
+}
+
+fn fallback_reason_for_fish_baseline_failure(requested: ShellTarget) -> ShellResolutionReason {
+    match requested {
+        ShellTarget::Fish => ShellResolutionReason::FishRequestedFallbackToZsh,
+        ShellTarget::Auto => ShellResolutionReason::AutoFallbackToZsh,
+        ShellTarget::Zsh => ShellResolutionReason::ZshRequested,
     }
 }
 
@@ -390,6 +438,106 @@ mod tests {
         assert_eq!(plan.executable, "zsh");
         assert_eq!(plan.profile, ShellLaunchProfile::ZshFallback);
         assert_eq!(plan.resolution.resolved, ShellTarget::Zsh);
+    }
+
+    #[test]
+    fn fish_baseline_failure_cause_matrix_is_explicit() {
+        let cases = [
+            (
+                false,
+                false,
+                Some(FishBaselineFailureCause::FishAndStarshipUnavailable),
+            ),
+            (false, true, Some(FishBaselineFailureCause::FishUnavailable)),
+            (
+                true,
+                false,
+                Some(FishBaselineFailureCause::StarshipUnavailable),
+            ),
+            (true, true, None),
+        ];
+
+        for (fish_available, starship_available, expected_cause) in cases {
+            let availability = ShellAvailability {
+                fish_available,
+                starship_available,
+                zsh_available: true,
+            };
+
+            assert_eq!(availability.fish_baseline_failure_cause(), expected_cause);
+        }
+    }
+
+    #[test]
+    fn launch_plan_falls_back_to_zsh_when_fish_exists_without_starship_activation_guarantee() {
+        let plan = plan_shell_launch(
+            ShellTarget::Fish,
+            ShellAvailability {
+                fish_available: true,
+                starship_available: false,
+                zsh_available: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.executable, "zsh");
+        assert_eq!(plan.profile, ShellLaunchProfile::ZshFallback);
+        assert_eq!(
+            plan.resolution.reason,
+            ShellResolutionReason::FishRequestedFallbackToZsh
+        );
+        assert_eq!(
+            plan.resolution.fallback_cause,
+            Some(FishBaselineFailureCause::StarshipUnavailable)
+        );
+    }
+
+    #[test]
+    fn auto_launch_plan_uses_same_starship_activation_fallback_cause() {
+        let plan = plan_shell_launch(
+            ShellTarget::Auto,
+            ShellAvailability {
+                fish_available: true,
+                starship_available: false,
+                zsh_available: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.executable, "zsh");
+        assert_eq!(plan.profile, ShellLaunchProfile::ZshFallback);
+        assert_eq!(
+            plan.resolution.reason,
+            ShellResolutionReason::AutoFallbackToZsh
+        );
+        assert_eq!(
+            plan.resolution.fallback_cause,
+            Some(FishBaselineFailureCause::StarshipUnavailable)
+        );
+    }
+
+    #[test]
+    fn from_resolution_enforces_fish_starship_baseline_health_before_fish_launch() {
+        let plan = ShellLaunchPlan::from_resolution(ShellResolution {
+            requested: ShellTarget::Fish,
+            resolved: ShellTarget::Fish,
+            fallback_applied: true,
+            reason: ShellResolutionReason::FishBaselineReady,
+            fallback_cause: None,
+        });
+
+        assert_eq!(plan.executable, "zsh");
+        assert_eq!(plan.profile, ShellLaunchProfile::ZshFallback);
+        assert_eq!(plan.resolution.resolved, ShellTarget::Zsh);
+        assert!(plan.resolution.fallback_applied);
+        assert_eq!(
+            plan.resolution.reason,
+            ShellResolutionReason::FishRequestedFallbackToZsh
+        );
+        assert_eq!(
+            plan.resolution.fallback_cause,
+            Some(FishBaselineFailureCause::StarshipUnavailable)
+        );
     }
 
     #[derive(Default)]
