@@ -186,13 +186,16 @@ fn run(cli: Cli) -> Result<RunOutcome> {
 
     emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
     let launch_plan = ShellLaunchPlan::from_resolution(selected_shell);
+    let tty_runtime_config = pty_runtime::TtyRuntimeConfig {
+        initial_mode: render_mode,
+        refresh_rate_millihz: cli.refresh_rate_millihz,
+        window_count: cli.window_count,
+    };
     let exit_code = if cli.tty {
         pty_runtime::run_interactive_pty(
             &launch_plan.executable,
             &launch_plan.args,
-            render_mode,
-            cli.refresh_rate_millihz,
-            cli.window_count,
+            tty_runtime_config,
         )
         .context("failed to run TTY interactive runtime")?
     } else {
@@ -218,9 +221,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
                 pty_runtime::run_interactive_pty(
                     &launch_plan.executable,
                     &launch_plan.args,
-                    render_mode,
-                    cli.refresh_rate_millihz,
-                    cli.window_count,
+                    tty_runtime_config,
                 )
                 .context("failed to run TTY interactive runtime after GUI fallback")?
             }
