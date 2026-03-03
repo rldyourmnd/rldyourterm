@@ -29,6 +29,8 @@ const DEFAULT_ROWS: u16 = 32;
 const MAX_SCROLLBACK_LINES: usize = 50_000;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(target_os = "macos")]
+const MACOS_FORCE_FOCUS_ENV: &str = "RLDYOURTERM_GUI_FORCE_FOCUS";
 
 const CELL_WIDTH: usize = 8;
 const CELL_HEIGHT: usize = 16;
@@ -291,9 +293,23 @@ impl GuiRuntimeApp {
     fn apply_startup_visibility_handshake(&self) {
         #[cfg(target_os = "macos")]
         if let Some(window) = self.window.as_ref() {
+            let force_focus = std::env::var(MACOS_FORCE_FOCUS_ENV)
+                .ok()
+                .map(|value| {
+                    let normalized = value.trim().to_ascii_lowercase();
+                    matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+                })
+                .unwrap_or(false);
+
             window.set_visible(true);
-            window.focus_window();
-            info!("applied macOS startup visibility/focus handshake");
+            if force_focus {
+                window.focus_window();
+            }
+
+            info!(
+                env_flag = MACOS_FORCE_FOCUS_ENV,
+                force_focus, "applied macOS startup visibility handshake"
+            );
         }
     }
 
@@ -669,7 +685,7 @@ impl TerminalBuffer {
     }
 }
 
-fn join_pump_thread_with_timeout(handle: JoinHandle<()>, thread_name: &'static str) {
+fn join_pump_thread_with_timeout(handle: JoinHandle<()>, thread_label: &'static str) {
     let deadline = Instant::now() + SHUTDOWN_JOIN_TIMEOUT;
     while !handle.is_finished() && Instant::now() < deadline {
         thread::sleep(SHUTDOWN_JOIN_POLL_INTERVAL);
@@ -677,17 +693,22 @@ fn join_pump_thread_with_timeout(handle: JoinHandle<()>, thread_name: &'static s
 
     if handle.is_finished() {
         if let Err(join_error) = handle.join() {
-            warn!(
-                ?join_error,
-                thread = thread_name,
-                "GUI shutdown thread join failed"
-            );
+            warn!(?join_error, thread_label, "GUI shutdown thread join failed");
+        }
+        return;
+    }
+
+    // One final immediate check reduces false timeout logs in the race window
+    // where the worker finishes right after the bounded polling loop exits.
+    if handle.is_finished() {
+        if let Err(join_error) = handle.join() {
+            warn!(?join_error, thread_label, "GUI shutdown thread join failed");
         }
         return;
     }
 
     warn!(
-        thread = thread_name,
+        thread_label,
         timeout_ms = SHUTDOWN_JOIN_TIMEOUT.as_millis(),
         "GUI shutdown thread join timed out; detaching thread to avoid shutdown hang"
     );
@@ -776,6 +797,16 @@ mod tests {
 
         let lines: Vec<&str> = buffer.visible_lines(2).collect();
         assert_eq!(lines, ["red", ""]);
+    }
+
+    #[test]
+    fn terminal_buffer_clamps_zero_max_lines() {
+        let mut buffer = TerminalBuffer::new(0);
+        buffer.set_columns(80);
+        buffer.push_bytes(b"one\ntwo\n");
+
+        let lines: Vec<&str> = buffer.visible_lines(8).collect();
+        assert_eq!(lines, [""]);
     }
 
     #[test]
