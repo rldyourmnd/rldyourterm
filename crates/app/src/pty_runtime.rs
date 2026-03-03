@@ -2,17 +2,66 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_services::render_mode::RenderMode;
-use tracing::warn;
+use rldyourterm_ui::SINGLE_WINDOW_BASELINE;
+use tracing::{info, warn};
 
+const DEFAULT_REFRESH_RATE_MILLIHZ: u32 = 60_000;
+const MIN_EVENT_POLL_TIMEOUT_MILLIS: u64 = 1;
+const MAX_EVENT_POLL_TIMEOUT_MILLIS: u64 = 200;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
-const EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(25);
+
+#[derive(Debug, Clone, Copy)]
+pub struct TtyRuntimeConfig {
+    pub initial_mode: RenderMode,
+    pub refresh_rate_millihz: u32,
+    pub window_count: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EventPollController {
+    min_timeout: Duration,
+    max_timeout: Duration,
+    next_timeout: Duration,
+}
+
+impl EventPollController {
+    fn from_config(config: TtyRuntimeConfig) -> Self {
+        let (min_timeout, max_timeout) =
+            derive_poll_timeouts(config.initial_mode, config.refresh_rate_millihz);
+        Self {
+            min_timeout,
+            max_timeout,
+            next_timeout: min_timeout,
+        }
+    }
+
+    fn next_timeout(&self) -> Duration {
+        self.next_timeout
+    }
+
+    fn on_terminal_event(&mut self) {
+        self.next_timeout = self.min_timeout;
+    }
+
+    fn on_idle_poll(&mut self) {
+        self.next_timeout = self
+            .next_timeout
+            .checked_mul(2)
+            .unwrap_or(self.max_timeout)
+            .min(self.max_timeout);
+    }
+
+    fn bounds_millis(&self) -> (u128, u128) {
+        (self.min_timeout.as_millis(), self.max_timeout.as_millis())
+    }
+}
 
 struct RawModeGuard;
 
@@ -32,11 +81,22 @@ impl Drop for RawModeGuard {
 pub fn run_interactive_pty(
     shell_executable: &str,
     shell_args: &[String],
-    initial_mode: RenderMode,
-    refresh_rate_millihz: u32,
-    window_count: u8,
+    runtime_config: TtyRuntimeConfig,
 ) -> Result<i32> {
-    let _mvp_runtime_hints = (initial_mode, refresh_rate_millihz, window_count);
+    ensure_single_window(runtime_config.window_count)?;
+
+    let mut poll_controller = EventPollController::from_config(runtime_config);
+    let (poll_timeout_min_ms, poll_timeout_max_ms) = poll_controller.bounds_millis();
+    info!(
+        mode = ?runtime_config.initial_mode,
+        refresh_rate_millihz = runtime_config.refresh_rate_millihz,
+        windows = runtime_config.window_count,
+        single_window_required = SINGLE_WINDOW_BASELINE,
+        single_window_enforced = true,
+        poll_timeout_min_ms,
+        poll_timeout_max_ms,
+        "starting TTY runtime"
+    );
 
     let initial_size = current_pty_size();
     let spawn_config = PtySpawnConfig {
@@ -74,25 +134,56 @@ pub fn run_interactive_pty(
             }
         }
 
-        let has_event =
-            match event::poll(EVENT_POLL_TIMEOUT).context("failed to poll terminal events") {
-                Ok(value) => value,
-                Err(error) => {
-                    fatal_error = Some(error);
-                    break;
-                }
-            };
-        if !has_event {
-            continue;
-        }
-
-        let terminal_event = match event::read().context("failed to read terminal event") {
+        let has_event = match event::poll(poll_controller.next_timeout()) {
             Ok(value) => value,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(error) if is_disconnect_error(&error) => {
+                match pty
+                    .try_wait()
+                    .context("failed to poll PTY after terminal event poll disconnect")
+                {
+                    Ok(Some(code)) => exit_code = Some(code),
+                    Ok(None) => {}
+                    Err(wait_error) => fatal_error = Some(wait_error),
+                }
+                break;
+            }
             Err(error) => {
-                fatal_error = Some(error);
+                fatal_error =
+                    Some(anyhow::Error::new(error).context("failed to poll terminal events"));
                 break;
             }
         };
+        if !has_event {
+            poll_controller.on_idle_poll();
+            continue;
+        }
+
+        let terminal_event = match event::read() {
+            Ok(value) => value,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {
+                continue;
+            }
+            Err(error) if is_disconnect_error(&error) => {
+                match pty
+                    .try_wait()
+                    .context("failed to poll PTY after terminal event read disconnect")
+                {
+                    Ok(Some(code)) => exit_code = Some(code),
+                    Ok(None) => {}
+                    Err(wait_error) => fatal_error = Some(wait_error),
+                }
+                break;
+            }
+            Err(error) => {
+                fatal_error =
+                    Some(anyhow::Error::new(error).context("failed to read terminal event"));
+                break;
+            }
+        };
+        poll_controller.on_terminal_event();
 
         match terminal_event {
             Event::Key(key_event) if is_press_like(key_event.kind) => {
@@ -177,6 +268,51 @@ pub fn run_interactive_pty(
         return Err(error);
     }
     Ok(exit_code.unwrap_or(0))
+}
+
+fn ensure_single_window(window_count: u8) -> Result<()> {
+    if window_count != SINGLE_WINDOW_BASELINE {
+        return Err(anyhow!(
+            "tty runtime requires single-window mode; required_window_count={SINGLE_WINDOW_BASELINE} requested_window_count={window_count}"
+        ));
+    }
+    Ok(())
+}
+
+fn derive_poll_timeouts(
+    initial_mode: RenderMode,
+    refresh_rate_millihz: u32,
+) -> (Duration, Duration) {
+    let frame_budget_millis = frame_budget_millis(refresh_rate_millihz);
+    let min_timeout_millis = frame_budget_millis
+        .saturating_div(2)
+        .clamp(MIN_EVENT_POLL_TIMEOUT_MILLIS, 16);
+
+    let mode_multiplier: u64 = match initial_mode {
+        RenderMode::Cpu => 12,
+        RenderMode::Gpu => 8,
+        RenderMode::Auto => 10,
+    };
+
+    let max_timeout_millis = frame_budget_millis
+        .saturating_mul(mode_multiplier)
+        .clamp(min_timeout_millis, MAX_EVENT_POLL_TIMEOUT_MILLIS);
+
+    (
+        Duration::from_millis(min_timeout_millis),
+        Duration::from_millis(max_timeout_millis),
+    )
+}
+
+fn frame_budget_millis(refresh_rate_millihz: u32) -> u64 {
+    let sanitized_refresh_rate = match refresh_rate_millihz {
+        0 => DEFAULT_REFRESH_RATE_MILLIHZ,
+        value => value,
+    };
+
+    let frame_nanos = 1_000_000_000_000_u64 / u64::from(sanitized_refresh_rate);
+    let rounded_up_millis = (frame_nanos + 999_999) / 1_000_000;
+    rounded_up_millis.max(1)
 }
 
 fn current_pty_size() -> PtySize {
@@ -279,8 +415,12 @@ fn encode_ctrl_letter(ch: char) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_ctrl_letter, encode_key_event};
+    use super::{
+        derive_poll_timeouts, encode_ctrl_letter, encode_key_event, ensure_single_window,
+        frame_budget_millis,
+    };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rldyourterm_services::render_mode::RenderMode;
 
     #[test]
     fn encodes_basic_control_keys() {
@@ -356,5 +496,29 @@ mod tests {
             )),
             Some(vec![0x11])
         );
+    }
+
+    #[test]
+    fn enforces_single_window_invariant() {
+        assert!(ensure_single_window(1).is_ok());
+
+        let error = ensure_single_window(2).expect_err("window_count=2 must fail");
+        assert!(error.to_string().contains("single-window mode"));
+    }
+
+    #[test]
+    fn derives_adaptive_poll_timeouts_from_runtime_hints() {
+        let (gpu_min, gpu_max) = derive_poll_timeouts(RenderMode::Gpu, 144_000);
+        let (cpu_min, cpu_max) = derive_poll_timeouts(RenderMode::Cpu, 60_000);
+
+        assert!(gpu_min <= cpu_min);
+        assert!(gpu_max < cpu_max);
+        assert!(gpu_min <= gpu_max);
+        assert!(cpu_min <= cpu_max);
+    }
+
+    #[test]
+    fn falls_back_to_default_refresh_for_zero_hint() {
+        assert_eq!(frame_budget_millis(0), frame_budget_millis(60_000));
     }
 }
