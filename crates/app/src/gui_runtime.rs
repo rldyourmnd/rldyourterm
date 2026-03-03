@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
@@ -16,6 +18,8 @@ use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+#[cfg(target_os = "macos")]
+use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window, WindowId};
 
 const DEFAULT_GUI_WIDTH: u32 = 1280;
@@ -23,6 +27,8 @@ const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
 const MAX_SCROLLBACK_LINES: usize = 50_000;
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
+const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const CELL_WIDTH: usize = 8;
 const CELL_HEIGHT: usize = 16;
@@ -55,9 +61,7 @@ pub fn run_interactive_gui_pty(
 
     let (pty, writer, reader) = spawn_pty(shell_executable, shell_args)?;
 
-    let event_loop = EventLoop::<GuiEvent>::with_user_event()
-        .build()
-        .context("failed to create GUI event loop")?;
+    let event_loop = build_gui_event_loop()?;
     let proxy = event_loop.create_proxy();
 
     let reader_pump = spawn_reader_pump(reader, proxy.clone());
@@ -90,6 +94,24 @@ pub fn run_interactive_gui_pty(
     }
 
     Ok(app.exit_code.unwrap_or(0))
+}
+
+fn build_gui_event_loop() -> Result<EventLoop<GuiEvent>> {
+    let mut builder = EventLoop::<GuiEvent>::with_user_event();
+
+    #[cfg(target_os = "macos")]
+    {
+        builder
+            .with_activation_policy(ActivationPolicy::Regular)
+            .with_activate_ignoring_other_apps(true);
+        info!(
+            activation_policy = "regular",
+            activate_ignoring_other_apps = true,
+            "configured macOS GUI event loop activation behavior"
+        );
+    }
+
+    builder.build().context("failed to create GUI event loop")
 }
 
 fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty> {
@@ -242,6 +264,7 @@ impl GuiRuntimeApp {
         self._context = Some(context);
         self.surface = Some(surface);
         self.window = Some(window);
+        self.apply_startup_visibility_handshake();
 
         self.update_viewport_geometry();
         self.queue_redraw();
@@ -256,16 +279,21 @@ impl GuiRuntimeApp {
             }
         }
 
-        if let Some(handle) = self.reader_pump.take()
-            && let Err(join_error) = handle.join()
-        {
-            warn!(?join_error, "PTY reader pump thread join failed");
+        if let Some(handle) = self.reader_pump.take() {
+            join_pump_thread_with_timeout(handle, "reader_pump");
         }
 
-        if let Some(handle) = self.wait_pump.take()
-            && let Err(join_error) = handle.join()
-        {
-            warn!(?join_error, "PTY wait pump thread join failed");
+        if let Some(handle) = self.wait_pump.take() {
+            join_pump_thread_with_timeout(handle, "wait_pump");
+        }
+    }
+
+    fn apply_startup_visibility_handshake(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(window) = self.window.as_ref() {
+            window.set_visible(true);
+            window.focus_window();
+            info!("applied macOS startup visibility/focus handshake");
         }
     }
 
@@ -478,10 +506,10 @@ fn render_terminal(buffer: &mut [u32], width: usize, height: usize, terminal: &T
 
     let rows = (height / CELL_HEIGHT).max(1);
     let cols = (width / CELL_WIDTH).max(1);
-    let visible_lines = terminal.visible_lines(rows);
-    let top_row = rows.saturating_sub(visible_lines.len());
+    let visible_line_count = terminal.visible_line_count(rows);
+    let top_row = rows.saturating_sub(visible_line_count);
 
-    for (row_offset, line) in visible_lines.iter().enumerate() {
+    for (row_offset, line) in terminal.visible_lines(rows).enumerate() {
         draw_line(buffer, width, height, top_row + row_offset, cols, line);
     }
 }
@@ -536,7 +564,7 @@ enum EscapeState {
 
 #[derive(Debug)]
 struct TerminalBuffer {
-    lines: Vec<String>,
+    lines: VecDeque<String>,
     max_lines: usize,
     cols: usize,
     escape_state: EscapeState,
@@ -544,9 +572,12 @@ struct TerminalBuffer {
 
 impl TerminalBuffer {
     fn new(max_lines: usize) -> Self {
+        let mut lines = VecDeque::new();
+        lines.push_back(String::new());
+
         Self {
-            lines: vec![String::new()],
-            max_lines,
+            lines,
+            max_lines: max_lines.max(1),
             cols: DEFAULT_COLS as usize,
             escape_state: EscapeState::None,
         }
@@ -556,10 +587,14 @@ impl TerminalBuffer {
         self.cols = cols.max(1);
     }
 
-    fn visible_lines(&self, rows: usize) -> &[String] {
-        let count = rows.max(1);
+    fn visible_line_count(&self, rows: usize) -> usize {
+        rows.max(1).min(self.lines.len())
+    }
+
+    fn visible_lines(&self, rows: usize) -> impl Iterator<Item = &str> + '_ {
+        let count = self.visible_line_count(rows);
         let start = self.lines.len().saturating_sub(count);
-        &self.lines[start..]
+        self.lines.iter().skip(start).map(String::as_str)
     }
 
     fn push_bytes(&mut self, bytes: &[u8]) {
@@ -618,19 +653,44 @@ impl TerminalBuffer {
     }
 
     fn new_line(&mut self) {
-        self.lines.push(String::new());
+        self.lines.push_back(String::new());
         while self.lines.len() > self.max_lines {
-            self.lines.remove(0);
+            self.lines.pop_front();
         }
     }
 
     fn current_line_mut(&mut self) -> &mut String {
         if self.lines.is_empty() {
-            self.lines.push(String::new());
+            self.lines.push_back(String::new());
         }
-        let last = self.lines.len() - 1;
-        &mut self.lines[last]
+        self.lines
+            .back_mut()
+            .expect("terminal buffer must contain current line")
     }
+}
+
+fn join_pump_thread_with_timeout(handle: JoinHandle<()>, thread_name: &'static str) {
+    let deadline = Instant::now() + SHUTDOWN_JOIN_TIMEOUT;
+    while !handle.is_finished() && Instant::now() < deadline {
+        thread::sleep(SHUTDOWN_JOIN_POLL_INTERVAL);
+    }
+
+    if handle.is_finished() {
+        if let Err(join_error) = handle.join() {
+            warn!(
+                ?join_error,
+                thread = thread_name,
+                "GUI shutdown thread join failed"
+            );
+        }
+        return;
+    }
+
+    warn!(
+        thread = thread_name,
+        timeout_ms = SHUTDOWN_JOIN_TIMEOUT.as_millis(),
+        "GUI shutdown thread join timed out; detaching thread to avoid shutdown hang"
+    );
 }
 
 fn is_local_shutdown_key(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
@@ -704,7 +764,7 @@ mod tests {
         buffer.set_columns(80);
         buffer.push_bytes(b"one\ntwo\nthree\nfour\n");
 
-        let lines = buffer.visible_lines(3);
+        let lines: Vec<&str> = buffer.visible_lines(3).collect();
         assert_eq!(lines, ["three", "four", ""]);
     }
 
@@ -714,7 +774,7 @@ mod tests {
         buffer.set_columns(80);
         buffer.push_bytes(b"\x1b[31mred\x1b[0m\n");
 
-        let lines = buffer.visible_lines(2);
+        let lines: Vec<&str> = buffer.visible_lines(2).collect();
         assert_eq!(lines, ["red", ""]);
     }
 
