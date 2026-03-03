@@ -3,7 +3,9 @@ use clap::{Parser, ValueEnum};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_render_cpu::CpuRenderer;
 use rldyourterm_render_gpu::GpuRenderer;
-use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode, RenderTransitionReason};
+use rldyourterm_services::render_mode::{
+    ActiveRenderPath, GpuFailureKind, RenderMode, RenderTransitionReason,
+};
 use rldyourterm_services::session::{SessionBoundary, SessionState};
 use rldyourterm_settings::{
     SettingsApplyOutcome, SettingsCommand, SettingsPaletteApplyOutcome, SettingsService,
@@ -248,11 +250,19 @@ fn shell_availability() -> ShellAvailability {
 }
 
 fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer, gpu_renderer: &GpuRenderer) {
-    match ui.render_mode() {
-        RenderMode::Cpu => {
+    match ui.active_render_path() {
+        ActiveRenderPath::Cpu => {
             let _ = cpu_renderer.render_full(ui.terminal());
         }
-        RenderMode::Gpu | RenderMode::Auto => gpu_renderer.render(),
+        ActiveRenderPath::Gpu => {
+            if let Err(error) = gpu_renderer.render() {
+                warn!(
+                    failure_kind = ?error.failure_kind(),
+                    gpu_error = ?error,
+                    "initial GPU render attempt failed"
+                );
+            }
+        }
     }
 }
 

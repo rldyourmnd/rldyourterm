@@ -6,7 +6,8 @@ use std::fmt::{Display, Formatter};
 use rldyourterm_core::state::TerminalState;
 use rldyourterm_services::error::ServiceError;
 use rldyourterm_services::render_mode::{
-    FallbackDecision, GpuFailureKind, RenderMode, RenderModeController, RenderModeTransition,
+    ActiveRenderPath, FallbackDecision, GpuFailureKind, RenderMode, RenderModeController,
+    RenderModeTransition, RenderTransitionReason,
 };
 use rldyourterm_services::render_pacing::{
     CadenceResyncTrigger, RenderCadence, RenderPacingController,
@@ -287,12 +288,64 @@ impl UiRuntime {
                 FallbackDecision::RetryGpu {
                     metadata,
                     retry_budget_remaining,
-                } => UiCommandOutcome::GpuRetryScheduled {
-                    failure_kind: metadata.failure_kind,
-                    failure_streak: metadata.failure_streak,
-                    retry_budget_remaining,
-                },
+                } => {
+                    warn!(
+                        correlation_sequence = self.render_mode.transition_sequence(),
+                        mode = ?self.render_mode.mode(),
+                        active_path = ?self.render_mode.active_path(),
+                        failure = ?metadata.failure_kind,
+                        failure_observed_at_ms = metadata.observed_at.as_millis(),
+                        failure_streak = metadata.failure_streak,
+                        retry_budget = metadata.retry_budget,
+                        retry_budget_remaining,
+                        failure_window_ms = metadata.failure_window.as_millis(),
+                        "ui runtime scheduled gpu retry"
+                    );
+                    UiCommandOutcome::GpuRetryScheduled {
+                        failure_kind: metadata.failure_kind,
+                        failure_streak: metadata.failure_streak,
+                        retry_budget_remaining,
+                    }
+                }
                 FallbackDecision::SwitchToCpu(transition) => {
+                    let (
+                        failure_kind,
+                        failure_observed_at_ms,
+                        failure_streak,
+                        retry_budget,
+                        failure_window_ms,
+                    ) = match transition.reason {
+                        RenderTransitionReason::AutoGpuFallback { metadata } => (
+                            metadata.failure_kind,
+                            metadata.observed_at.as_millis(),
+                            metadata.failure_streak,
+                            metadata.retry_budget,
+                            metadata.failure_window.as_millis(),
+                        ),
+                        RenderTransitionReason::ExplicitModeSet => (
+                            kind,
+                            u128::from(observed_at_millis),
+                            0,
+                            self.render_mode.fallback_policy().retry_budget,
+                            self.render_mode
+                                .fallback_policy()
+                                .failure_window
+                                .as_millis(),
+                        ),
+                    };
+                    warn!(
+                        correlation_sequence = transition.sequence,
+                        from_mode = ?transition.from_mode,
+                        to_mode = ?transition.to_mode,
+                        from = ?transition.from,
+                        to = ?transition.to,
+                        failure = ?failure_kind,
+                        failure_observed_at_ms,
+                        failure_streak,
+                        retry_budget,
+                        failure_window_ms,
+                        "ui runtime applied gpu fallback transition"
+                    );
                     UiCommandOutcome::RenderModeTransition(transition)
                 }
             },
@@ -389,6 +442,10 @@ impl UiRuntime {
 
     pub fn render_mode(&self) -> RenderMode {
         self.render_mode.mode()
+    }
+
+    pub fn active_render_path(&self) -> ActiveRenderPath {
+        self.render_mode.active_path()
     }
 
     pub fn cadence(&self) -> RenderCadence {
@@ -516,6 +573,7 @@ mod tests {
     #[test]
     fn gpu_failure_commands_drive_auto_fallback_path() {
         let mut runtime = UiRuntime::bootstrap(test_config()).expect("bootstrap");
+        assert_eq!(runtime.active_render_path(), ActiveRenderPath::Gpu);
 
         let first = runtime
             .handle_command(UiRuntimeCommand::GpuFailure {
@@ -523,6 +581,7 @@ mod tests {
                 observed_at_millis: 1_000,
             })
             .expect("first gpu failure");
+        assert_eq!(runtime.active_render_path(), ActiveRenderPath::Gpu);
         assert!(matches!(
             first.outcome,
             UiCommandOutcome::GpuRetryScheduled {
@@ -538,6 +597,7 @@ mod tests {
                 observed_at_millis: 1_500,
             })
             .expect("second gpu failure");
+        assert_eq!(runtime.active_render_path(), ActiveRenderPath::Gpu);
         assert!(matches!(
             second.outcome,
             UiCommandOutcome::GpuRetryScheduled {
@@ -553,6 +613,7 @@ mod tests {
                 observed_at_millis: 2_000,
             })
             .expect("third gpu failure");
+        assert_eq!(runtime.active_render_path(), ActiveRenderPath::Cpu);
         assert!(matches!(
             third.outcome,
             UiCommandOutcome::RenderModeTransition(RenderModeTransition {
@@ -563,6 +624,23 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn forced_gpu_mode_does_not_auto_fallback_on_gpu_failure_command() {
+        let config = UiBootstrapConfig::single_window(RenderMode::Gpu, 60_000);
+        let mut runtime = UiRuntime::bootstrap(config).expect("bootstrap");
+        assert_eq!(runtime.active_render_path(), ActiveRenderPath::Gpu);
+
+        let receipt = runtime
+            .handle_command(UiRuntimeCommand::GpuFailure {
+                kind: GpuFailureKind::SurfaceError,
+                observed_at_millis: 250,
+            })
+            .expect("forced gpu failure command");
+
+        assert!(matches!(receipt.outcome, UiCommandOutcome::Noop));
+        assert_eq!(runtime.active_render_path(), ActiveRenderPath::Gpu);
     }
 
     #[test]
