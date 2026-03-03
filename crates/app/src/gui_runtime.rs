@@ -10,7 +10,9 @@ use anyhow::{Context, Result, anyhow};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
-use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_render_gpu::GpuRenderer;
+use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use tracing::{info, warn};
 use winit::application::ApplicationHandler;
@@ -48,6 +50,58 @@ enum GuiEvent {
 
 type SpawnedPty = (Arc<dyn PtyIo>, Box<dyn Write + Send>, Box<dyn Read + Send>);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuFailureHandling {
+    RetryScheduled {
+        failure_streak: u8,
+        retry_budget_remaining: u8,
+    },
+    FallbackToCpu {
+        transition_sequence: u64,
+    },
+    FatalForcedGpu,
+    Ignored,
+}
+
+fn dispatch_gpu_failure_command(
+    ui_runtime: &mut UiRuntime,
+    failure_kind: GpuFailureKind,
+    observed_at_millis: u64,
+) -> Result<GpuFailureHandling> {
+    let receipt = ui_runtime
+        .handle_command(UiRuntimeCommand::GpuFailure {
+            kind: failure_kind,
+            observed_at_millis,
+        })
+        .context("failed to dispatch UiRuntimeCommand::GpuFailure")?;
+
+    match receipt.outcome {
+        UiCommandOutcome::GpuRetryScheduled {
+            failure_streak,
+            retry_budget_remaining,
+            ..
+        } => Ok(GpuFailureHandling::RetryScheduled {
+            failure_streak,
+            retry_budget_remaining,
+        }),
+        UiCommandOutcome::RenderModeTransition(transition) => {
+            Ok(GpuFailureHandling::FallbackToCpu {
+                transition_sequence: transition.sequence,
+            })
+        }
+        UiCommandOutcome::Noop
+            if ui_runtime.render_mode() == RenderMode::Gpu
+                && ui_runtime.active_render_path() == ActiveRenderPath::Gpu =>
+        {
+            Ok(GpuFailureHandling::FatalForcedGpu)
+        }
+        UiCommandOutcome::Noop => Ok(GpuFailureHandling::Ignored),
+        other => Err(anyhow!(
+            "unexpected UI outcome for GPU failure command: {other:?}"
+        )),
+    }
+}
+
 pub fn run_interactive_gui_pty(
     shell_executable: &str,
     shell_args: &[String],
@@ -76,10 +130,13 @@ pub fn run_interactive_gui_pty(
         wait_pump,
         initial_mode,
         refresh_rate_millihz,
-    );
+        window_count,
+    )
+    .context("failed to initialize GUI runtime app")?;
 
     info!(
         mode = ?initial_mode,
+        active_render_path = ?app.ui_runtime.active_render_path(),
         refresh_rate_millihz,
         windows = window_count,
         "starting GUI runtime"
@@ -192,6 +249,11 @@ struct GuiRuntimeApp {
     writer: Box<dyn Write + Send>,
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
+    ui_runtime: UiRuntime,
+    gpu_renderer: GpuRenderer,
+    started_at: Instant,
+    render_attempt_sequence: u64,
+    gpu_failure_sequence: u64,
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
 
@@ -216,12 +278,26 @@ impl GuiRuntimeApp {
         wait_pump: JoinHandle<()>,
         initial_mode: RenderMode,
         refresh_rate_millihz: u32,
-    ) -> Self {
-        Self {
+        window_count: u8,
+    ) -> Result<Self> {
+        let ui_runtime = UiRuntime::bootstrap(UiBootstrapConfig {
+            render_mode: initial_mode,
+            refresh_rate_millihz,
+            window_count,
+            scrollback_cap: MAX_SCROLLBACK_LINES,
+        })
+        .context("failed to bootstrap UI runtime for GUI app")?;
+
+        Ok(Self {
             pty,
             writer,
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
+            ui_runtime,
+            gpu_renderer: GpuRenderer::default(),
+            started_at: Instant::now(),
+            render_attempt_sequence: 0,
+            gpu_failure_sequence: 0,
             initial_mode,
             refresh_rate_millihz,
             window: None,
@@ -234,7 +310,7 @@ impl GuiRuntimeApp {
             redraw_pending: true,
             exit_code: None,
             fatal_error: None,
-        }
+        })
     }
 
     fn bootstrap_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -412,6 +488,83 @@ impl GuiRuntimeApp {
     }
 
     fn draw_frame(&mut self) -> Result<()> {
+        self.render_attempt_sequence = self.render_attempt_sequence.saturating_add(1);
+        let render_attempt_sequence = self.render_attempt_sequence;
+
+        if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu {
+            match self.gpu_renderer.render() {
+                Ok(()) => {
+                    let _ = self
+                        .ui_runtime
+                        .handle_command(UiRuntimeCommand::GpuFramePresented)
+                        .context("failed to dispatch UiRuntimeCommand::GpuFramePresented")?;
+                }
+                Err(error) => {
+                    self.gpu_failure_sequence = self.gpu_failure_sequence.saturating_add(1);
+                    let gpu_failure_sequence = self.gpu_failure_sequence;
+                    let observed_at_millis =
+                        self.started_at
+                            .elapsed()
+                            .as_millis()
+                            .min(u128::from(u64::MAX)) as u64;
+                    let failure_kind = error.failure_kind();
+
+                    warn!(
+                        gpu_failure_sequence,
+                        render_attempt_sequence,
+                        failure_kind = ?failure_kind,
+                        gpu_error = ?error,
+                        observed_at_millis,
+                        mode = ?self.ui_runtime.render_mode(),
+                        active_path = ?self.ui_runtime.active_render_path(),
+                        "gpu render failed; routing through ui runtime command path"
+                    );
+
+                    match dispatch_gpu_failure_command(
+                        &mut self.ui_runtime,
+                        failure_kind,
+                        observed_at_millis,
+                    )? {
+                        GpuFailureHandling::RetryScheduled {
+                            failure_streak,
+                            retry_budget_remaining,
+                        } => {
+                            warn!(
+                                gpu_failure_sequence,
+                                render_attempt_sequence,
+                                failure_kind = ?failure_kind,
+                                failure_streak,
+                                retry_budget_remaining,
+                                mode = ?self.ui_runtime.render_mode(),
+                                active_path = ?self.ui_runtime.active_render_path(),
+                                "gpu retry scheduled; session remains active"
+                            );
+                            self.queue_redraw();
+                            return Ok(());
+                        }
+                        GpuFailureHandling::FallbackToCpu {
+                            transition_sequence,
+                        } => {
+                            warn!(
+                                gpu_failure_sequence,
+                                render_attempt_sequence,
+                                transition_sequence,
+                                mode = ?self.ui_runtime.render_mode(),
+                                active_path = ?self.ui_runtime.active_render_path(),
+                                "gpu failure applied deterministic cpu fallback; session remains active"
+                            );
+                        }
+                        GpuFailureHandling::FatalForcedGpu => {
+                            return Err(anyhow!(
+                                "forced gpu mode render failure: kind={failure_kind:?} observed_at_millis={observed_at_millis} render_attempt_sequence={render_attempt_sequence} gpu_failure_sequence={gpu_failure_sequence}"
+                            ));
+                        }
+                        GpuFailureHandling::Ignored => {}
+                    }
+                }
+            }
+        }
+
         let width = self.window_size.width;
         let height = self.window_size.height;
         if width == 0 || height == 0 {
@@ -777,7 +930,11 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalBuffer, encode_ctrl_letter};
+    use super::{
+        GpuFailureHandling, TerminalBuffer, dispatch_gpu_failure_command, encode_ctrl_letter,
+    };
+    use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+    use rldyourterm_ui::{UiBootstrapConfig, UiRuntime};
 
     #[test]
     fn terminal_buffer_keeps_recent_lines() {
@@ -815,5 +972,61 @@ mod tests {
         assert_eq!(encode_ctrl_letter('c'), Some(0x03));
         assert_eq!(encode_ctrl_letter('z'), Some(0x1a));
         assert_eq!(encode_ctrl_letter('1'), None);
+    }
+
+    fn test_ui_runtime(mode: RenderMode) -> UiRuntime {
+        UiRuntime::bootstrap(UiBootstrapConfig::single_window(mode, 60_000))
+            .expect("ui runtime bootstrap")
+    }
+
+    #[test]
+    fn injected_gpu_failure_falls_back_without_forcing_exit_in_auto_mode() {
+        let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+        assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+
+        let first = dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SurfaceError, 10)
+            .expect("first gpu failure");
+        assert_eq!(
+            first,
+            GpuFailureHandling::RetryScheduled {
+                failure_streak: 1,
+                retry_budget_remaining: 1
+            }
+        );
+        assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+
+        let second = dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SubmitError, 20)
+            .expect("second gpu failure");
+        assert_eq!(
+            second,
+            GpuFailureHandling::RetryScheduled {
+                failure_streak: 2,
+                retry_budget_remaining: 0
+            }
+        );
+        assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+
+        let third =
+            dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SwapchainOutOfDate, 30)
+                .expect("third gpu failure");
+        assert_eq!(
+            third,
+            GpuFailureHandling::FallbackToCpu {
+                transition_sequence: 1
+            }
+        );
+        assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Cpu);
+    }
+
+    #[test]
+    fn forced_gpu_mode_reports_explicit_gpu_failure() {
+        let mut ui_runtime = test_ui_runtime(RenderMode::Gpu);
+        assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+
+        let decision =
+            dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SurfaceError, 7)
+                .expect("gpu failure decision");
+        assert_eq!(decision, GpuFailureHandling::FatalForcedGpu);
+        assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
     }
 }

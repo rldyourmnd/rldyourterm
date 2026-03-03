@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt;
 
+use rldyourterm_services::render_mode::GpuFailureKind;
+
 pub const DEFAULT_SURFACE_RETRY_BUDGET: u8 = 3;
 pub const DEFAULT_SURFACE_RECONFIGURE_RETRY_BUDGET: u8 = 2;
 
@@ -288,6 +290,54 @@ pub fn update_frame_latency_hint(
     config.desired_maximum_frame_latency = desired_maximum_frame_latency;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GpuRenderError {
+    DeviceLost,
+    SurfaceAcquire(wgpu::SurfaceError),
+    SubmitFailed,
+    BackendUnavailable,
+}
+
+impl GpuRenderError {
+    #[must_use]
+    pub const fn failure_kind(&self) -> GpuFailureKind {
+        match self {
+            GpuRenderError::DeviceLost => GpuFailureKind::DeviceLost,
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Outdated)
+            | GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Lost) => {
+                GpuFailureKind::SwapchainOutOfDate
+            }
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Timeout)
+            | GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::OutOfMemory) => {
+                GpuFailureKind::SurfaceError
+            }
+            GpuRenderError::SubmitFailed | GpuRenderError::BackendUnavailable => {
+                GpuFailureKind::SubmitError
+            }
+        }
+    }
+}
+
+impl fmt::Display for GpuRenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeviceLost => f.write_str("GPU device lost during frame rendering"),
+            Self::SurfaceAcquire(error) => {
+                write!(
+                    f,
+                    "GPU surface acquire failed during frame rendering: {error:?}"
+                )
+            }
+            Self::SubmitFailed => f.write_str("GPU command submission failed"),
+            Self::BackendUnavailable => {
+                f.write_str("GPU backend is unavailable in this renderer path")
+            }
+        }
+    }
+}
+
+impl Error for GpuRenderError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuRenderer {
     policy: SurfaceRecoveryPolicy,
@@ -349,7 +399,9 @@ impl GpuRenderer {
         validate_surface_configuration(config)
     }
 
-    pub fn render(&self) {}
+    pub fn render(&self) -> Result<(), GpuRenderError> {
+        Err(GpuRenderError::BackendUnavailable)
+    }
 }
 
 impl Default for GpuRenderer {
@@ -577,5 +629,43 @@ mod tests {
 
         update_frame_latency_hint(&mut config, 4);
         assert_eq!(config.desired_maximum_frame_latency, 4);
+    }
+
+    #[test]
+    fn render_is_fallible_and_never_silent_noop() {
+        let renderer = GpuRenderer::default();
+        assert_eq!(renderer.render(), Err(GpuRenderError::BackendUnavailable));
+    }
+
+    #[test]
+    fn gpu_render_error_mapping_is_deterministic() {
+        assert_eq!(
+            GpuRenderError::DeviceLost.failure_kind(),
+            GpuFailureKind::DeviceLost
+        );
+        assert_eq!(
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Timeout).failure_kind(),
+            GpuFailureKind::SurfaceError
+        );
+        assert_eq!(
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Outdated).failure_kind(),
+            GpuFailureKind::SwapchainOutOfDate
+        );
+        assert_eq!(
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Lost).failure_kind(),
+            GpuFailureKind::SwapchainOutOfDate
+        );
+        assert_eq!(
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::OutOfMemory).failure_kind(),
+            GpuFailureKind::SurfaceError
+        );
+        assert_eq!(
+            GpuRenderError::SubmitFailed.failure_kind(),
+            GpuFailureKind::SubmitError
+        );
+        assert_eq!(
+            GpuRenderError::BackendUnavailable.failure_kind(),
+            GpuFailureKind::SubmitError
+        );
     }
 }
