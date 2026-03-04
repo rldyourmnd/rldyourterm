@@ -1,27 +1,38 @@
 # In-Terminal Settings UX (Command Palette)
 
-## Requirement
-- No external config-only UX.
-- Settings must be editable from terminal command surface.
+## Current v1.0 scope (implementation sync: 2026-03-04)
 
-## UX Baseline
-- `Ctrl+Shift+P` opens command palette.
-- Minimal modal command mode for commands like:
-  - `theme set cuberpunk`
-  - `mode cpu` / `mode gpu` / `mode auto`
-  - `render cadence monitor-auto`
-  - `shell fish` `shell zsh` `shell auto-init on|off`
+- Primary trigger: `Ctrl+Shift+P` (Linux/TTY) or `Cmd+Shift+P` (macOS GUI/TTY).
+- Palette UI is keyboard-shortcuts-first.
+- Interactive runtime palette actions:
+  - `1` -> `mode cpu`
+  - `2` -> `mode gpu`
+  - `3` -> `mode auto`
+  - `d` -> `debug on|off`
+  - `i` -> runtime info line
+  - `Esc` -> close palette
 
-## Persistence
-- All changes write to a typed config model in app profile with schema versioning.
-- Changes are live-applied and reversible via history snapshots.
+## Explicit non-scope
 
-## Validation & Stability
-- Commands rejected by schema should show explicit reason and keep previous valid state.
-- All palette actions emit `settings.apply` trace events.
+- No free-form command-line input inside GUI/TTY palette UI.
+- No in-palette text prompt/editor in v1.0 baseline.
 
-## Scope and v1.0 commands
-- Baseline commands: theme, render mode, shell target, monitor-driven render cadence policy, auto-init toggle.
-- Invalid commands must not affect running session state.
-- Every command path must emit `settings.apply` with event-id, previous state, and new state.
-- Debug mode command and profile commands are allowed through a dedicated safe command namespace.
+## Where text commands exist
+
+`crates/features/settings` exposes strict parser/apply API (`parse_palette_command`, `apply_palette_command`) for command strings:
+
+- `mode <cpu|gpu|auto>`
+- `shell <fish|zsh|auto>`
+- `shell auto-init <on|off>`
+- `render cadence monitor-auto`
+- `theme set <cuberpunk|aurora|monochrome>`
+- `profile <balanced|throughput|stability>`
+- `debug <on|off>`
+
+These command strings are consumed by runtime dispatchers and CLI automation (`--palette-command`), not by free-form typing inside palette UI.
+
+## Validation and stability invariants
+
+- Invalid command text must not mutate runtime state.
+- Palette command result must be explicit: `Applied`, `Noop`, or `Rejected`.
+- Render mode and diagnostics toggles must remain observable in runtime output/events.

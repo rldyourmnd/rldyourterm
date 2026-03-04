@@ -12,6 +12,10 @@ fail() {
   errors=$((errors + 1))
 }
 
+warn() {
+  printf '[WARN] %s\n' "$1"
+}
+
 required_paths=(
   "AGENTS.md"
   "README.md"
@@ -68,6 +72,30 @@ if rg -n "monitor-driven|refresh-rate|render cadence monitor-auto" AGENTS.md pla
   pass "monitor-driven cadence policy is present"
 else
   fail "monitor-driven cadence policy markers are missing"
+fi
+
+if rg -n "^\| G-010 \|.*\| Closed \|$" planning/system/gap-closure-register-v1.0.0.md >/dev/null 2>&1; then
+  pass "foundation window ownership gap is closed in gap register (G-010)"
+else
+  fail "G-010 must be closed with explicit evidence in gap register"
+fi
+
+if rg -n "No free-form command-line input inside GUI/TTY palette UI" planning/settings/settings_palette.md >/dev/null 2>&1; then
+  pass "settings palette scope explicitly forbids free-form UI command line"
+else
+  fail "settings palette scope does not explicitly forbid free-form UI command line"
+fi
+
+if rg -n "arboard::" crates/app/src >/tmp/planning_arch_clipboard_direct.txt 2>/dev/null; then
+  fail "direct arboard usage detected in app runtime; clipboard path must remain adapter-based (see /tmp/planning_arch_clipboard_direct.txt)"
+else
+  pass "no direct clipboard integration detected in app runtime"
+fi
+
+if rg -n "\bwindow\s*\.\s*(request_redraw|set_title|current_monitor)\s*\(" crates/app/src --glob '*.rs' >/tmp/planning_arch_drift_window_direct.txt 2>/dev/null; then
+  fail "direct app-owned window control usage detected in app runtime (see /tmp/planning_arch_drift_window_direct.txt)"
+else
+  pass "no direct app-owned window control usage detected in app runtime"
 fi
 
 if rg -n "TODO|TBD|XXX" AGENTS.md planning README.md --glob '!planning/system/validate_planning.sh' >/tmp/planning_todo_patterns.txt 2>/dev/null; then
