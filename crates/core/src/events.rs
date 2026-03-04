@@ -58,6 +58,9 @@ pub enum CoreEvent {
     WindowTitleChanged {
         title: String,
     },
+    TerminalResponse {
+        data: Vec<u8>,
+    },
     UnsupportedSequenceIgnored {
         sequence: String,
     },
