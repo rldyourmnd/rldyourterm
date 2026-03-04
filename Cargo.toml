@@ -38,3 +38,4 @@ softbuffer = "0.4"
 font8x8 = "0.3"
 pollster = "0.4"
 bytemuck = { version = "1.21", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

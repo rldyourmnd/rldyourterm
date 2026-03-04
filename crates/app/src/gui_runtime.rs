@@ -9,11 +9,19 @@ use font8x8::{
     BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, GREEK_FONTS, HIRAGANA_FONTS, LATIN_FONTS, MISC_FONTS,
     UnicodeFonts,
 };
+use rldyourterm_core::events::CoreEvent;
 use rldyourterm_core::grid::{self, CELL_HEIGHT, CELL_WIDTH};
 use rldyourterm_core::state::TerminalState;
 use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
+use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
+use rldyourterm_foundation::api::window::{
+    MonitorTiming, WindowConfig as FoundationWindowConfig, WindowControl,
+    WindowEvent as FoundationWindowEvent, WindowEventSink as FoundationWindowEventSink,
+    WindowFactory,
+};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
+use rldyourterm_foundation_platform::window::PlatformWindowFactory;
 use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{
@@ -22,7 +30,7 @@ use rldyourterm_services::session::{
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
@@ -36,6 +44,9 @@ use winit::platform::startup_notify::{
 };
 use winit::window::{Icon, Window, WindowId};
 
+/// Embedded application icon (decoded at runtime from PNG).
+static LOGO_PNG: &[u8] = include_bytes!("../../../LOGO.png");
+
 const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
@@ -48,6 +59,7 @@ const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
 #[cfg(test)]
 const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
+const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
@@ -148,6 +160,7 @@ pub fn run_interactive_gui_pty(
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
     window_count: u8,
+    clipboard: Arc<dyn ClipboardAdapter>,
 ) -> Result<i32> {
     if window_count != 1 {
         return Err(anyhow!(
@@ -162,17 +175,15 @@ pub fn run_interactive_gui_pty(
 
     let reader_pump = spawn_reader_pump(reader, proxy.clone());
     let wait_pump = spawn_wait_pump(Arc::clone(&pty), proxy.clone());
-
-    let mut app = GuiRuntimeApp::new(
-        pty,
-        writer,
-        reader_pump,
-        wait_pump,
+    let bootstrap = GuiRuntimeBootstrap {
         initial_mode,
         refresh_rate_millihz,
         window_count,
-    )
-    .context("failed to initialize GUI runtime app")?;
+        clipboard,
+    };
+
+    let mut app = GuiRuntimeApp::new(pty, writer, reader_pump, wait_pump, bootstrap)
+        .context("failed to initialize GUI runtime app")?;
 
     info!(
         mode = ?initial_mode,
@@ -186,6 +197,11 @@ pub fn run_interactive_gui_pty(
         .run_app(&mut app)
         .context("GUI event loop failed")?;
 
+    debug!(
+        exit_code = ?app.exit_code,
+        has_fatal_error = app.fatal_error.is_some(),
+        "event loop exited, beginning shutdown"
+    );
     app.shutdown();
 
     if let Some(error) = app.fatal_error.take() {
@@ -196,6 +212,7 @@ pub fn run_interactive_gui_pty(
 }
 
 fn build_gui_event_loop() -> Result<EventLoop<GuiEvent>> {
+    debug!("building GUI event loop");
     let mut builder = EventLoop::<GuiEvent>::with_user_event();
 
     #[cfg(target_os = "macos")]
@@ -214,6 +231,13 @@ fn build_gui_event_loop() -> Result<EventLoop<GuiEvent>> {
 }
 
 fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty> {
+    debug!(
+        shell = shell_executable,
+        args = ?shell_args,
+        cols = DEFAULT_COLS,
+        rows = DEFAULT_ROWS,
+        "spawning PTY child process"
+    );
     let spawn_config = PtySpawnConfig {
         shell_command: shell_executable.to_owned(),
         args: shell_args.to_vec(),
@@ -291,6 +315,7 @@ fn spawn_wait_pump(pty: Arc<dyn PtyIo>, proxy: EventLoopProxy<GuiEvent>) -> Join
 struct GuiRuntimeApp {
     pty: Arc<dyn PtyIo>,
     writer: Box<dyn Write + Send>,
+    clipboard: Arc<dyn ClipboardAdapter>,
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
     session_policy: SessionController,
@@ -303,6 +328,7 @@ struct GuiRuntimeApp {
     initial_mode: RenderMode,
 
     window: Option<Arc<Window>>,
+    window_control: Option<Box<dyn WindowControl>>,
     window_id: Option<WindowId>,
     _context: Option<SoftbufferContext<Arc<Window>>>,
     surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
@@ -318,16 +344,35 @@ struct GuiRuntimeApp {
     fatal_error: Option<anyhow::Error>,
 }
 
+struct GuiRuntimeBootstrap {
+    initial_mode: RenderMode,
+    refresh_rate_millihz: u32,
+    window_count: u8,
+    clipboard: Arc<dyn ClipboardAdapter>,
+}
+
+#[derive(Debug, Default)]
+struct NoopFoundationWindowEventSink;
+
+impl FoundationWindowEventSink for NoopFoundationWindowEventSink {
+    fn on_event(&self, _event: FoundationWindowEvent) {}
+}
+
 impl GuiRuntimeApp {
     fn new(
         pty: Arc<dyn PtyIo>,
         writer: Box<dyn Write + Send>,
         reader_pump: JoinHandle<()>,
         wait_pump: JoinHandle<()>,
-        initial_mode: RenderMode,
-        refresh_rate_millihz: u32,
-        window_count: u8,
+        bootstrap: GuiRuntimeBootstrap,
     ) -> Result<Self> {
+        let GuiRuntimeBootstrap {
+            initial_mode,
+            refresh_rate_millihz,
+            window_count,
+            clipboard,
+        } = bootstrap;
+
         let ui_runtime = UiRuntime::bootstrap(UiBootstrapConfig {
             render_mode: initial_mode,
             refresh_rate_millihz,
@@ -343,6 +388,7 @@ impl GuiRuntimeApp {
         Ok(Self {
             pty,
             writer,
+            clipboard,
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
             session_policy,
@@ -354,6 +400,7 @@ impl GuiRuntimeApp {
             gpu_failure_sequence: 0,
             initial_mode,
             window: None,
+            window_control: None,
             window_id: None,
             _context: None,
             surface: None,
@@ -379,7 +426,22 @@ impl GuiRuntimeApp {
             .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT))
             .with_visible(true)
             .with_active(true)
-            .with_window_icon(generate_app_icon());
+            .with_window_icon(load_app_icon());
+
+        // Set Wayland app_id and X11 WM_CLASS so the compositor identifies the window.
+        // Both traits define `with_name` — fully-qualified calls avoid method ambiguity.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            attributes =
+                WindowAttributesExtWayland::with_name(attributes, "rldyourterm", "rldyourterm");
+        }
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            use winit::platform::x11::WindowAttributesExtX11;
+            attributes =
+                WindowAttributesExtX11::with_name(attributes, "rldyourterm", "rldyourterm");
+        }
 
         // Activation token for Wayland/X11 focus handoff
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -392,35 +454,125 @@ impl GuiRuntimeApp {
                 .create_window(attributes)
                 .context("failed to create GUI window")?,
         );
+        let window_control = PlatformWindowFactory::from_winit_window(window.clone())
+            .init(
+                FoundationWindowConfig {
+                    title: "rldyourterm".to_owned(),
+                    width: DEFAULT_GUI_WIDTH,
+                    height: DEFAULT_GUI_HEIGHT,
+                    min_width: 1,
+                    min_height: 1,
+                    high_dpi: true,
+                },
+                Box::new(NoopFoundationWindowEventSink),
+            )
+            .context("failed to initialize foundation window control from winit window")?;
 
         // Try GPU initialization if not CPU-only mode
-        if self.initial_mode != RenderMode::Cpu {
+        debug!("bootstrap: attempting GPU initialization");
+        let gpu_initialized = if self.initial_mode != RenderMode::Cpu {
             let w = window.inner_size().width;
             let h = window.inner_size().height;
             match self.gpu_renderer.initialize(window.clone(), w, h) {
-                Ok(()) => info!("GPU backend initialized successfully"),
-                Err(e) => warn!(error = ?e, "GPU init failed, will use CPU fallback"),
+                Ok(()) => {
+                    info!("GPU backend initialized successfully");
+                    true
+                }
+                Err(e) => {
+                    warn!(error = ?e, "GPU init failed, will use CPU fallback");
+                    false
+                }
             }
-        }
+        } else {
+            false
+        };
 
-        let context = SoftbufferContext::new(window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
-        let surface = SoftbufferSurface::new(&context, window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
+        debug!(gpu_initialized, "bootstrap: GPU init result");
+
+        // Create softbuffer context/surface ONLY if GPU is NOT active.
+        // On Wayland, both wgpu and softbuffer cannot bind to the same wl_surface
+        // simultaneously — softbuffer's wl_shm buffer attachment blocks when a
+        // wgpu Vulkan/GL surface already owns the compositor buffer queue.
+        if !gpu_initialized {
+            let context = SoftbufferContext::new(window.clone())
+                .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
+            let surface = SoftbufferSurface::new(&context, window.clone())
+                .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
+            self._context = Some(context);
+            self.surface = Some(surface);
+            debug!("bootstrap: softbuffer context created (CPU path)");
+        }
 
         self.window_size = window.inner_size();
         self.window_id = Some(window.id());
-        self._context = Some(context);
-        self.surface = Some(surface);
+        self.window_control = Some(window_control);
         self.window = Some(window);
-        self.apply_startup_visibility_handshake();
 
+        debug!("bootstrap: updating viewport geometry");
         self.update_viewport_geometry(event_loop);
-        self.queue_redraw();
+
+        // Draw the first frame synchronously before returning.
+        // On Wayland, the compositor will not map (show) the window until content
+        // is committed to its surface. Deferring to RedrawRequested is unreliable
+        // because ControlFlow::Wait may not deliver it before entering sleep.
+        debug!("bootstrap: drawing initial frame");
+        self.draw_frame()
+            .context("failed to draw initial frame during bootstrap")?;
+
+        debug!("bootstrap: applying visibility handshake");
+        self.apply_post_draw_visibility_handshake();
+        debug!("bootstrap: complete");
         Ok(())
     }
 
+    /// Release all window-bound graphics resources while the Wayland/X11
+    /// connection is still alive. On Wayland the compositor only receives the
+    /// surface-destroy protocol message when the `Arc<Window>` refcount reaches
+    /// zero.  If resources are dropped after `run_app()` returns, the connection
+    /// is already closed and the compositor never learns the window is gone -
+    /// leaving a ghost entry in the dock/taskbar.
+    ///
+    fn dispatch_terminal_responses(&mut self, events: &[CoreEvent]) {
+        for event in events {
+            if let CoreEvent::TerminalResponse { data } = event {
+                debug!(bytes = data.len(), "sending terminal response to PTY");
+                if let Err(error) = write_all_and_flush(&mut *self.writer, data) {
+                    warn!(%error, "failed to write terminal response to PTY");
+                }
+            }
+        }
+    }
+
+    /// Drop order matters: surface before context, context before window,
+    /// GPU backend (which holds `wgpu::Surface<'static>` -> `Arc<Window>`)
+    /// before the window itself.
+    fn release_window_resources(&mut self) {
+        debug!(
+            window_exists = self.window.is_some(),
+            gpu_initialized = self.gpu_renderer.is_initialized(),
+            has_surface = self.surface.is_some(),
+            "releasing window resources"
+        );
+        // 1. Drop softbuffer surface (holds Arc<Window>)
+        self.surface = None;
+        // 2. Drop softbuffer context (holds Arc<Window>)
+        self._context = None;
+        // 3. Drop GPU backend which holds wgpu::Surface<'static> -> Arc<Window>
+        self.gpu_renderer = GpuRenderer::default();
+        // 4. Drop foundation control (holds Arc<Window>)
+        self.window_control = None;
+        // 5. Drop the window itself (final Arc<Window> reference)
+        self.window_id = None;
+        self.window = None;
+        debug!("window resources released");
+    }
+
     fn shutdown(&mut self) {
+        debug!(
+            exit_code = ?self.exit_code,
+            has_fatal_error = self.fatal_error.is_some(),
+            "shutdown: beginning teardown"
+        );
         if let Err(error) = self.pty.close() {
             warn!(error = %error, "failed to close PTY during GUI shutdown");
             if self.fatal_error.is_none() {
@@ -437,12 +589,30 @@ impl GuiRuntimeApp {
         }
     }
 
-    fn apply_startup_visibility_handshake(&self) {
+    fn ensure_softbuffer_surface(&mut self) -> Result<()> {
+        if self.surface.is_some() {
+            return Ok(());
+        }
+        let window = self
+            .window
+            .as_ref()
+            .ok_or_else(|| anyhow!("no window for softbuffer initialization"))?;
+        let context = SoftbufferContext::new(window.clone())
+            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
+        let surface = SoftbufferSurface::new(&context, window.clone())
+            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
+        self._context = Some(context);
+        self.surface = Some(surface);
+        info!("lazily initialized softbuffer surface for CPU fallback");
+        Ok(())
+    }
+
+    fn apply_post_draw_visibility_handshake(&self) {
         if let Some(window) = self.window.as_ref() {
             window.set_visible(true);
             window.focus_window();
-            window.request_redraw();
-            info!("applied startup visibility handshake");
+            self.request_window_redraw();
+            info!("applied visibility handshake after first frame commit");
         }
     }
 
@@ -454,7 +624,8 @@ impl GuiRuntimeApp {
         let mut line = String::from("\r\n");
         line.push_str(message);
         line.push_str("\r\n");
-        let _events = self.terminal.feed(line.as_bytes());
+        let events = self.terminal.feed(line.as_bytes());
+        self.dispatch_terminal_responses(&events);
         self.queue_redraw();
     }
 
@@ -506,8 +677,8 @@ impl GuiRuntimeApp {
         if !self.redraw_pending {
             return;
         }
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if self.window_control.is_some() || self.window.is_some() {
+            self.request_window_redraw();
             self.redraw_pending = false;
         }
     }
@@ -519,6 +690,14 @@ impl GuiRuntimeApp {
         let rows = ((self.window_size.height as usize) / CELL_HEIGHT)
             .max(1)
             .min(u16::MAX as usize) as u16;
+
+        debug!(
+            cols,
+            rows,
+            width = self.window_size.width,
+            height = self.window_size.height,
+            "viewport: resizing"
+        );
 
         self.terminal.resize(cols, rows);
 
@@ -542,6 +721,8 @@ impl GuiRuntimeApp {
             return;
         }
 
+        debug!("viewport: pty resize complete");
+
         if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyResize) {
             self.fatal_error = Some(error);
             event_loop.exit();
@@ -549,15 +730,15 @@ impl GuiRuntimeApp {
     }
 
     fn handle_close_requested(&mut self, event_loop: &ActiveEventLoop) {
+        debug!("window close requested by user or compositor");
+        self.emit_close_intent();
         self.exit_code.get_or_insert(0);
         event_loop.exit();
     }
 
     fn handle_monitor_affecting_event(&mut self, monitor_event: MonitorAffectingWindowEvent) {
-        let sampled_refresh_rate_millihz = self
-            .window
-            .as_ref()
-            .and_then(|window| sample_monitor_refresh_rate_millihz(window));
+        let sampled_refresh_rate_millihz =
+            sample_monitor_refresh_rate_millihz(self.window_control.as_deref());
         let command =
             cadence_resync_command_for_monitor_event(monitor_event, sampled_refresh_rate_millihz);
 
@@ -612,6 +793,7 @@ impl GuiRuntimeApp {
         }
 
         if is_local_shutdown_key(event, self.modifiers) {
+            self.emit_close_intent();
             self.exit_code.get_or_insert(0);
             event_loop.exit();
             return;
@@ -777,16 +959,11 @@ impl GuiRuntimeApp {
     }
 
     fn handle_clipboard_paste(&mut self, event_loop: &ActiveEventLoop) {
-        let text = match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
-            Ok(text) if !text.is_empty() => text,
-            _ => return,
+        let Some(text) = read_clipboard_text_for_paste(self.clipboard.as_ref()) else {
+            return;
         };
-        // Paste size cap: 64 KB
-        let text = if text.len() > 64 * 1024 {
-            &text[..64 * 1024]
-        } else {
-            &text
-        };
+        debug!(bytes = text.len(), "clipboard paste");
+        let text = cap_paste_text(&text);
         let paste_result = if self.terminal.bracketed_paste_enabled() {
             write_all_and_flush(&mut *self.writer, b"\x1b[200~")
                 .and_then(|()| write_all_and_flush(&mut *self.writer, text.as_bytes()))
@@ -817,9 +994,53 @@ impl GuiRuntimeApp {
         }
     }
 
+    fn request_window_redraw(&self) {
+        if let Some(window_control) = self.window_control.as_ref() {
+            if let Err(error) = window_control.request_redraw() {
+                warn!(
+                    error = %error,
+                    "failed to request redraw via window control"
+                );
+            }
+            return;
+        }
+        warn!("window control unavailable while requesting redraw");
+    }
+
+    fn set_window_title(&self, title: &str) {
+        if let Some(window_control) = self.window_control.as_ref() {
+            if let Err(error) = window_control.set_title(title) {
+                warn!(
+                    error = %error,
+                    "failed to set title via window control"
+                );
+            }
+            return;
+        }
+        warn!("window control unavailable while setting title");
+    }
+
+    fn emit_close_intent(&self) {
+        if let Some(window_control) = self.window_control.as_ref()
+            && let Err(error) = window_control.close()
+        {
+            warn!(
+                error = %error,
+                "failed to propagate close intent via window control"
+            );
+        }
+    }
+
     fn draw_frame(&mut self) -> Result<()> {
         self.render_attempt_sequence = self.render_attempt_sequence.saturating_add(1);
         let render_attempt_sequence = self.render_attempt_sequence;
+
+        debug!(
+            render_path = ?self.ui_runtime.active_render_path(),
+            gpu_initialized = self.gpu_renderer.is_initialized(),
+            render_attempt_sequence,
+            "draw_frame: begin"
+        );
 
         if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
             && self.gpu_renderer.is_initialized()
@@ -830,6 +1051,7 @@ impl GuiRuntimeApp {
                         .ui_runtime
                         .handle_command(UiRuntimeCommand::GpuFramePresented)
                         .context("failed to dispatch UiRuntimeCommand::GpuFramePresented")?;
+                    debug!("draw_frame: presented (GPU)");
                     return Ok(());
                 }
                 Err(error) => {
@@ -904,7 +1126,11 @@ impl GuiRuntimeApp {
                                 "forced gpu mode render failure: kind={failure_kind:?} observed_at_millis={observed_at_millis} render_attempt_sequence={render_attempt_sequence} gpu_failure_sequence={gpu_failure_sequence}"
                             ));
                         }
-                        GpuFailureHandling::Ignored => {}
+                        GpuFailureHandling::Ignored => {
+                            trace!(
+                                "draw_frame: gpu failure handling ignored (already on CPU path)"
+                            );
+                        }
                     }
                 }
             }
@@ -913,8 +1139,14 @@ impl GuiRuntimeApp {
         let width = self.window_size.width;
         let height = self.window_size.height;
         if width == 0 || height == 0 {
+            debug!(width, height, "draw_frame: skipped, zero window dimensions");
             return Ok(());
         }
+
+        // Lazily create softbuffer surface on first CPU render (e.g. after GPU fallback).
+        // Cannot create at bootstrap when GPU surface already owns the Wayland buffer queue.
+        self.ensure_softbuffer_surface()
+            .context("failed to initialize softbuffer for CPU render")?;
 
         let surface = self
             .surface
@@ -941,6 +1173,7 @@ impl GuiRuntimeApp {
         buffer
             .present()
             .map_err(|error| anyhow!("failed to present GUI frame: {error}"))?;
+        debug!("draw_frame: presented (CPU)");
         Ok(())
     }
 }
@@ -979,21 +1212,41 @@ fn classify_pty_boundary_failure(
 
 impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        debug!(
+            window_exists = self.window.is_some(),
+            "ApplicationHandler::resumed fired"
+        );
         if let Err(error) = self.bootstrap_window(event_loop) {
             self.fatal_error = Some(error);
             event_loop.exit();
         }
     }
 
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        warn!("ApplicationHandler::suspended fired by compositor");
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        debug!(
+            exit_code = ?self.exit_code,
+            has_fatal_error = self.fatal_error.is_some(),
+            "ApplicationHandler::exiting - event loop shutting down"
+        );
+        // Release window resources while the Wayland/X11 connection is still
+        // alive.  This ensures the compositor receives surface-destroy and
+        // removes the window from the dock/taskbar.
+        self.release_window_resources();
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: GuiEvent) {
         match event {
-            GuiEvent::Output(data) => {
-                let _events = self.terminal.feed(&data);
+            GuiEvent::Output(ref data) => {
+                trace!(bytes = data.len(), "pty output received");
+                let events = self.terminal.feed(data);
+                self.dispatch_terminal_responses(&events);
                 let title = self.terminal.window_title();
                 if !title.is_empty() {
-                    if let Some(window) = self.window.as_ref() {
-                        window.set_title(title);
-                    }
+                    self.set_window_title(title);
                 }
                 if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
                     self.fatal_error = Some(error);
@@ -1003,11 +1256,16 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 self.queue_redraw();
             }
             GuiEvent::Exited(code) => {
+                info!(exit_code = code, "child process exited, shutting down");
                 self.exit_code = Some(code);
                 event_loop.exit();
             }
-            GuiEvent::PtyFailure { boundary, message } => {
-                match self.handle_pty_boundary_failure(boundary, &message) {
+            GuiEvent::PtyFailure {
+                ref boundary,
+                ref message,
+            } => {
+                warn!(?boundary, %message, "pty boundary failure event");
+                match self.handle_pty_boundary_failure(*boundary, message) {
                     Ok(PtyBoundaryLoopAction::Continue) => {}
                     Ok(PtyBoundaryLoopAction::ExitLoop) => {
                         event_loop.exit();
@@ -1076,12 +1334,29 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
-            _ => {}
+            WindowEvent::Focused(focused) => {
+                debug!(focused, "window focus changed");
+            }
+            WindowEvent::Occluded(occluded) => {
+                debug!(occluded, "window occlusion changed");
+            }
+            WindowEvent::Destroyed => {
+                warn!("window destroyed by compositor");
+            }
+            _ => {
+                trace!(event = ?event, "unhandled window event");
+            }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.request_redraw_if_needed();
+
+        trace!(
+            render_path = ?self.ui_runtime.active_render_path(),
+            gpu_initialized = self.gpu_renderer.is_initialized(),
+            "about_to_wait: selecting control flow"
+        );
 
         if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
             && self.gpu_renderer.is_initialized()
@@ -1517,15 +1792,22 @@ fn on_off_token(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
-fn sample_monitor_refresh_rate_millihz(window: &Window) -> Option<u32> {
-    window
-        .current_monitor()
-        .and_then(|monitor| monitor.refresh_rate_millihertz())
-        .or_else(|| {
-            window
-                .primary_monitor()
-                .and_then(|monitor| monitor.refresh_rate_millihertz())
-        })
+fn sample_monitor_refresh_rate_millihz(window_control: Option<&dyn WindowControl>) -> Option<u32> {
+    let window_control = window_control?;
+
+    match window_control.current_monitor_timing() {
+        Ok(MonitorTiming {
+            refresh_rate_millihz,
+            ..
+        }) => refresh_rate_millihz,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "failed to sample monitor timing via window control"
+            );
+            None
+        }
+    }
 }
 
 fn cadence_resync_command_for_monitor_event(
@@ -1675,6 +1957,28 @@ fn is_paste_shortcut(key: &Key, modifiers: ModifiersState) -> bool {
     }
 }
 
+fn read_clipboard_text_for_paste(clipboard: &dyn ClipboardAdapter) -> Option<String> {
+    match clipboard.get_text() {
+        Ok(Some(text)) if !text.is_empty() => Some(text),
+        Ok(_) | Err(_) => {
+            debug!("clipboard paste: empty or unavailable");
+            None
+        }
+    }
+}
+
+fn cap_paste_text(text: &str) -> &str {
+    if text.len() <= CLIPBOARD_PASTE_CAP_BYTES {
+        text
+    } else {
+        let mut end = CLIPBOARD_PASTE_CAP_BYTES;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &text[..end]
+    }
+}
+
 fn encode_ctrl_letter(ch: char) -> Option<u8> {
     let lower = ch.to_ascii_lowercase();
     if lower.is_ascii_lowercase() {
@@ -1701,51 +2005,167 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 }
 
 /// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
-fn generate_app_icon() -> Option<Icon> {
-    const SIZE: u32 = 32;
-    const BG: [u8; 4] = [0x14, 0x1b, 0x1f, 0xFF];
-    const CURSOR: [u8; 4] = [0x00, 0xd4, 0xaa, 0xFF];
-    const GLOW: [u8; 4] = [0x00, 0x6a, 0x55, 0x60];
-
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let offset = ((y * SIZE + x) * 4) as usize;
-            // Cursor block: centered vertical rectangle (cols 12-19, rows 6-25)
-            let is_cursor = (12..=19).contains(&x) && (6..=25).contains(&y);
-            // Glow: 1px border around cursor
-            let is_glow = !is_cursor && (11..=20).contains(&x) && (5..=26).contains(&y);
-
-            let color = if is_cursor {
-                CURSOR
-            } else if is_glow {
-                GLOW
-            } else {
-                BG
-            };
-            rgba[offset..offset + 4].copy_from_slice(&color);
-        }
-    }
-
-    Icon::from_rgba(rgba, SIZE, SIZE).ok()
+fn load_app_icon() -> Option<Icon> {
+    let img = image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Icon::from_rgba(rgba.into_raw(), width, height).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling, MonitorAffectingWindowEvent,
-        PtyBoundaryPolicyDecision, cadence_resync_command_for_monitor_event,
-        classify_pty_boundary_failure, dispatch_gpu_failure_command,
-        dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability, encode_ctrl_letter,
-        encode_winit_key_event, grid, is_runtime_palette_shortcut_key, resolve_cell_colors,
+        CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
+        MonitorAffectingWindowEvent, PtyBoundaryPolicyDecision,
+        cadence_resync_command_for_monitor_event, cap_paste_text, classify_pty_boundary_failure,
+        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+        emit_gpu_auto_fallback_observability, encode_ctrl_letter, encode_winit_key_event, grid,
+        is_runtime_palette_shortcut_key, read_clipboard_text_for_paste, resolve_cell_colors,
+        sample_monitor_refresh_rate_millihz,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+    use rldyourterm_foundation::api::{
+        clipboard::ClipboardAdapter,
+        common::{ContractResult, MonitorTiming},
+        window::{WindowControl, WindowEvent as FoundationWindowEvent},
+    };
+    use rldyourterm_foundation::error::{
+        ClipboardFailureCode, ClipboardOperation, FoundationError, Recoverability,
+        WindowFailureCode, WindowOperation,
+    };
     use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
     use winit::keyboard::{Key, ModifiersState};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StubClipboardScenario {
+        Text(&'static str),
+        Empty,
+        Error,
+    }
+
+    struct StubClipboard {
+        scenario: StubClipboardScenario,
+    }
+
+    impl ClipboardAdapter for StubClipboard {
+        fn set_text(&self, _text: &str) -> ContractResult<()> {
+            Ok(())
+        }
+
+        fn get_text(&self) -> ContractResult<Option<String>> {
+            match self.scenario {
+                StubClipboardScenario::Text(text) => Ok(Some(text.to_owned())),
+                StubClipboardScenario::Empty => Ok(None),
+                StubClipboardScenario::Error => Err(FoundationError::clipboard(
+                    ClipboardOperation::GetText,
+                    ClipboardFailureCode::BoundaryFault,
+                    Recoverability::Degrade,
+                    "test clipboard failure",
+                    None,
+                )),
+            }
+        }
+
+        fn clear(&self) -> ContractResult<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StubWindowControlScenario {
+        Timing(Option<u32>),
+        Error,
+    }
+
+    struct StubWindowControl {
+        scenario: StubWindowControlScenario,
+    }
+
+    impl WindowControl for StubWindowControl {
+        fn request_redraw(&self) -> ContractResult<()> {
+            Ok(())
+        }
+
+        fn set_title(&self, _title: &str) -> ContractResult<()> {
+            Ok(())
+        }
+
+        fn current_monitor_timing(&self) -> ContractResult<MonitorTiming> {
+            match self.scenario {
+                StubWindowControlScenario::Timing(refresh_rate_millihz) => Ok(MonitorTiming {
+                    monitor_name: Some("stub-monitor".to_owned()),
+                    refresh_rate_millihz,
+                }),
+                StubWindowControlScenario::Error => Err(FoundationError::window(
+                    WindowOperation::QueryMonitorTiming,
+                    WindowFailureCode::BoundaryFault,
+                    Recoverability::Degrade,
+                    "monitor timing unavailable",
+                    None,
+                )),
+            }
+        }
+
+        fn clipboard_text(&self) -> ContractResult<String> {
+            Ok(String::new())
+        }
+
+        fn set_clipboard_text(&self, _text: &str) -> ContractResult<()> {
+            Ok(())
+        }
+
+        fn close(&self) -> ContractResult<()> {
+            Ok(())
+        }
+
+        fn poll_events(&self) -> ContractResult<Vec<FoundationWindowEvent>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn clipboard_dispatch_returns_non_empty_text() {
+        let clipboard = StubClipboard {
+            scenario: StubClipboardScenario::Text("wave3"),
+        };
+        assert_eq!(
+            read_clipboard_text_for_paste(&clipboard),
+            Some("wave3".to_owned())
+        );
+    }
+
+    #[test]
+    fn clipboard_dispatch_ignores_empty_text() {
+        let clipboard = StubClipboard {
+            scenario: StubClipboardScenario::Empty,
+        };
+        assert_eq!(read_clipboard_text_for_paste(&clipboard), None);
+    }
+
+    #[test]
+    fn clipboard_dispatch_ignores_adapter_errors() {
+        let clipboard = StubClipboard {
+            scenario: StubClipboardScenario::Error,
+        };
+        assert_eq!(read_clipboard_text_for_paste(&clipboard), None);
+    }
+
+    #[test]
+    fn clipboard_paste_cap_limits_payload_to_64kb() {
+        let payload = "x".repeat(70 * 1024);
+        assert_eq!(cap_paste_text(&payload).len(), CLIPBOARD_PASTE_CAP_BYTES);
+    }
+
+    #[test]
+    fn clipboard_paste_cap_preserves_utf8_boundary() {
+        let payload = format!("{}🚀", "a".repeat(CLIPBOARD_PASTE_CAP_BYTES - 1));
+        let capped = cap_paste_text(&payload);
+        assert_eq!(capped.len(), CLIPBOARD_PASTE_CAP_BYTES - 1);
+        assert_eq!(capped.chars().last(), Some('a'));
+    }
 
     #[test]
     fn ctrl_letter_encoding_matches_ascii_control_range() {
@@ -1860,6 +2280,25 @@ mod tests {
                 .expect("gpu failure decision");
         assert_eq!(decision, GpuFailureHandling::FatalForcedGpu);
         assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+    }
+
+    #[test]
+    fn monitor_timing_sampling_uses_window_control_contract() {
+        let control = StubWindowControl {
+            scenario: StubWindowControlScenario::Timing(Some(144_000)),
+        };
+        assert_eq!(
+            sample_monitor_refresh_rate_millihz(Some(&control)),
+            Some(144_000)
+        );
+    }
+
+    #[test]
+    fn monitor_timing_sampling_returns_none_when_contract_fails() {
+        let control = StubWindowControl {
+            scenario: StubWindowControlScenario::Error,
+        };
+        assert_eq!(sample_monitor_refresh_rate_millihz(Some(&control)), None);
     }
 
     #[test]

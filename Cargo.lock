@@ -1929,10 +1929,10 @@ name = "rldyourterm-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "clap",
  "crossterm",
  "font8x8",
+ "image",
  "rldyourterm-core",
  "rldyourterm-diagnostics",
  "rldyourterm-foundation",
