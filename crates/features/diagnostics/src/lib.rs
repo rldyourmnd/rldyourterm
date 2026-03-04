@@ -1,3 +1,8 @@
+use rldyourterm_foundation::api::diagnostics::{
+    DiagnosticEvent as FoundationDiagnosticEvent, DiagnosticKind as FoundationDiagnosticKind,
+    DiagnosticLayer as FoundationDiagnosticLayer,
+    DiagnosticSeverity as FoundationDiagnosticSeverity,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +19,42 @@ pub enum EventKind {
     ShellFallbackApplied,
     ShellLaunchPlanned,
     ResourceWarning,
+}
+
+impl EventKind {
+    fn foundation_kind(self) -> FoundationDiagnosticKind {
+        match self {
+            Self::SessionStarted => FoundationDiagnosticKind::SessionStarted,
+            Self::SessionEnded => FoundationDiagnosticKind::SessionEnded,
+            Self::SessionError => FoundationDiagnosticKind::SessionError,
+            Self::SettingsApply => FoundationDiagnosticKind::SettingsApply,
+            Self::SettingsRejected => FoundationDiagnosticKind::SettingsRejected,
+            Self::ShellResolved => FoundationDiagnosticKind::ShellResolved,
+            Self::ShellResolutionFailed => FoundationDiagnosticKind::ShellResolutionFailed,
+            Self::ShellFallbackApplied => FoundationDiagnosticKind::ShellFallbackApplied,
+            Self::ShellLaunchPlanned => FoundationDiagnosticKind::ShellLaunchPlanned,
+            Self::ResourceWarning => FoundationDiagnosticKind::ResourceWarning,
+        }
+    }
+
+    fn foundation_severity(self) -> FoundationDiagnosticSeverity {
+        match self {
+            Self::SessionError | Self::ShellResolutionFailed | Self::SettingsRejected => {
+                FoundationDiagnosticSeverity::Warn
+            }
+            Self::ResourceWarning => FoundationDiagnosticSeverity::Warn,
+            Self::SessionStarted
+            | Self::SessionEnded
+            | Self::SettingsApply
+            | Self::ShellResolved
+            | Self::ShellFallbackApplied
+            | Self::ShellLaunchPlanned => FoundationDiagnosticSeverity::Info,
+        }
+    }
+
+    fn foundation_layer(self) -> FoundationDiagnosticLayer {
+        FoundationDiagnosticLayer::App
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +110,26 @@ impl Event {
             .map_err(|err| DiagnosticsPayloadError::PayloadSerializationFailed(err.to_string()))?;
         self.payload_json = Some(payload_json);
         Ok(self)
+    }
+
+    fn to_foundation_event(&self) -> FoundationDiagnosticEvent {
+        let mut event = FoundationDiagnosticEvent::new(
+            self.event_id.clone(),
+            self.kind.foundation_kind(),
+            self.kind.foundation_severity(),
+            self.kind.foundation_layer(),
+            self.message.clone(),
+            self.timestamp_ms,
+        );
+
+        if let Some(correlation_id) = self.correlation_id.as_ref() {
+            event = event.with_correlation_id(correlation_id.as_str().to_owned());
+        }
+        if let Some(payload_json) = self.payload_json.as_ref() {
+            event = event.with_payload_json(payload_json.clone());
+        }
+
+        event
     }
 }
 
@@ -301,10 +362,13 @@ impl DiagnosticsSink {
             event.timestamp_ms = now_timestamp_ms();
         }
 
+        let canonical_event = event.to_foundation_event();
         tracing::info!(
-            event_id = %event.event_id,
-            kind = ?event.kind,
-            correlation_id = ?event.correlation_id,
+            event_id = %canonical_event.event_id.0,
+            kind = ?canonical_event.kind,
+            severity = ?canonical_event.severity,
+            layer = ?canonical_event.layer,
+            correlation_id = ?canonical_event.correlation_id,
             "diagnostics event emitted"
         );
 
