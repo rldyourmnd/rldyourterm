@@ -2,7 +2,6 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, ValueEnum};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_render_cpu::CpuRenderer;
-use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::render_mode::{
     ActiveRenderPath, GpuFailureKind, RenderMode, RenderTransitionReason,
 };
@@ -155,8 +154,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
         emit_settings_outcome(&diagnostics, post_hook_settings);
 
         let cpu_renderer = CpuRenderer::default();
-        let gpu_renderer = GpuRenderer::default();
-        render_initial_frame(&ui, &cpu_renderer, &gpu_renderer);
+        render_initial_frame(&ui, &cpu_renderer);
         emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
 
         if ui.release_governance() == ReleaseGovernance::ManualOnly {
@@ -174,7 +172,6 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             single_window_required = SINGLE_WINDOW_BASELINE,
             single_window_enforced = ui.window_count() == SINGLE_WINDOW_BASELINE,
             release_governance = release_governance_token(ui.release_governance()),
-            scrollback_lines = ui.terminal().scrollback.len(),
             "startup flow completed"
         );
 
@@ -265,19 +262,18 @@ fn shell_availability() -> ShellAvailability {
     }
 }
 
-fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer, gpu_renderer: &GpuRenderer) {
+fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer) {
     match ui.active_render_path() {
         ActiveRenderPath::Cpu => {
-            let _ = cpu_renderer.render_full(ui.terminal());
+            let placeholder = rldyourterm_core::state::TerminalState::new(120, 30, 1);
+            let _ = cpu_renderer.render_full(&placeholder);
         }
         ActiveRenderPath::Gpu => {
-            if let Err(error) = gpu_renderer.render() {
-                warn!(
-                    failure_kind = ?error.failure_kind(),
-                    gpu_error = ?error,
-                    "initial GPU render attempt failed"
-                );
-            }
+            // GPU render requires an initialized backend (window + surface).
+            // Harness runs without a window, so GPU cannot be initialized here.
+            warn!(
+                "GPU render path selected in harness but no window available; skipping initial frame"
+            );
         }
     }
 }
