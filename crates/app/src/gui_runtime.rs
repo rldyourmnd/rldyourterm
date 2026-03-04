@@ -1,13 +1,16 @@
-use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
 use std::num::NonZeroU32;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
+use font8x8::{
+    BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, GREEK_FONTS, HIRAGANA_FONTS, LATIN_FONTS, MISC_FONTS,
+    UnicodeFonts,
+};
+use rldyourterm_core::grid::{self, CELL_HEIGHT, CELL_WIDTH};
+use rldyourterm_core::state::TerminalState;
 use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
@@ -23,7 +26,7 @@ use tracing::{info, warn};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
@@ -33,18 +36,17 @@ const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
-const MAX_SCROLLBACK_LINES: usize = 50_000;
+use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(target_os = "macos")]
 const MACOS_FORCE_FOCUS_ENV: &str = "RLDYOURTERM_GUI_FORCE_FOCUS";
 
-const CELL_WIDTH: usize = 8;
-const CELL_HEIGHT: usize = 16;
-const TAB_WIDTH: usize = 4;
-
-const COLOR_BG: u32 = 0x0014_1b1f;
-const COLOR_FG: u32 = 0x00d8_d8d8;
+const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
+const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
+const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
+#[cfg(test)]
+const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
@@ -300,16 +302,17 @@ struct GuiRuntimeApp {
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
 
-    window: Option<Rc<Window>>,
+    window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
-    _context: Option<SoftbufferContext<Rc<Window>>>,
-    surface: Option<SoftbufferSurface<Rc<Window>, Rc<Window>>>,
+    _context: Option<SoftbufferContext<Arc<Window>>>,
+    surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
     window_size: PhysicalSize<u32>,
-    terminal: TerminalBuffer,
+    terminal: TerminalState,
     settings: SettingsService,
     modifiers: ModifiersState,
     palette_open: bool,
     redraw_pending: bool,
+    last_rendered_cursor_row: Option<u16>,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -329,7 +332,7 @@ impl GuiRuntimeApp {
             render_mode: initial_mode,
             refresh_rate_millihz,
             window_count,
-            scrollback_cap: MAX_SCROLLBACK_LINES,
+            scrollback_cap: DEFAULT_SCROLLBACK_CAP,
         })
         .context("failed to bootstrap UI runtime for GUI app")?;
         let mut session_policy = SessionController::new();
@@ -356,11 +359,12 @@ impl GuiRuntimeApp {
             _context: None,
             surface: None,
             window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
-            terminal: TerminalBuffer::new(MAX_SCROLLBACK_LINES),
+            terminal: TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_SCROLLBACK_CAP),
             settings: SettingsService::default(),
             modifiers: ModifiersState::default(),
             palette_open: false,
             redraw_pending: true,
+            last_rendered_cursor_row: None,
             exit_code: None,
             fatal_error: None,
         })
@@ -379,11 +383,21 @@ impl GuiRuntimeApp {
         let attributes = Window::default_attributes()
             .with_title(title)
             .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT));
-        let window = Rc::new(
+        let window = Arc::new(
             event_loop
                 .create_window(attributes)
                 .context("failed to create GUI window")?,
         );
+
+        // Try GPU initialization if not CPU-only mode
+        if self.initial_mode != RenderMode::Cpu {
+            let w = window.inner_size().width;
+            let h = window.inner_size().height;
+            match self.gpu_renderer.initialize(window.clone(), w, h) {
+                Ok(()) => info!("GPU backend initialized successfully"),
+                Err(e) => warn!(error = ?e, "GPU init failed, will use CPU fallback"),
+            }
+        }
 
         let context = SoftbufferContext::new(window.clone())
             .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
@@ -450,7 +464,7 @@ impl GuiRuntimeApp {
         let mut line = String::from("\r\n");
         line.push_str(message);
         line.push_str("\r\n");
-        self.terminal.push_bytes(line.as_bytes());
+        let _events = self.terminal.feed(line.as_bytes());
         self.queue_redraw();
     }
 
@@ -516,7 +530,7 @@ impl GuiRuntimeApp {
             .max(1)
             .min(u16::MAX as usize) as u16;
 
-        self.terminal.set_columns(cols as usize);
+        self.terminal.resize(cols, rows);
 
         if let Err(error) = self.pty.resize(PtySize {
             cols,
@@ -628,7 +642,12 @@ impl GuiRuntimeApp {
             }
         }
 
-        if let Some(bytes) = encode_winit_key_event(event, self.modifiers)
+        if is_paste_shortcut(&event.logical_key, self.modifiers) {
+            self.handle_clipboard_paste(event_loop);
+            return;
+        }
+
+        if let Some(bytes) = encode_winit_key_event(&event.logical_key, self.modifiers)
             && let Err(error) = write_all_and_flush(&mut *self.writer, &bytes)
         {
             match self.handle_pty_io_error(
@@ -690,20 +709,17 @@ impl GuiRuntimeApp {
         error_context: &'static str,
     ) -> Result<PtyBoundaryLoopAction> {
         if is_disconnect_error(&error) {
-            match self
+            if let Some(code) = self
                 .pty
                 .try_wait()
                 .context("failed to poll PTY after disconnecting GUI I/O failure")?
             {
-                Some(code) => {
-                    self.exit_code = Some(code);
-                    info!(
-                        boundary = session_boundary_token(boundary),
-                        code, "PTY child already exited after disconnecting GUI I/O failure"
-                    );
-                    return Ok(PtyBoundaryLoopAction::ExitLoop);
-                }
-                None => {}
+                self.exit_code = Some(code);
+                info!(
+                    boundary = session_boundary_token(boundary),
+                    code, "PTY child already exited after disconnecting GUI I/O failure"
+                );
+                return Ok(PtyBoundaryLoopAction::ExitLoop);
             }
         }
 
@@ -770,17 +786,61 @@ impl GuiRuntimeApp {
         Ok(())
     }
 
+    fn handle_clipboard_paste(&mut self, event_loop: &ActiveEventLoop) {
+        let text = match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+            Ok(text) if !text.is_empty() => text,
+            _ => return,
+        };
+        // Paste size cap: 64 KB
+        let text = if text.len() > 64 * 1024 {
+            &text[..64 * 1024]
+        } else {
+            &text
+        };
+        let paste_result = if self.terminal.bracketed_paste_enabled() {
+            write_all_and_flush(&mut *self.writer, b"\x1b[200~")
+                .and_then(|()| write_all_and_flush(&mut *self.writer, text.as_bytes()))
+                .and_then(|()| write_all_and_flush(&mut *self.writer, b"\x1b[201~"))
+        } else {
+            write_all_and_flush(&mut *self.writer, text.as_bytes())
+        };
+        if let Err(error) = paste_result {
+            match self.handle_pty_io_error(
+                SessionBoundary::PtyWrite,
+                error,
+                "failed to write clipboard paste to PTY",
+            ) {
+                Ok(PtyBoundaryLoopAction::Continue) => {}
+                Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                    event_loop.exit();
+                }
+                Err(policy_error) => {
+                    self.fatal_error = Some(policy_error);
+                    event_loop.exit();
+                }
+            }
+            return;
+        }
+        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
+            self.fatal_error = Some(error);
+            event_loop.exit();
+        }
+    }
+
     fn draw_frame(&mut self) -> Result<()> {
         self.render_attempt_sequence = self.render_attempt_sequence.saturating_add(1);
         let render_attempt_sequence = self.render_attempt_sequence;
 
-        if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu {
-            match self.gpu_renderer.render() {
+        if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
+            && self.gpu_renderer.is_initialized()
+        {
+            match self.gpu_renderer.render_frame(&self.terminal) {
                 Ok(()) => {
                     let _ = self
                         .ui_runtime
                         .handle_command(UiRuntimeCommand::GpuFramePresented)
                         .context("failed to dispatch UiRuntimeCommand::GpuFramePresented")?;
+                    return Ok(());
                 }
                 Err(error) => {
                     self.gpu_failure_sequence = self.gpu_failure_sequence.saturating_add(1);
@@ -880,7 +940,14 @@ impl GuiRuntimeApp {
         let mut buffer = surface
             .buffer_mut()
             .map_err(|error| anyhow!("failed to acquire softbuffer frame: {error}"))?;
-        render_terminal(&mut buffer, width as usize, height as usize, &self.terminal);
+        render_terminal(
+            &mut buffer,
+            width as usize,
+            height as usize,
+            &mut self.terminal,
+            self.last_rendered_cursor_row,
+        );
+        self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
         buffer
             .present()
             .map_err(|error| anyhow!("failed to present GUI frame: {error}"))?;
@@ -931,7 +998,13 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: GuiEvent) {
         match event {
             GuiEvent::Output(data) => {
-                self.terminal.push_bytes(&data);
+                let _events = self.terminal.feed(&data);
+                let title = self.terminal.window_title();
+                if !title.is_empty() {
+                    if let Some(window) = self.window.as_ref() {
+                        window.set_title(title);
+                    }
+                }
                 if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
                     self.fatal_error = Some(error);
                     event_loop.exit();
@@ -981,6 +1054,11 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             }
             WindowEvent::Resized(size) => {
                 self.window_size = size;
+                if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
+                    && self.gpu_renderer.is_initialized()
+                {
+                    self.gpu_renderer.resize(size.width, size.height);
+                }
                 self.update_viewport_geometry(event_loop);
                 self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Resized);
                 self.queue_redraw();
@@ -988,6 +1066,10 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
                     self.window_size = window.inner_size();
+                    if self.gpu_renderer.is_initialized() {
+                        self.gpu_renderer
+                            .resize(self.window_size.width, self.window_size.height);
+                    }
                     self.update_viewport_geometry(event_loop);
                     self.handle_monitor_affecting_event(
                         MonitorAffectingWindowEvent::ScaleFactorChanged,
@@ -1008,44 +1090,197 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.request_redraw_if_needed();
+
+        if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
+            && self.gpu_renderer.is_initialized()
+        {
+            // GPU: VSync drives frame pacing via PresentMode::AutoVsync.
+            // Wait sleeps until the next event (PTY data, input, resize).
+            // PTY proxy wakes the loop via EventLoopProxy — no busy-spin needed.
+            event_loop.set_control_flow(ControlFlow::Wait);
+        } else {
+            // CPU: software timer for frame pacing (no VSync via softbuffer).
+            let cadence = self.ui_runtime.cadence();
+            match cadence.frame_interval() {
+                Some(interval) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
+                }
+                None => {
+                    // No cadence available (headless, VNC, or monitor detection failed).
+                    // Wait for events to avoid busy-spin.
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
+            }
+        }
     }
 }
 
-fn render_terminal(buffer: &mut [u32], width: usize, height: usize, terminal: &TerminalBuffer) {
-    buffer.fill(COLOR_BG);
-
+fn render_terminal(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    terminal: &mut TerminalState,
+    prev_cursor_row: Option<u16>,
+) {
     if width == 0 || height == 0 {
         return;
     }
 
-    let rows = (height / CELL_HEIGHT).max(1);
-    let cols = (width / CELL_WIDTH).max(1);
-    let visible_line_count = terminal.visible_line_count(rows);
-    let top_row = rows.saturating_sub(visible_line_count);
+    let grid_rows = terminal.grid.height() as usize;
+    let grid_cols = terminal.grid.width() as usize;
+    let visible_rows = (height / CELL_HEIGHT).max(1).min(grid_rows);
+    let visible_cols = (width / CELL_WIDTH).max(1).min(grid_cols);
 
-    for (row_offset, line) in terminal.visible_lines(rows).enumerate() {
-        draw_line(buffer, width, height, top_row + row_offset, cols, line);
+    // Collect dirty rows and ensure cursor rows are included
+    let mut dirty = terminal.grid.take_dirty_rows();
+
+    // Always include current cursor row for fresh cursor rendering
+    let cursor_row = terminal.cursor.row;
+    if (cursor_row as usize) < visible_rows && !dirty.contains(&cursor_row) {
+        dirty.push(cursor_row);
     }
-}
 
-fn draw_line(buffer: &mut [u32], width: usize, height: usize, row: usize, cols: usize, text: &str) {
-    let base_y = row * CELL_HEIGHT;
-    if base_y >= height {
+    // Include previous cursor row to erase old cursor overlay
+    if let Some(prev) = prev_cursor_row {
+        if prev != cursor_row && (prev as usize) < visible_rows && !dirty.contains(&prev) {
+            dirty.push(prev);
+        }
+    }
+
+    if dirty.is_empty() {
         return;
     }
 
-    for (col, ch) in text.chars().take(cols).enumerate() {
-        draw_char(buffer, width, height, col * CELL_WIDTH, base_y, ch);
+    // Render only dirty rows
+    for &row in &dirty {
+        let row_idx = row as usize;
+        if row_idx >= visible_rows {
+            continue;
+        }
+        let base_y = row_idx * CELL_HEIGHT;
+        let clear_end_y = (base_y + CELL_HEIGHT).min(height);
+
+        // Clear row band to default background
+        for py in base_y..clear_end_y {
+            let start = py * width;
+            buffer[start..start + width].fill(DEFAULT_BG_U32);
+        }
+
+        // Redraw cells for this row
+        if let Ok(cells) = terminal.grid.row_cells(row) {
+            for (col, cell) in cells.iter().take(visible_cols).enumerate() {
+                let x = col * CELL_WIDTH;
+                let (fg, bg) = resolve_cell_colors(&cell.attrs);
+
+                if bg != DEFAULT_BG_U32 {
+                    draw_cell_bg(buffer, width, height, x, base_y, bg);
+                }
+
+                if cell.ch != ' ' {
+                    draw_char_colored(
+                        buffer,
+                        width,
+                        height,
+                        x,
+                        base_y,
+                        cell.ch,
+                        fg,
+                        cell.attrs.bold,
+                    );
+                }
+
+                if cell.attrs.underline {
+                    draw_underline(buffer, width, height, x, base_y, fg);
+                }
+
+                if cell.attrs.strikethrough {
+                    draw_strikethrough(buffer, width, height, x, base_y, fg);
+                }
+            }
+        }
+    }
+
+    // Clear area below the grid (handles first frame and resize)
+    let grid_pixel_height = visible_rows * CELL_HEIGHT;
+    if grid_pixel_height < height {
+        let any_bottom_dirty = dirty.iter().any(|&r| (r as usize) + 1 >= visible_rows);
+        if any_bottom_dirty {
+            for py in grid_pixel_height..height {
+                let start = py * width;
+                buffer[start..start + width].fill(DEFAULT_BG_U32);
+            }
+        }
+    }
+
+    // Draw cursor
+    if terminal.cursor.visible {
+        let crow = terminal.cursor.row as usize;
+        let ccol = terminal.cursor.col as usize;
+        if crow < visible_rows && ccol < visible_cols {
+            draw_cursor(buffer, width, height, ccol * CELL_WIDTH, crow * CELL_HEIGHT);
+        }
     }
 }
 
-fn draw_char(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, ch: char) {
-    let glyph = BASIC_FONTS
+fn resolve_cell_colors(attrs: &rldyourterm_core::grid::Attrs) -> (u32, u32) {
+    let mut fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
+    let mut bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
+
+    if attrs.dim {
+        let (r, g, b) = u32_to_rgb(fg);
+        fg = rgb_to_u32(r / 2, g / 2, b / 2);
+    }
+
+    if attrs.inverse {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+
+    (fg, bg)
+}
+
+const fn rgb_to_u32(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+fn u32_to_rgb(c: u32) -> (u8, u8, u8) {
+    ((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+fn draw_cell_bg(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, bg: u32) {
+    for py in y..(y + CELL_HEIGHT).min(height) {
+        let row_start = py * width;
+        for px in x..(x + CELL_WIDTH).min(width) {
+            buffer[row_start + px] = bg;
+        }
+    }
+}
+
+fn lookup_glyph(ch: char) -> [u8; 8] {
+    BASIC_FONTS
         .get(ch)
-        .or_else(|| BASIC_FONTS.get('?'))
-        .unwrap_or([0; 8]);
+        .or_else(|| LATIN_FONTS.get(ch))
+        .or_else(|| BLOCK_FONTS.get(ch))
+        .or_else(|| BOX_FONTS.get(ch))
+        .or_else(|| GREEK_FONTS.get(ch))
+        .or_else(|| HIRAGANA_FONTS.get(ch))
+        .or_else(|| MISC_FONTS.get(ch))
+        .unwrap_or([0; 8])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_char_colored(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    ch: char,
+    fg: u32,
+    bold: bool,
+) {
+    let glyph = lookup_glyph(ch);
 
     for (glyph_y, row_bits) in glyph.iter().enumerate() {
         for glyph_x in 0..8 {
@@ -1060,128 +1295,71 @@ fn draw_char(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize
             }
 
             let index = pixel_y * width + pixel_x;
-            buffer[index] = COLOR_FG;
+            buffer[index] = fg;
 
             let pixel_y2 = pixel_y + 1;
             if pixel_y2 < height {
                 let index2 = pixel_y2 * width + pixel_x;
-                buffer[index2] = COLOR_FG;
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EscapeState {
-    None,
-    Esc,
-    Csi,
-}
-
-#[derive(Debug)]
-struct TerminalBuffer {
-    lines: VecDeque<String>,
-    max_lines: usize,
-    cols: usize,
-    escape_state: EscapeState,
-}
-
-impl TerminalBuffer {
-    fn new(max_lines: usize) -> Self {
-        let mut lines = VecDeque::new();
-        lines.push_back(String::new());
-
-        Self {
-            lines,
-            max_lines: max_lines.max(1),
-            cols: DEFAULT_COLS as usize,
-            escape_state: EscapeState::None,
-        }
-    }
-
-    fn set_columns(&mut self, cols: usize) {
-        self.cols = cols.max(1);
-    }
-
-    fn visible_line_count(&self, rows: usize) -> usize {
-        rows.max(1).min(self.lines.len())
-    }
-
-    fn visible_lines(&self, rows: usize) -> impl Iterator<Item = &str> + '_ {
-        let count = self.visible_line_count(rows);
-        let start = self.lines.len().saturating_sub(count);
-        self.lines.iter().skip(start).map(String::as_str)
-    }
-
-    fn push_bytes(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            if self.consume_escape(byte) {
-                continue;
+                buffer[index2] = fg;
             }
 
-            match byte {
-                b'\x1b' => self.escape_state = EscapeState::Esc,
-                b'\r' => {
-                    self.current_line_mut().clear();
-                }
-                b'\n' => self.new_line(),
-                0x08 | 0x7f => {
-                    self.current_line_mut().pop();
-                }
-                b'\t' => {
-                    for _ in 0..TAB_WIDTH {
-                        self.push_char(' ');
+            // Bold via double-strike (1px right shift)
+            if bold {
+                let bold_x = pixel_x + 1;
+                if bold_x < width {
+                    buffer[pixel_y * width + bold_x] = fg;
+                    if pixel_y2 < height {
+                        buffer[pixel_y2 * width + bold_x] = fg;
                     }
                 }
-                0x20..=0x7e => self.push_char(byte as char),
-                _ if byte >= 0x80 => self.push_char('�'),
-                _ => {}
             }
         }
     }
+}
 
-    fn consume_escape(&mut self, byte: u8) -> bool {
-        match self.escape_state {
-            EscapeState::None => false,
-            EscapeState::Esc => {
-                self.escape_state = if byte == b'[' {
-                    EscapeState::Csi
-                } else {
-                    EscapeState::None
-                };
-                true
+fn draw_underline(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, fg: u32) {
+    let line_y = y + CELL_HEIGHT - 1;
+    if line_y >= height {
+        return;
+    }
+    let row_start = line_y * width;
+    for px in x..(x + CELL_WIDTH).min(width) {
+        buffer[row_start + px] = fg;
+    }
+}
+
+fn draw_strikethrough(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    fg: u32,
+) {
+    let line_y = y + CELL_HEIGHT / 2;
+    if line_y >= height {
+        return;
+    }
+    let row_start = line_y * width;
+    for px in x..(x + CELL_WIDTH).min(width) {
+        buffer[row_start + px] = fg;
+    }
+}
+
+fn draw_cursor(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
+    for glyph_y in 0..CELL_HEIGHT {
+        let pixel_y = y + glyph_y;
+        if pixel_y >= height {
+            break;
+        }
+        for glyph_x in 0..CELL_WIDTH {
+            let pixel_x = x + glyph_x;
+            if pixel_x >= width {
+                break;
             }
-            EscapeState::Csi => {
-                if (0x40..=0x7e).contains(&byte) {
-                    self.escape_state = EscapeState::None;
-                }
-                true
-            }
+            let index = pixel_y * width + pixel_x;
+            buffer[index] ^= 0x00FF_FFFF;
         }
-    }
-
-    fn push_char(&mut self, ch: char) {
-        let line = self.current_line_mut();
-        line.push(ch);
-        if line.chars().count() >= self.cols {
-            self.new_line();
-        }
-    }
-
-    fn new_line(&mut self) {
-        self.lines.push_back(String::new());
-        while self.lines.len() > self.max_lines {
-            self.lines.pop_front();
-        }
-    }
-
-    fn current_line_mut(&mut self) -> &mut String {
-        if self.lines.is_empty() {
-            self.lines.push_back(String::new());
-        }
-        self.lines
-            .back_mut()
-            .expect("terminal buffer must contain current line")
     }
 }
 
@@ -1235,11 +1413,9 @@ fn runtime_palette_action_for_winit_key(
 ) -> Option<RuntimePaletteAction> {
     match key {
         Key::Named(NamedKey::Escape) => Some(RuntimePaletteAction::Close),
-        Key::Character(text) if text == "1" => Some(RuntimePaletteAction::ApplyCommand("mode cpu")),
-        Key::Character(text) if text == "2" => Some(RuntimePaletteAction::ApplyCommand("mode gpu")),
-        Key::Character(text) if text == "3" => {
-            Some(RuntimePaletteAction::ApplyCommand("mode auto"))
-        }
+        Key::Character("1") => Some(RuntimePaletteAction::ApplyCommand("mode cpu")),
+        Key::Character("2") => Some(RuntimePaletteAction::ApplyCommand("mode gpu")),
+        Key::Character("3") => Some(RuntimePaletteAction::ApplyCommand("mode auto")),
         Key::Character(text) if text.eq_ignore_ascii_case("d") => {
             if diagnostics_enabled {
                 Some(RuntimePaletteAction::ApplyCommand("debug off"))
@@ -1449,8 +1625,8 @@ fn is_local_shutdown_key(event: &WinitKeyEvent, modifiers: ModifiersState) -> bo
     }
 }
 
-fn encode_winit_key_event(event: &WinitKeyEvent, modifiers: ModifiersState) -> Option<Vec<u8>> {
-    match event.logical_key.as_ref() {
+fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+    match key.as_ref() {
         Key::Named(NamedKey::Enter) => Some(vec![b'\r']),
         Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
@@ -1462,6 +1638,21 @@ fn encode_winit_key_event(event: &WinitKeyEvent, modifiers: ModifiersState) -> O
         Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),
         Key::Named(NamedKey::End) => Some(b"\x1b[F".to_vec()),
         Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
+        Key::Named(NamedKey::Insert) => Some(b"\x1b[2~".to_vec()),
+        Key::Named(NamedKey::PageUp) => Some(b"\x1b[5~".to_vec()),
+        Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
+        Key::Named(NamedKey::F1) => Some(b"\x1bOP".to_vec()),
+        Key::Named(NamedKey::F2) => Some(b"\x1bOQ".to_vec()),
+        Key::Named(NamedKey::F3) => Some(b"\x1bOR".to_vec()),
+        Key::Named(NamedKey::F4) => Some(b"\x1bOS".to_vec()),
+        Key::Named(NamedKey::F5) => Some(b"\x1b[15~".to_vec()),
+        Key::Named(NamedKey::F6) => Some(b"\x1b[17~".to_vec()),
+        Key::Named(NamedKey::F7) => Some(b"\x1b[18~".to_vec()),
+        Key::Named(NamedKey::F8) => Some(b"\x1b[19~".to_vec()),
+        Key::Named(NamedKey::F9) => Some(b"\x1b[20~".to_vec()),
+        Key::Named(NamedKey::F10) => Some(b"\x1b[21~".to_vec()),
+        Key::Named(NamedKey::F11) => Some(b"\x1b[23~".to_vec()),
+        Key::Named(NamedKey::F12) => Some(b"\x1b[24~".to_vec()),
         Key::Character(text) if modifiers.control_key() => {
             let mut chars = text.chars();
             let ch = chars.next()?;
@@ -1471,6 +1662,26 @@ fn encode_winit_key_event(event: &WinitKeyEvent, modifiers: ModifiersState) -> O
             encode_ctrl_letter(ch).map(|code| vec![code])
         }
         _ => None,
+    }
+}
+
+fn is_paste_shortcut(key: &Key, modifiers: ModifiersState) -> bool {
+    let is_v = match key.as_ref() {
+        Key::Character(text) => text.eq_ignore_ascii_case("v"),
+        _ => false,
+    };
+    if !is_v {
+        return false;
+    }
+
+    // macOS: Cmd+V, Linux: Ctrl+Shift+V
+    #[cfg(target_os = "macos")]
+    {
+        modifiers.super_key()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        modifiers.control_key() && modifiers.shift_key()
     }
 }
 
@@ -1502,10 +1713,11 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuFailureHandling, MonitorAffectingWindowEvent, PtyBoundaryPolicyDecision, TerminalBuffer,
-        cadence_resync_command_for_monitor_event, classify_pty_boundary_failure,
-        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-        emit_gpu_auto_fallback_observability, encode_ctrl_letter, is_runtime_palette_shortcut_key,
+        DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling, MonitorAffectingWindowEvent,
+        PtyBoundaryPolicyDecision, cadence_resync_command_for_monitor_event,
+        classify_pty_boundary_failure, dispatch_gpu_failure_command,
+        dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability, encode_ctrl_letter,
+        encode_winit_key_event, grid, is_runtime_palette_shortcut_key, resolve_cell_colors,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
@@ -1513,36 +1725,6 @@ mod tests {
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
     use winit::keyboard::{Key, ModifiersState};
-
-    #[test]
-    fn terminal_buffer_keeps_recent_lines() {
-        let mut buffer = TerminalBuffer::new(3);
-        buffer.set_columns(80);
-        buffer.push_bytes(b"one\ntwo\nthree\nfour\n");
-
-        let lines: Vec<&str> = buffer.visible_lines(3).collect();
-        assert_eq!(lines, ["three", "four", ""]);
-    }
-
-    #[test]
-    fn terminal_buffer_strips_ansi_sequences() {
-        let mut buffer = TerminalBuffer::new(10);
-        buffer.set_columns(80);
-        buffer.push_bytes(b"\x1b[31mred\x1b[0m\n");
-
-        let lines: Vec<&str> = buffer.visible_lines(2).collect();
-        assert_eq!(lines, ["red", ""]);
-    }
-
-    #[test]
-    fn terminal_buffer_clamps_zero_max_lines() {
-        let mut buffer = TerminalBuffer::new(0);
-        buffer.set_columns(80);
-        buffer.push_bytes(b"one\ntwo\n");
-
-        let lines: Vec<&str> = buffer.visible_lines(8).collect();
-        assert_eq!(lines, [""]);
-    }
 
     #[test]
     fn ctrl_letter_encoding_matches_ascii_control_range() {
@@ -1789,6 +1971,75 @@ mod tests {
             PtyBoundaryPolicyDecision::Fatal {
                 reason: FatalBoundaryReason::RecoverableBudgetExhausted,
             }
+        );
+    }
+
+    #[test]
+    fn color_to_u32_default_uses_default_color() {
+        let default_fg = grid::color_to_u32(rldyourterm_core::grid::Color::Default, DEFAULT_FG);
+        assert_eq!(default_fg, DEFAULT_FG_U32);
+    }
+
+    #[test]
+    fn color_to_u32_indexed_looks_up_palette() {
+        let red = grid::color_to_u32(rldyourterm_core::grid::Color::Indexed(1), DEFAULT_FG);
+        assert_eq!(red, rldyourterm_core::grid::ANSI_PALETTE[1]);
+    }
+
+    #[test]
+    fn color_to_u32_rgb_constructs_correctly() {
+        let c = grid::color_to_u32(
+            rldyourterm_core::grid::Color::Rgb(0xFF, 0x80, 0x00),
+            DEFAULT_FG,
+        );
+        assert_eq!(c, 0x00FF_8000);
+    }
+
+    #[test]
+    fn resolve_cell_colors_inverse_swaps_fg_bg() {
+        let attrs = rldyourterm_core::grid::Attrs {
+            fg: rldyourterm_core::grid::Color::Indexed(1),
+            bg: rldyourterm_core::grid::Color::Indexed(2),
+            inverse: true,
+            ..rldyourterm_core::grid::Attrs::default()
+        };
+        let (fg, bg) = resolve_cell_colors(&attrs);
+        assert_eq!(fg, rldyourterm_core::grid::ANSI_PALETTE[2]);
+        assert_eq!(bg, rldyourterm_core::grid::ANSI_PALETTE[1]);
+    }
+
+    #[test]
+    fn resolve_cell_colors_dim_halves_fg() {
+        let attrs = rldyourterm_core::grid::Attrs {
+            fg: rldyourterm_core::grid::Color::Rgb(200, 100, 50),
+            dim: true,
+            ..rldyourterm_core::grid::Attrs::default()
+        };
+        let (fg, _bg) = resolve_cell_colors(&attrs);
+        assert_eq!(fg, super::rgb_to_u32(100, 50, 25));
+    }
+
+    #[test]
+    fn encode_f_keys() {
+        use winit::keyboard::NamedKey;
+
+        let mods = ModifiersState::empty();
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::F1), mods),
+            Some(b"\x1bOP".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::F5), mods),
+            Some(b"\x1b[15~".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::PageUp), mods),
+            Some(b"\x1b[5~".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::Insert), mods),
+            Some(b"\x1b[2~".to_vec()),
         );
     }
 }
