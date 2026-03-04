@@ -473,11 +473,12 @@ impl GpuRenderer {
             .or_else(|| caps.formats.first().copied())
             .ok_or(GpuRenderError::BackendUnavailable)?;
 
+        let max_dim = device.limits().max_texture_dimension_2d;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: width.max(1),
-            height: height.max(1),
+            width: width.max(1).min(max_dim),
+            height: height.max(1).min(max_dim),
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
@@ -664,8 +665,9 @@ impl GpuRenderer {
             return;
         }
         if let Some(backend) = self.backend.as_mut() {
-            backend.config.width = width;
-            backend.config.height = height;
+            let max_dim = backend.device.limits().max_texture_dimension_2d;
+            backend.config.width = width.min(max_dim);
+            backend.config.height = height.min(max_dim);
             backend.surface.configure(&backend.device, &backend.config);
             // Reconfigure resets the surface — clear stale failure counters.
             self.policy
