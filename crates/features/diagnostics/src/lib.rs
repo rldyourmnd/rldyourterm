@@ -39,7 +39,8 @@ impl EventKind {
 
     fn foundation_severity(self) -> FoundationDiagnosticSeverity {
         match self {
-            Self::SessionError | Self::ShellResolutionFailed | Self::SettingsRejected => {
+            Self::SessionError => FoundationDiagnosticSeverity::Error,
+            Self::ShellResolutionFailed | Self::SettingsRejected => {
                 FoundationDiagnosticSeverity::Warn
             }
             Self::ResourceWarning => FoundationDiagnosticSeverity::Warn,
@@ -605,6 +606,19 @@ mod tests {
             .try_with_payload(&payload)
             .unwrap();
         assert!(event.payload_json.is_some());
+    }
+
+    #[test]
+    fn session_error_maps_to_error_severity() {
+        let event = Event::new(EventKind::SessionError, "pty read error").to_foundation_event();
+        assert_eq!(event.severity, FoundationDiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn shell_resolution_failed_maps_to_warn_severity() {
+        let event =
+            Event::new(EventKind::ShellResolutionFailed, "fish unavailable").to_foundation_event();
+        assert_eq!(event.severity, FoundationDiagnosticSeverity::Warn);
     }
 
     #[test]

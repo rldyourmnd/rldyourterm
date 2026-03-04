@@ -190,6 +190,23 @@ impl TerminalState {
             ParserAction::AutoWrapMode(enabled) => {
                 self.auto_wrap = enabled;
             }
+            ParserAction::SendPrimaryDA => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: b"\x1b[?1;2c".to_vec(),
+                });
+            }
+            ParserAction::SendDeviceStatusReport => {
+                let row = self.cursor.row.saturating_add(1);
+                let col = self.cursor.col.saturating_add(1);
+                events.push(CoreEvent::TerminalResponse {
+                    data: format!("\x1b[{row};{col}R").into_bytes(),
+                });
+            }
+            ParserAction::SendDeviceOk => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: b"\x1b[0n".to_vec(),
+                });
+            }
             ParserAction::UnsupportedSequence(sequence) => {
                 events.push(CoreEvent::UnsupportedSequenceIgnored { sequence });
             }
@@ -230,13 +247,17 @@ impl TerminalState {
 
         let from = self.cursor;
         if col + 1 >= width {
-            events.push(CoreEvent::LineWrapped { row });
-            self.cursor.col = 0;
-            if row >= self.scroll_bottom() {
-                self.scroll_up_at_bottom(1, events);
-                self.cursor.row = self.scroll_bottom();
+            if self.auto_wrap {
+                events.push(CoreEvent::LineWrapped { row });
+                self.cursor.col = 0;
+                if row >= self.scroll_bottom() {
+                    self.scroll_up_at_bottom(1, events);
+                    self.cursor.row = self.scroll_bottom();
+                } else {
+                    self.cursor.row = row + 1;
+                }
             } else {
-                self.cursor.row = row + 1;
+                self.cursor.col = col;
             }
         } else {
             self.cursor.col = col + 1;
@@ -977,18 +998,48 @@ mod tests {
     #[test]
     fn scroll_region_print_wrap_stays_in_region() {
         let mut state = TerminalState::new(4, 8, 10);
+        for row in 0..8u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..4u16 {
+                let _ = state.grid.put_char(row, col, ch, Attrs::default());
+            }
+        }
         // Set scroll region rows 3..6 (1-indexed: 4;7r -> 0-indexed 3..6)
         let _ = state.feed(b"\x1b[4;7r");
         // Move cursor to row 5 (bottom of region), col 3 (last col)
         state.cursor.row = 6;
         state.cursor.col = 3;
         // Print a char at the last column - should wrap within region
-        let _ = state.feed(b"X");
+        let events = state.feed(b"X");
         // Cursor should wrap to col 0 and stay at scroll_bottom (row 6),
         // region should have scrolled internally
         assert_eq!(state.cursor.row, 6);
         assert_eq!(state.cursor.col, 0);
-        // Row 0-2 and row 7 should be unaffected (outside region)
+        // Invariant: region-local wrap must not emit global scroll events.
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::LineWrapped { row: 6 }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::GridScrolled { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::ScrollbackTrimmed { .. }))
+        );
+
+        // Rows outside region remain unchanged.
+        assert_eq!(state.grid.row_string(2).expect("row 2"), "CCCC");
+        assert_eq!(state.grid.row_string(7).expect("row 7"), "HHHH");
+        // Rows inside region shift up by one; bottom line is cleared.
+        assert_eq!(state.grid.row_string(3).expect("row 3"), "EEEE");
+        assert_eq!(state.grid.row_string(4).expect("row 4"), "FFFF");
+        assert_eq!(state.grid.row_string(5).expect("row 5"), "GGGX");
+        assert_eq!(state.grid.row_string(6).expect("row 6"), "    ");
     }
 
     #[test]
@@ -1071,6 +1122,28 @@ mod tests {
     }
 
     #[test]
+    fn no_wrap_mode_keeps_cursor_at_last_column_without_line_wrap() {
+        let mut state = TerminalState::new(3, 1, 5);
+        let _ = state.feed(b"\x1b[?7l");
+
+        let events = state.feed(b"abcd");
+
+        assert_eq!(state.grid.row_string(0).expect("row 0"), "abd");
+        assert_eq!(state.cursor.row, 0);
+        assert_eq!(state.cursor.col, 2);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::LineWrapped { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::GridScrolled { .. }))
+        );
+    }
+
+    #[test]
     fn osc_st_terminator_sets_title() {
         let mut state = TerminalState::new(10, 2, 5);
         let events = state.feed(b"\x1b]0;Title ST\x1b\\");
@@ -1079,6 +1152,42 @@ mod tests {
             events.iter().any(
                 |e| matches!(e, CoreEvent::WindowTitleChanged { title } if title == "Title ST")
             )
+        );
+    }
+
+    #[test]
+    fn primary_da_emits_terminal_response() {
+        let mut state = TerminalState::new(10, 4, 5);
+        let events = state.feed(b"\x1b[c");
+        assert!(
+            events.iter().any(
+                |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1;2c")
+            )
+        );
+    }
+
+    #[test]
+    fn device_status_report_emits_cursor_position() {
+        let mut state = TerminalState::new(10, 4, 5);
+        // Move cursor to row 2, col 5 (0-based) via CursorPosition (1-based params)
+        state.feed(b"\x1b[3;6H");
+        let events = state.feed(b"\x1b[6n");
+        // Response should be 1-based: row=3, col=6
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[3;6R"))
+        );
+    }
+
+    #[test]
+    fn device_ok_emits_terminal_response() {
+        let mut state = TerminalState::new(10, 4, 5);
+        let events = state.feed(b"\x1b[5n");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[0n"))
         );
     }
 }

@@ -279,6 +279,7 @@ pub fn update_surface_extent(
     config: &mut wgpu::SurfaceConfiguration,
     width: u32,
     height: u32,
+    max_texture_dimension_2d: u32,
 ) -> Result<(), SurfaceConfigurationError> {
     if width == 0 {
         return Err(SurfaceConfigurationError::ZeroWidth);
@@ -287,8 +288,9 @@ pub fn update_surface_extent(
         return Err(SurfaceConfigurationError::ZeroHeight);
     }
 
-    config.width = width;
-    config.height = height;
+    let max_texture_dimension_2d = max_texture_dimension_2d.max(1);
+    config.width = width.min(max_texture_dimension_2d);
+    config.height = height.min(max_texture_dimension_2d);
     Ok(())
 }
 
@@ -358,6 +360,7 @@ const ATLAS_SLOTS: usize = (ATLAS_GLYPH_COLS * ATLAS_GLYPH_ROWS) as usize; // 25
 // Default terminal colors (must match gui_runtime)
 const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
 const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
+const INITIAL_CELL_BUFFER_CAPACITY: usize = 120 * 32;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -395,6 +398,7 @@ struct GpuBackend {
     grid_bind_group: wgpu::BindGroup,
     atlas_bind_group: wgpu::BindGroup,
     cell_bind_group_layout: wgpu::BindGroupLayout,
+    cell_bind_group: wgpu::BindGroup,
     cell_buffer: wgpu::Buffer,
     cell_buffer_capacity: usize,
     char_to_slot: HashMap<char, u16>,
@@ -620,13 +624,14 @@ impl GpuRenderer {
         });
 
         // Cell instance buffer (initial capacity for 120x32 terminal)
-        let initial_capacity = 120 * 32;
+        let initial_capacity = INITIAL_CELL_BUFFER_CAPACITY;
         let cell_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cell-instances"),
             size: (initial_capacity * std::mem::size_of::<CellInstance>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let cell_bind_group = create_cell_bind_group(&device, &cell_bgl, &cell_buffer);
 
         info!(
             format = ?format,
@@ -649,6 +654,7 @@ impl GpuRenderer {
             grid_bind_group,
             atlas_bind_group,
             cell_bind_group_layout: cell_bgl,
+            cell_bind_group,
             cell_buffer,
             cell_buffer_capacity: initial_capacity,
             char_to_slot,
@@ -666,8 +672,7 @@ impl GpuRenderer {
         }
         if let Some(backend) = self.backend.as_mut() {
             let max_dim = backend.device.limits().max_texture_dimension_2d;
-            backend.config.width = width.min(max_dim);
-            backend.config.height = height.min(max_dim);
+            let _ = update_surface_extent(&mut backend.config, width, height, max_dim);
             backend.surface.configure(&backend.device, &backend.config);
             // Reconfigure resets the surface — clear stale failure counters.
             self.policy
@@ -694,14 +699,20 @@ impl GpuRenderer {
         let cells = prepare_cell_data(terminal, &backend.char_to_slot);
 
         // Grow cell buffer if needed
-        if cell_count > backend.cell_buffer_capacity {
+        let next_capacity = next_cell_buffer_capacity(backend.cell_buffer_capacity, cell_count);
+        if next_capacity != backend.cell_buffer_capacity {
             backend.cell_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("cell-instances"),
-                size: (cell_count * std::mem::size_of::<CellInstance>()) as u64,
+                size: (next_capacity * std::mem::size_of::<CellInstance>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            backend.cell_buffer_capacity = cell_count;
+            backend.cell_bind_group = create_cell_bind_group(
+                &backend.device,
+                &backend.cell_bind_group_layout,
+                &backend.cell_buffer,
+            );
+            backend.cell_buffer_capacity = next_capacity;
         }
 
         // Upload cell data
@@ -729,18 +740,6 @@ impl GpuRenderer {
             0,
             bytemuck::bytes_of(&uniforms),
         );
-
-        // Create cell bind group using cached layout (buffer may have been reallocated)
-        let cell_bind_group = backend
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("cell-bg"),
-                layout: &backend.cell_bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: backend.cell_buffer.as_entire_binding(),
-                }],
-            });
 
         // Acquire surface texture with inline recovery.
         // Outdated/Lost -> reconfigure + retry (no service-layer budget consumed).
@@ -818,7 +817,7 @@ impl GpuRenderer {
             pass.set_pipeline(&backend.pipeline);
             pass.set_bind_group(0, &backend.grid_bind_group, &[]);
             pass.set_bind_group(1, &backend.atlas_bind_group, &[]);
-            pass.set_bind_group(2, &cell_bind_group, &[]);
+            pass.set_bind_group(2, &backend.cell_bind_group, &[]);
             pass.draw(0..6, 0..cell_count as u32);
         }
 
@@ -833,6 +832,38 @@ impl Default for GpuRenderer {
     fn default() -> Self {
         Self::new(SurfaceRecoveryPolicy::default())
     }
+}
+
+fn create_cell_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("cell-bg"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    })
+}
+
+fn next_cell_buffer_capacity(current_capacity: usize, required_capacity: usize) -> usize {
+    if required_capacity <= current_capacity {
+        return current_capacity;
+    }
+
+    let mut capacity = current_capacity.max(1);
+    while capacity < required_capacity {
+        let doubled = capacity.saturating_mul(2);
+        if doubled == capacity {
+            return required_capacity;
+        }
+        capacity = doubled;
+    }
+
+    capacity
 }
 
 // --- Glyph Atlas ---
@@ -1216,6 +1247,59 @@ mod tests {
 
         update_frame_latency_hint(&mut config, 4);
         assert_eq!(config.desired_maximum_frame_latency, 4);
+    }
+
+    #[test]
+    fn update_surface_extent_clamps_requested_extent_to_device_limit() {
+        let mut config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: 1,
+            height: 1,
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
+
+        update_surface_extent(&mut config, 8192, 4096, 2048).expect("extent update");
+        assert_eq!(config.width, 2048);
+        assert_eq!(config.height, 2048);
+    }
+
+    #[test]
+    fn update_surface_extent_rejects_zero_dimensions_before_clamping() {
+        let mut config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: 1,
+            height: 1,
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+        };
+
+        assert_eq!(
+            update_surface_extent(&mut config, 0, 16, 2048),
+            Err(SurfaceConfigurationError::ZeroWidth)
+        );
+        assert_eq!(
+            update_surface_extent(&mut config, 16, 0, 2048),
+            Err(SurfaceConfigurationError::ZeroHeight)
+        );
+    }
+
+    #[test]
+    fn cell_buffer_capacity_growth_is_geometric() {
+        assert_eq!(next_cell_buffer_capacity(3840, 3841), 7680);
+        assert_eq!(next_cell_buffer_capacity(7680, 12000), 15360);
+    }
+
+    #[test]
+    fn cell_buffer_capacity_growth_is_stable_when_current_capacity_is_sufficient() {
+        assert_eq!(next_cell_buffer_capacity(4096, 4096), 4096);
+        assert_eq!(next_cell_buffer_capacity(4096, 1024), 4096);
     }
 
     #[test]

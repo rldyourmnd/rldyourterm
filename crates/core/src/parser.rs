@@ -81,6 +81,9 @@ pub enum ParserAction {
     BracketedPasteMode(bool),
     ApplicationCursorKeys(bool),
     AutoWrapMode(bool),
+    SendPrimaryDA,
+    SendDeviceStatusReport,
+    SendDeviceOk,
     UnsupportedSequence(String),
     IngestDegraded {
         reason: IngestDegradeReason,
@@ -381,6 +384,22 @@ impl Parser {
                     None
                 };
                 Some(ParserAction::SetScrollRegion { top, bottom })
+            }
+            b'c' => {
+                let param = parsed.first().copied().flatten().unwrap_or(0);
+                if param == 0 {
+                    Some(ParserAction::SendPrimaryDA)
+                } else {
+                    None
+                }
+            }
+            b'n' => {
+                let param = parsed.first().copied().flatten()?;
+                match param {
+                    5 => Some(ParserAction::SendDeviceOk),
+                    6 => Some(ParserAction::SendDeviceStatusReport),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -929,5 +948,30 @@ mod tests {
                 ParserAction::AutoWrapMode(false),
             ]
         );
+    }
+
+    #[test]
+    fn parses_primary_da_query() {
+        let mut parser = Parser::default();
+        // \e[c (no params)
+        let actions = parser.feed(b"\x1b[c");
+        assert_eq!(actions, vec![ParserAction::SendPrimaryDA]);
+        // \e[0c (explicit param 0)
+        let actions = parser.feed(b"\x1b[0c");
+        assert_eq!(actions, vec![ParserAction::SendPrimaryDA]);
+    }
+
+    #[test]
+    fn parses_device_status_report() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[6n");
+        assert_eq!(actions, vec![ParserAction::SendDeviceStatusReport]);
+    }
+
+    #[test]
+    fn parses_device_ok_query() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[5n");
+        assert_eq!(actions, vec![ParserAction::SendDeviceOk]);
     }
 }

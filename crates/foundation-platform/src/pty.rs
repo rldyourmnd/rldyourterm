@@ -253,7 +253,10 @@ impl PtyIo for PlatformPtyIo {
 
     fn resize(&self, size: PtySize) -> FoundationResult<()> {
         let mut inner = self.lock_inner(PtyOperation::Resize)?;
-        let _ = Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?;
+        // Skip refresh_exit_state here — it acquires process.child mutex which
+        // the wait_pump thread may hold indefinitely in wait_for_exit (deadlock).
+        // ensure_open checks cached exit_code; if the child exited but the code
+        // is not cached yet, master.resize() will return an IO error instead.
         Self::ensure_open(&inner, PtyOperation::Resize)?;
 
         let normalized = normalize_size(size);
