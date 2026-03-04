@@ -108,7 +108,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match run(cli)? {
         RunOutcome::Harness => Ok(()),
-        RunOutcome::Interactive { exit_code } => std::process::exit(exit_code),
+        RunOutcome::Interactive { exit_code } => std::process::exit(normalize_exit_code(exit_code)),
     }
 }
 
@@ -229,11 +229,27 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             }
         }
     };
+    let normalized_exit_code = normalize_exit_code(exit_code);
     diagnostics.emit_kind(
         EventKind::SessionEnded,
-        format!("interactive runtime exited with code={exit_code}"),
+        format!("interactive runtime exited with code={normalized_exit_code}"),
     );
-    Ok(RunOutcome::Interactive { exit_code })
+    Ok(RunOutcome::Interactive {
+        exit_code: normalized_exit_code,
+    })
+}
+
+fn normalize_exit_code(exit_code: i32) -> i32 {
+    if exit_code < 0 {
+        warn!(
+            raw_exit_code = exit_code,
+            normalized_exit_code = 1,
+            "interactive runtime returned negative or sentinel exit code; normalizing to failure"
+        );
+        1
+    } else {
+        exit_code
+    }
 }
 
 fn resolve_startup_shell(preferred_shell: ShellTarget) -> Result<ShellResolution> {
@@ -822,6 +838,24 @@ fn shell_available_on_path(name: &str) -> bool {
         let shell_exe = path.join(format!("{name}.exe"));
         shell.is_file() || shell_exe.is_file()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_exit_code;
+
+    #[test]
+    fn normalizes_negative_exit_code_to_failure() {
+        assert_eq!(normalize_exit_code(-1), 1);
+        assert_eq!(normalize_exit_code(i32::MIN), 1);
+    }
+
+    #[test]
+    fn preserves_non_negative_exit_codes() {
+        assert_eq!(normalize_exit_code(0), 0);
+        assert_eq!(normalize_exit_code(1), 1);
+        assert_eq!(normalize_exit_code(42), 42);
+    }
 }
 
 mod gui_runtime;

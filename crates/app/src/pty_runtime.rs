@@ -8,6 +8,7 @@ use crossterm::terminal;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::SINGLE_WINDOW_BASELINE;
 use tracing::{info, warn};
 
@@ -16,6 +17,22 @@ const MIN_EVENT_POLL_TIMEOUT_MILLIS: u64 = 1;
 const MAX_EVENT_POLL_TIMEOUT_MILLIS: u64 = 200;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
+const RUNTIME_PALETTE_HELP_LINE: &str =
+    "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
+const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePaletteAction {
+    ApplyCommand(&'static str),
+    ShowInfo,
+    Close,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimePaletteDispatchResult {
+    message: String,
+    updated_mode: Option<RenderMode>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TtyRuntimeConfig {
@@ -116,6 +133,10 @@ pub fn run_interactive_pty(
 
     let _raw_mode_guard = RawModeGuard::new()?;
     let read_pump = spawn_read_pump(reader);
+    let mut settings = SettingsService::default();
+    let _ = settings.apply(SettingsCommand::SetMode(runtime_config.initial_mode));
+    let mut active_mode = settings.state().mode;
+    let mut palette_open = false;
 
     let mut exit_code: Option<i32> = None;
     let mut requested_local_exit = false;
@@ -190,6 +211,50 @@ pub fn run_interactive_pty(
                 if is_local_shutdown_key(key_event) {
                     requested_local_exit = true;
                     break;
+                }
+
+                if is_runtime_palette_shortcut(key_event) {
+                    palette_open = !palette_open;
+                    if palette_open {
+                        write_runtime_palette_line(RUNTIME_PALETTE_HELP_LINE);
+                    } else {
+                        write_runtime_palette_line(RUNTIME_PALETTE_CLOSED_LINE);
+                    }
+                    continue;
+                }
+
+                if palette_open {
+                    if let Some(action) =
+                        runtime_palette_action_for_key_event(key_event, settings.state().debug_mode)
+                    {
+                        match action {
+                            RuntimePaletteAction::Close => {
+                                palette_open = false;
+                                write_runtime_palette_line(RUNTIME_PALETTE_CLOSED_LINE);
+                            }
+                            RuntimePaletteAction::ShowInfo => {
+                                let info_line = runtime_palette_info_line(&settings, active_mode);
+                                write_runtime_palette_line(&info_line);
+                            }
+                            RuntimePaletteAction::ApplyCommand(input) => {
+                                let dispatch =
+                                    dispatch_runtime_palette_command(&mut settings, input);
+                                if let Some(updated_mode) = dispatch.updated_mode {
+                                    active_mode = updated_mode;
+                                    poll_controller =
+                                        EventPollController::from_config(TtyRuntimeConfig {
+                                            initial_mode: active_mode,
+                                            refresh_rate_millihz: runtime_config
+                                                .refresh_rate_millihz,
+                                            window_count: runtime_config.window_count,
+                                        });
+                                }
+                                palette_open = false;
+                                write_runtime_palette_line(&dispatch.message);
+                            }
+                        }
+                    }
+                    continue;
                 }
 
                 if let Some(bytes) = encode_key_event(key_event) {
@@ -378,6 +443,120 @@ fn is_press_like(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
+fn write_runtime_palette_line(line: &str) {
+    let mut stdout = io::stdout();
+    let mut payload = String::from("\r\n");
+    payload.push_str(line);
+    payload.push_str("\r\n");
+    if let Err(error) = write_all_and_flush(&mut stdout, payload.as_bytes()) {
+        warn!(error = %error, "failed to write runtime palette output");
+    }
+}
+
+fn is_runtime_palette_shortcut(key_event: KeyEvent) -> bool {
+    if !key_event.modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+    if !(key_event.modifiers.contains(KeyModifiers::CONTROL)
+        || key_event.modifiers.contains(KeyModifiers::SUPER))
+    {
+        return false;
+    }
+
+    matches!(key_event.code, KeyCode::Char('p') | KeyCode::Char('P'))
+}
+
+fn runtime_palette_action_for_key_event(
+    key_event: KeyEvent,
+    diagnostics_enabled: bool,
+) -> Option<RuntimePaletteAction> {
+    match key_event.code {
+        KeyCode::Esc => Some(RuntimePaletteAction::Close),
+        KeyCode::Char('1') => Some(RuntimePaletteAction::ApplyCommand("mode cpu")),
+        KeyCode::Char('2') => Some(RuntimePaletteAction::ApplyCommand("mode gpu")),
+        KeyCode::Char('3') => Some(RuntimePaletteAction::ApplyCommand("mode auto")),
+        KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&'d') => {
+            if diagnostics_enabled {
+                Some(RuntimePaletteAction::ApplyCommand("debug off"))
+            } else {
+                Some(RuntimePaletteAction::ApplyCommand("debug on"))
+            }
+        }
+        KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&'i') => Some(RuntimePaletteAction::ShowInfo),
+        _ => None,
+    }
+}
+
+fn dispatch_runtime_palette_command(
+    settings: &mut SettingsService,
+    input: &str,
+) -> RuntimePaletteDispatchResult {
+    match settings.apply_palette_command(input) {
+        SettingsPaletteApplyOutcome::Applied {
+            command, current, ..
+        } => runtime_palette_dispatch_result(command, current.mode, current.debug_mode),
+        SettingsPaletteApplyOutcome::Noop { command, state, .. } => {
+            runtime_palette_dispatch_result(command, state.mode, state.debug_mode)
+        }
+        SettingsPaletteApplyOutcome::Rejected { reason, .. } => {
+            warn!(?reason, input = input, "runtime palette command rejected");
+            RuntimePaletteDispatchResult {
+                message: format!("[palette] rejected input={input} reason={reason:?}"),
+                updated_mode: None,
+            }
+        }
+    }
+}
+
+fn runtime_palette_dispatch_result(
+    command: SettingsCommand,
+    mode: RenderMode,
+    diagnostics_enabled: bool,
+) -> RuntimePaletteDispatchResult {
+    match command {
+        SettingsCommand::SetMode(_) => RuntimePaletteDispatchResult {
+            message: format!(
+                "[palette] mode={} diagnostics={}",
+                render_mode_token(mode),
+                on_off_token(diagnostics_enabled),
+            ),
+            updated_mode: Some(mode),
+        },
+        SettingsCommand::SetDebugMode(_) => RuntimePaletteDispatchResult {
+            message: format!(
+                "[palette] diagnostics={} mode={}",
+                on_off_token(diagnostics_enabled),
+                render_mode_token(mode),
+            ),
+            updated_mode: None,
+        },
+        _ => RuntimePaletteDispatchResult {
+            message: format!("[palette] command-applied input={command:?}"),
+            updated_mode: None,
+        },
+    }
+}
+
+fn runtime_palette_info_line(settings: &SettingsService, active_mode: RenderMode) -> String {
+    format!(
+        "[palette] info mode={} diagnostics={}",
+        render_mode_token(active_mode),
+        on_off_token(settings.state().debug_mode),
+    )
+}
+
+fn render_mode_token(mode: RenderMode) -> &'static str {
+    match mode {
+        RenderMode::Cpu => "cpu",
+        RenderMode::Gpu => "gpu",
+        RenderMode::Auto => "auto",
+    }
+}
+
+fn on_off_token(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
 fn is_local_shutdown_key(key_event: KeyEvent) -> bool {
     key_event.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key_event.code, KeyCode::Char('q') | KeyCode::Char('Q'))
@@ -416,11 +595,12 @@ fn encode_ctrl_letter(ch: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_poll_timeouts, encode_ctrl_letter, encode_key_event, ensure_single_window,
-        frame_budget_millis,
+        derive_poll_timeouts, dispatch_runtime_palette_command, encode_ctrl_letter,
+        encode_key_event, ensure_single_window, frame_budget_millis, is_runtime_palette_shortcut,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
+    use rldyourterm_settings::SettingsService;
 
     #[test]
     fn encodes_basic_control_keys() {
@@ -520,5 +700,45 @@ mod tests {
     #[test]
     fn falls_back_to_default_refresh_for_zero_hint() {
         assert_eq!(frame_budget_millis(0), frame_budget_millis(60_000));
+    }
+
+    #[test]
+    fn detects_palette_shortcut_with_ctrl_or_super_shift_p() {
+        assert!(is_runtime_palette_shortcut(KeyEvent::new(
+            KeyCode::Char('P'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(is_runtime_palette_shortcut(KeyEvent::new(
+            KeyCode::Char('P'),
+            KeyModifiers::SUPER | KeyModifiers::SHIFT
+        )));
+        assert!(!is_runtime_palette_shortcut(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL
+        )));
+    }
+
+    #[test]
+    fn palette_dispatch_updates_mode_state() {
+        let mut settings = SettingsService::default();
+
+        let result = dispatch_runtime_palette_command(&mut settings, "mode gpu");
+
+        assert_eq!(result.updated_mode, Some(RenderMode::Gpu));
+        assert_eq!(settings.state().mode, RenderMode::Gpu);
+        assert!(result.message.contains("mode=gpu"));
+    }
+
+    #[test]
+    fn palette_dispatch_toggles_diagnostics_state() {
+        let mut settings = SettingsService::default();
+
+        let on_result = dispatch_runtime_palette_command(&mut settings, "debug on");
+        assert!(settings.state().debug_mode);
+        assert!(on_result.message.contains("diagnostics=on"));
+
+        let off_result = dispatch_runtime_palette_command(&mut settings, "debug off");
+        assert!(!settings.state().debug_mode);
+        assert!(off_result.message.contains("diagnostics=off"));
     }
 }
