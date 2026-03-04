@@ -1,7 +1,45 @@
 use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 
 const MAX_CSI_LEN: usize = 64;
+const MAX_OSC_LEN: usize = 512;
 const REPLACEMENT_CHAR: char = '\u{FFFD}';
+
+pub const MAX_SGR_PARAMS: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SgrParams {
+    params: [Option<u16>; MAX_SGR_PARAMS],
+    len: u8,
+}
+
+impl SgrParams {
+    pub fn from_slice(slice: &[Option<u16>]) -> Self {
+        let mut params = [None; MAX_SGR_PARAMS];
+        let len = slice.len().min(MAX_SGR_PARAMS);
+        params[..len].copy_from_slice(&slice[..len]);
+        Self {
+            params,
+            len: len as u8,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Option<u16>] {
+        &self.params[..self.len as usize]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Default for SgrParams {
+    fn default() -> Self {
+        Self {
+            params: [None; MAX_SGR_PARAMS],
+            len: 0,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParserAction {
@@ -10,6 +48,7 @@ pub enum ParserAction {
     CarriageReturn,
     Bell,
     Backspace,
+    Tab,
     CursorUp(u16),
     CursorDown(u16),
     CursorForward(u16),
@@ -18,8 +57,30 @@ pub enum ParserAction {
         row: u16,
         col: u16,
     },
+    CursorHorizontalAbsolute(u16),
     ClearDisplay(DisplayClearMode),
     ClearLine(LineClearMode),
+    SetGraphicsRendition(SgrParams),
+    CursorSavePosition,
+    CursorRestorePosition,
+    SetCursorVisible(bool),
+    AlternateScreenEnter,
+    AlternateScreenLeave,
+    InsertLines(u16),
+    DeleteLines(u16),
+    ScrollUp(u16),
+    ScrollDown(u16),
+    EraseCharacters(u16),
+    InsertCharacters(u16),
+    DeleteCharacters(u16),
+    SetScrollRegion {
+        top: u16,
+        bottom: Option<u16>,
+    },
+    SetWindowTitle(String),
+    BracketedPasteMode(bool),
+    ApplicationCursorKeys(bool),
+    AutoWrapMode(bool),
     UnsupportedSequence(String),
     IngestDegraded {
         reason: IngestDegradeReason,
@@ -35,6 +96,9 @@ enum ParseState {
     Escape,
     Csi,
     CsiDiscard,
+    Osc,
+    OscDiscard,
+    OscEsc,
 }
 
 #[derive(Debug, Default)]
@@ -43,6 +107,7 @@ pub struct Parser {
     text_buffer: Vec<u8>,
     csi_buffer: Vec<u8>,
     csi_dropped: usize,
+    osc_buffer: Vec<u8>,
 }
 
 impl Parser {
@@ -54,6 +119,9 @@ impl Parser {
                 ParseState::Escape => self.handle_escape_byte(byte, &mut actions),
                 ParseState::Csi => self.handle_csi_byte(byte, &mut actions),
                 ParseState::CsiDiscard => self.handle_csi_discard_byte(byte, &mut actions),
+                ParseState::Osc => self.handle_osc_byte(byte, &mut actions),
+                ParseState::OscDiscard => self.handle_osc_discard_byte(byte, &mut actions),
+                ParseState::OscEsc => self.handle_osc_esc_byte(byte, &mut actions),
             }
         }
         self.flush_text_buffer(&mut actions, true);
@@ -77,6 +145,9 @@ impl Parser {
                 ));
             }
             ParseState::CsiDiscard => self.emit_oversized_csi(&mut actions),
+            ParseState::Osc | ParseState::OscDiscard | ParseState::OscEsc => {
+                // Discard incomplete OSC
+            }
         }
 
         self.reset_state_to_ground();
@@ -105,9 +176,11 @@ impl Parser {
                 self.flush_text_buffer(actions, false);
                 actions.push(ParserAction::Backspace);
             }
+            0x09 => {
+                self.flush_text_buffer(actions, false);
+                actions.push(ParserAction::Tab);
+            }
             0x00..=0x1F | 0x7F => {
-                // Unsupported control bytes are ignored by design, but still
-                // terminate any pending UTF-8 run deterministically.
                 self.flush_text_buffer(actions, false);
             }
             _ => self.text_buffer.push(byte),
@@ -120,6 +193,18 @@ impl Parser {
                 self.csi_buffer.clear();
                 self.csi_dropped = 0;
                 self.state = ParseState::Csi;
+            }
+            b']' => {
+                self.osc_buffer.clear();
+                self.state = ParseState::Osc;
+            }
+            b'7' => {
+                actions.push(ParserAction::CursorSavePosition);
+                self.state = ParseState::Ground;
+            }
+            b'8' => {
+                actions.push(ParserAction::CursorRestorePosition);
+                self.state = ParseState::Ground;
             }
             _ => {
                 let raw = [0x1B, byte];
@@ -158,6 +243,55 @@ impl Parser {
         }
     }
 
+    fn handle_osc_byte(&mut self, byte: u8, actions: &mut Vec<ParserAction>) {
+        match byte {
+            0x07 => {
+                // BEL terminates OSC
+                self.complete_osc(actions);
+            }
+            0x1B => {
+                // Potential ST (ESC \) - transition to intermediate state
+                self.state = ParseState::OscEsc;
+            }
+            _ => {
+                if self.osc_buffer.len() < MAX_OSC_LEN {
+                    self.osc_buffer.push(byte);
+                } else {
+                    self.state = ParseState::OscDiscard;
+                }
+            }
+        }
+    }
+
+    fn handle_osc_discard_byte(&mut self, byte: u8, _actions: &mut Vec<ParserAction>) {
+        match byte {
+            0x07 => self.reset_state_to_ground(),
+            0x1B => self.state = ParseState::OscEsc,
+            _ => {}
+        }
+    }
+
+    fn handle_osc_esc_byte(&mut self, byte: u8, actions: &mut Vec<ParserAction>) {
+        if byte == b'\\' {
+            // ST complete (ESC \)
+            self.complete_osc(actions);
+        } else {
+            // Bare ESC inside OSC - complete OSC, re-process byte as new escape sequence
+            self.complete_osc(actions);
+            // The byte following ESC could start a new sequence
+            self.state = ParseState::Escape;
+            self.handle_escape_byte(byte, actions);
+        }
+    }
+
+    fn complete_osc(&mut self, actions: &mut Vec<ParserAction>) {
+        let raw = String::from_utf8_lossy(&self.osc_buffer).into_owned();
+        if let Some(action) = parse_osc(&raw) {
+            actions.push(action);
+        }
+        self.reset_state_to_ground();
+    }
+
     fn complete_csi(&mut self, actions: &mut Vec<ParserAction>) {
         let action = self.parse_csi_action().unwrap_or_else(|| {
             ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
@@ -180,11 +314,20 @@ impl Parser {
         self.state = ParseState::Ground;
         self.csi_buffer.clear();
         self.csi_dropped = 0;
+        self.osc_buffer.clear();
     }
 
     fn parse_csi_action(&self) -> Option<ParserAction> {
-        let (&final_byte, params) = self.csi_buffer.split_last()?;
-        let parsed = parse_params(params).ok()?;
+        let (&final_byte, params_raw) = self.csi_buffer.split_last()?;
+
+        // Check for private mode prefix '?'
+        if let Some((&first, rest)) = params_raw.split_first() {
+            if first == b'?' {
+                return self.parse_private_csi_action(rest, final_byte);
+            }
+        }
+
+        let parsed = parse_params(params_raw).ok()?;
 
         match final_byte {
             b'A' => Some(ParserAction::CursorUp(step_param(&parsed))),
@@ -195,6 +338,10 @@ impl Parser {
                 let row = position_param(&parsed, 0);
                 let col = position_param(&parsed, 1);
                 Some(ParserAction::CursorPosition { row, col })
+            }
+            b'G' => {
+                let col = position_param(&parsed, 0);
+                Some(ParserAction::CursorHorizontalAbsolute(col))
             }
             b'J' => {
                 let mode = mode_param(&parsed)?;
@@ -214,6 +361,46 @@ impl Parser {
                     _ => return None,
                 }))
             }
+            b'm' => Some(ParserAction::SetGraphicsRendition(SgrParams::from_slice(
+                &parsed,
+            ))),
+            b's' => Some(ParserAction::CursorSavePosition),
+            b'u' => Some(ParserAction::CursorRestorePosition),
+            b'L' => Some(ParserAction::InsertLines(step_param(&parsed))),
+            b'M' => Some(ParserAction::DeleteLines(step_param(&parsed))),
+            b'S' => Some(ParserAction::ScrollUp(step_param(&parsed))),
+            b'T' => Some(ParserAction::ScrollDown(step_param(&parsed))),
+            b'X' => Some(ParserAction::EraseCharacters(step_param(&parsed))),
+            b'@' => Some(ParserAction::InsertCharacters(step_param(&parsed))),
+            b'P' => Some(ParserAction::DeleteCharacters(step_param(&parsed))),
+            b'r' => {
+                let top = position_param(&parsed, 0);
+                let bottom = if parsed.len() >= 2 {
+                    Some(position_param(&parsed, 1))
+                } else {
+                    None
+                };
+                Some(ParserAction::SetScrollRegion { top, bottom })
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_private_csi_action(&self, params_raw: &[u8], final_byte: u8) -> Option<ParserAction> {
+        let parsed = parse_params(params_raw).ok()?;
+        let mode = parsed.first().copied().flatten()?;
+
+        match (mode, final_byte) {
+            (1, b'h') => Some(ParserAction::ApplicationCursorKeys(true)),
+            (1, b'l') => Some(ParserAction::ApplicationCursorKeys(false)),
+            (7, b'h') => Some(ParserAction::AutoWrapMode(true)),
+            (7, b'l') => Some(ParserAction::AutoWrapMode(false)),
+            (25, b'h') => Some(ParserAction::SetCursorVisible(true)),
+            (25, b'l') => Some(ParserAction::SetCursorVisible(false)),
+            (1049, b'h') => Some(ParserAction::AlternateScreenEnter),
+            (1049, b'l') => Some(ParserAction::AlternateScreenLeave),
+            (2004, b'h') => Some(ParserAction::BracketedPasteMode(true)),
+            (2004, b'l') => Some(ParserAction::BracketedPasteMode(false)),
             _ => None,
         }
     }
@@ -283,6 +470,15 @@ impl Parser {
     }
 }
 
+fn parse_osc(raw: &str) -> Option<ParserAction> {
+    let (code_str, payload) = raw.split_once(';')?;
+    let code: u16 = code_str.parse().ok()?;
+    match code {
+        0 | 2 => Some(ParserAction::SetWindowTitle(payload.to_string())),
+        _ => None,
+    }
+}
+
 fn parse_params(input: &[u8]) -> Result<Vec<Option<u16>>, ()> {
     if input.is_empty() {
         return Ok(Vec::new());
@@ -340,7 +536,7 @@ const fn is_csi_final_byte(byte: u8) -> bool {
 mod tests {
     use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 
-    use super::{MAX_CSI_LEN, Parser, ParserAction};
+    use super::{MAX_CSI_LEN, Parser, ParserAction, SgrParams};
 
     #[test]
     fn parses_printable_and_basic_controls() {
@@ -408,13 +604,184 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_unsupported_sequences_are_reported() {
+    fn parses_cursor_visibility() {
         let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?25l\x1b[?25h");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::SetCursorVisible(false),
+                ParserAction::SetCursorVisible(true),
+            ]
+        );
+    }
 
-        let actions = parser.feed(b"\x1b[?25l\x1bP");
-        assert_eq!(actions.len(), 2);
-        assert!(matches!(actions[0], ParserAction::UnsupportedSequence(_)));
-        assert!(matches!(actions[1], ParserAction::UnsupportedSequence(_)));
+    #[test]
+    fn parses_alternate_screen() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?1049h\x1b[?1049l");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::AlternateScreenEnter,
+                ParserAction::AlternateScreenLeave,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_sgr_reset() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[0m");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetGraphicsRendition(SgrParams::from_slice(
+                &[Some(0)]
+            ))]
+        );
+    }
+
+    #[test]
+    fn parses_sgr_bold_red() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[1;31m");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetGraphicsRendition(SgrParams::from_slice(
+                &[Some(1), Some(31)]
+            ))]
+        );
+    }
+
+    #[test]
+    fn parses_sgr_256_color() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[38;5;196m");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetGraphicsRendition(SgrParams::from_slice(
+                &[Some(38), Some(5), Some(196),]
+            ))]
+        );
+    }
+
+    #[test]
+    fn parses_sgr_truecolor() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[38;2;255;128;0m");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetGraphicsRendition(SgrParams::from_slice(
+                &[Some(38), Some(2), Some(255), Some(128), Some(0),]
+            ))]
+        );
+    }
+
+    #[test]
+    fn parses_tab() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\t");
+        assert_eq!(actions, vec![ParserAction::Tab]);
+    }
+
+    #[test]
+    fn parses_cursor_save_restore_esc() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b7\x1b8");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::CursorSavePosition,
+                ParserAction::CursorRestorePosition,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_cursor_save_restore_csi() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[s\x1b[u");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::CursorSavePosition,
+                ParserAction::CursorRestorePosition,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_osc_window_title() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b]0;Hello World\x07");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetWindowTitle("Hello World".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_osc_title_code_2() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b]2;Title\x07");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetWindowTitle("Title".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_csi_horizontal_absolute() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[10G");
+        assert_eq!(actions, vec![ParserAction::CursorHorizontalAbsolute(9)]);
+    }
+
+    #[test]
+    fn parses_insert_delete_lines() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[3L\x1b[2M");
+        assert_eq!(
+            actions,
+            vec![ParserAction::InsertLines(3), ParserAction::DeleteLines(2)]
+        );
+    }
+
+    #[test]
+    fn parses_scroll_up_down() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[5S\x1b[3T");
+        assert_eq!(
+            actions,
+            vec![ParserAction::ScrollUp(5), ParserAction::ScrollDown(3)]
+        );
+    }
+
+    #[test]
+    fn parses_erase_insert_delete_chars() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[4X\x1b[2@\x1b[3P");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::EraseCharacters(4),
+                ParserAction::InsertCharacters(2),
+                ParserAction::DeleteCharacters(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_scroll_region() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[5;20r");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetScrollRegion {
+                top: 4,
+                bottom: Some(19)
+            }]
+        );
     }
 
     #[test]
@@ -462,5 +829,105 @@ mod tests {
             vec![ParserAction::Print('\u{FFFD}')]
         );
         assert_eq!(parser.feed(b"B"), vec![ParserAction::Print('B')]);
+    }
+
+    #[test]
+    fn unknown_private_mode_is_unsupported() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?9999h");
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], ParserAction::UnsupportedSequence(_)));
+    }
+
+    #[test]
+    fn oversized_osc_is_discarded() {
+        let mut parser = Parser::default();
+        let mut payload = vec![0x1B, b']', b'0', b';'];
+        payload.extend(std::iter::repeat_n(b'X', 600));
+        payload.push(0x07);
+        let actions = parser.feed(&payload);
+        // Should not crash; OSC was too long and discarded
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn sgr_bare_m_means_reset() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[m");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetGraphicsRendition(SgrParams::default())]
+        );
+    }
+
+    #[test]
+    fn osc_st_terminator_no_stray_backslash() {
+        let mut parser = Parser::default();
+        // OSC title with ST terminator (ESC \)
+        let actions = parser.feed(b"\x1b]0;Title\x1b\\");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetWindowTitle("Title".to_string())]
+        );
+        // No Print('\\') should appear
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::Print('\\')))
+        );
+    }
+
+    #[test]
+    fn osc_st_followed_by_normal_text() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b]0;Hello\x1b\\ABC");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::SetWindowTitle("Hello".to_string()),
+                ParserAction::Print('A'),
+                ParserAction::Print('B'),
+                ParserAction::Print('C'),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_bracketed_paste_mode() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?2004h\x1b[?2004l");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::BracketedPasteMode(true),
+                ParserAction::BracketedPasteMode(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_application_cursor_keys() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?1h\x1b[?1l");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::ApplicationCursorKeys(true),
+                ParserAction::ApplicationCursorKeys(false),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_auto_wrap_mode() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?7h\x1b[?7l");
+        assert_eq!(
+            actions,
+            vec![
+                ParserAction::AutoWrapMode(true),
+                ParserAction::AutoWrapMode(false),
+            ]
+        );
     }
 }
