@@ -545,3 +545,17 @@ impl From<FoundationError> for RuntimeError {
         value.to_runtime_error()
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuFailureKind {
+    DeviceLost,
+    SurfaceError,
+    SubmitError,
+    SwapchainOutOfDate,
+}
+
+impl GpuFailureKind {
+    pub fn is_immediate_fallback(self) -> bool {
+        matches!(self, Self::DeviceLost)
+    }
+}
