@@ -1,4 +1,5 @@
 use crate::cursor::Cursor;
+use crate::grid::Attrs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestDegradeReason {
@@ -26,6 +27,7 @@ pub enum CoreEvent {
         row: u16,
         col: u16,
         ch: char,
+        attrs: Attrs,
     },
     CursorMoved {
         from: Cursor,
@@ -48,6 +50,14 @@ pub enum CoreEvent {
         mode: LineClearMode,
     },
     Bell,
+    CursorVisibilityChanged {
+        visible: bool,
+    },
+    AlternateScreenEntered,
+    AlternateScreenLeft,
+    WindowTitleChanged {
+        title: String,
+    },
     UnsupportedSequenceIgnored {
         sequence: String,
     },
