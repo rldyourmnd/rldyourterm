@@ -398,18 +398,15 @@ fn handle_pty_io_failure(
     error_context: &'static str,
 ) -> Result<Option<i32>> {
     if is_disconnect_error(&error) {
-        match pty
+        if let Some(code) = pty
             .try_wait()
             .context("failed to poll PTY after disconnecting I/O failure")?
         {
-            Some(code) => {
-                info!(
-                    boundary = session_boundary_token(boundary),
-                    code, "PTY child already exited after disconnecting I/O failure"
-                );
-                return Ok(Some(code));
-            }
-            None => {}
+            info!(
+                boundary = session_boundary_token(boundary),
+                code, "PTY child already exited after disconnecting I/O failure"
+            );
+            return Ok(Some(code));
         }
     }
 
@@ -512,7 +509,7 @@ fn frame_budget_millis(refresh_rate_millihz: u32) -> u64 {
     };
 
     let frame_nanos = 1_000_000_000_000_u64 / u64::from(sanitized_refresh_rate);
-    let rounded_up_millis = (frame_nanos + 999_999) / 1_000_000;
+    let rounded_up_millis = frame_nanos.div_ceil(1_000_000);
     rounded_up_millis.max(1)
 }
 
@@ -553,7 +550,10 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(error) => {
+                    eprintln!("PTY read error: {error}");
+                    break;
+                }
             }
         }
     })
