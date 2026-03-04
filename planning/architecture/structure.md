@@ -1,104 +1,71 @@
-# VSA Architecture Notes (Prod-Ready Baseline, v1.0 target)
+# VSA Architecture Notes (Implementation Sync, v1.0)
 
 ## 1) Core principle
 
-Проект строится как production-ready, но сжатый к v1.0, каркас с четкими границами и отказоустойчивым fallback:
+Проект остается VSA-ориентированным с жесткими границами ответственности:
 
-- foundation — platform ports.
-- core — терминальная модель без платформенных зависимостей.
-- services — orchestration и отказоустойчивость.
-- features — capabilities поверх services.
-- ui — рендер/interaction слой.
-- app — CLI, запуск, lifecycle и сборка.
+- `foundation` — platform contracts + boundary error model.
+- `core` — терминальная доменная модель без OS API.
+- `services` — orchestration/recovery/pacing policy.
+- `features` — модульные runtime capabilities.
+- `ui` — визуальное поведение поверх сервисных контрактов.
+- `app` — bootstrap, CLI, runtime assembly.
 
-## 2) Target crate graph (planned workspace layout)
+## 2) Current workspace crate map (as implemented on 2026-03-04)
 
 ```text
 crates/
   app/
+  core/
+  services/
   ui/
+  foundation/
+  foundation-platform/
   features/
     render_cpu/
     render_gpu/
     settings/
     shell_integration/
     diagnostics/
-  services/
-  core/
-  foundation/
-    api/
-    pty/
-    window/
-    clipboard/
-    logging/
-  foundation-platform/
-    linux/
-    macos/
-    windows/
 ```
 
-Dependency direction must be strict:
-`app -> features -> services -> core`
+## 3) Layer ownership map (implementation-aligned)
 
-`foundation` подключается только через API-трейт-границы из `foundation/api`.
+- `foundation`:
+  - `crates/foundation` — traits/contracts/types/errors.
+  - `crates/foundation-platform` — platform implementations (`pty`, `window`, `clipboard`).
+- `core`: `crates/core`.
+- `services`: `crates/services` (depends on `core` + `foundation` contracts).
+- `features`: `crates/features/*` (settings/render/shell/diagnostics capabilities).
+- `ui`: `crates/ui` (runtime command handling and state transitions over services).
+- `app`: `crates/app` (CLI + GUI/TTY runtime wiring).
 
-## 3) Cross-platform split (prod-ready)
+## 4) Current dependency graph (observed in crate manifests)
 
-```text
-foundation/
-  api/
-    session.rs
-    window.rs
-    clipboard.rs
-    telemetry.rs
-  pty/
-    mod.rs
-    adapter.rs
-    error.rs
-  window/
-    mod.rs
-    event_translation.rs
-    state.rs
-  clipboard/
-    mod.rs
-```
+- `services -> {core, foundation}`
+- `ui -> services`
+- `features/settings -> services` (other feature crates are feature-local and/or snapshot consumers)
+- `app -> {ui, services, core, foundation, foundation-platform, features/*}`
 
-```text
-foundation-platform/
-  linux/
-    pty/
-    window/
-    env/
-  macos/
-    pty/
-    window/
-    env/
-  windows/
-    pty/
-    window/
-    env/
-```
+Normative target from `AGENTS.md` remains:
 
-OS-platform crates are adapter implementations only; they should be optional behind cargo target features.
+- inward flow: `app -> features -> services -> core`
+- foundation integration via explicit `foundation/api` trait boundaries.
 
-## 4) Data and event contracts (high-level)
+Current drift that must stay explicit:
 
-- `GridModel` in core stores screen matrix, style, cursor and dirty regions.
-- `InputEvent`, `PtyEvent`, `WindowEvent`, `RenderModeEvent`, `SettingsEvent` are domain events in services.
-- `WindowEvent` должен содержать сигнал о смене monitor timing, чтобы services могли пересчитать cadence без hardcoded fps.
-- `DiagnosticsEvent` is canonical telemetry envelope with stable `event_id`, severity and correlation ids.
-- `SettingsPatch` applies by transaction with rollback on validation failure.
+- direct `app -> core` and `app -> foundation` dependencies remain in runtime bootstrap paths.
+- window ownership drift is closed: app runtime window lifecycle goes through foundation window contracts.
 
-## 5) Stability and recovery boundaries
+## 5) Foundation adapter runtime status (W3 ownership sync)
 
-- Не допускается падение core-состояния из-за ошибок adapt-слоёв.
-- Ошибка адаптера должна нормализоваться в `DomainError` и обработаться в services.
-- Для каждой failure-path выполняется одна из стратегий: retry, degrade, controlled stop.
+- `foundation-platform::pty` is runtime-wired in GUI/TTY flows.
+- `foundation-platform::clipboard` is runtime-wired in app path.
+- `foundation-platform::window` is runtime-wired via `WindowFactory/WindowControl`.
+- GUI runtime avoids direct app-owned `window.request_redraw`, `window.set_title`, `window.current_monitor` control path.
 
-## 6) Почему это production-ready
+Closure evidence for `G-010`:
 
-- Явные границы ownership и resource lifecycle для writer/reader/child.
-- Отдельный render decision service, чтобы не смешивать UI и сессию.
-- Отдельная monitor-driven cadence логика в services, чтобы не смешивать UI, window API и scheduler policy.
-- Предсказуемый `gpu -> cpu` переход и явный журнал событий.
-- План развития OS-спец. адаптеров не ломает core-сигнатуры.
+1. App runtimes instantiate and control window lifecycle via `foundation/api::window::{WindowFactory, WindowControl}`.
+2. Monitor timing for cadence resync is sourced from foundation window contract/events.
+3. Existing behavior parity remains intact: single-window enforcement, palette shortcuts flow, GPU fallback observability, monitor-transfer cadence re-sync.

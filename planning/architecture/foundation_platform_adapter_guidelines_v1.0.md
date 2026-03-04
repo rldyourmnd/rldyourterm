@@ -5,6 +5,13 @@
 i) Защитить domain-слои от платформенной нестабильности.
 ii) Обеспечить одинаковую семантику поведения PTY/окна/clipboard/диагностики на Linux/macOS и скелетно на Windows.
 
+## Текущий implementation-status (2026-03-04)
+
+- `foundation-platform` реализован как единый crate (`crates/foundation-platform`) с модулями `pty`, `window`, `clipboard`.
+- PTY adapter используется в app runtime.
+- Clipboard adapter используется в app runtime path.
+- Window adapter используется как primary app runtime window lifecycle path (`G-010` closed).
+
 ## 1) OS-specific hard rules
 
 ### Linux

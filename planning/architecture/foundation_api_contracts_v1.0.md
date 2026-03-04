@@ -4,6 +4,12 @@
 
 Документ задает строгие интерфейсы для слоя `foundation/api` и их ожидаемое поведение при интеграции с `core/services/features/ui` в v1.0.
 
+Implementation status note (2026-03-04):
+- PTY contract path is runtime-wired.
+- Clipboard contract path is runtime-wired in app.
+- Window contract path is runtime-wired in app through `WindowFactory/WindowControl` (`G-010` closed).
+- Cadence timing path is sourced through foundation window contract signals (`current_monitor_timing` and `DisplayRefreshChanged` path).
+
 ## 1) Общие положения
 
 - Все внешние зависимости (PTY, window system, GPU backend, clipboard, tracing sink и т.д.) подключаются только через `foundation/api` traits.
@@ -248,8 +254,8 @@ pub trait ClipboardAdapter: Send + Sync {
 - `PtyIo::take_reader` -> отдельный поток/задача для чтения.
 - ошибки -> `RuntimeError{recoverable,...}`.
 
-### 8.2 services/settings contract
-- UI commands from palette -> `SettingsPatch` в `services/settings`.
+### 8.2 features/settings integration contract
+- UI commands from palette -> `SettingsCommand`/state transition в `features/settings` (`SettingsService`).
 - любые изменения валидируются до применения в core/state.
 - invalid -> транзакционный rollback и event emit with reason.
 
