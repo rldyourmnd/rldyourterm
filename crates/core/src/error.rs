@@ -11,6 +11,4 @@ pub enum CoreError {
         width: u16,
         height: u16,
     },
-    #[error("unsupported escape sequence: {sequence}")]
-    UnsupportedSequence { sequence: String },
 }
