@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, ValueEnum};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
+use rldyourterm_foundation_platform::clipboard::PlatformClipboard;
 use rldyourterm_render_cpu::CpuRenderer;
 use rldyourterm_services::render_mode::{
     ActiveRenderPath, GpuFailureKind, RenderMode, RenderTransitionReason,
@@ -23,6 +27,17 @@ const DEFAULT_REFRESH_RATE_MILLIHZ: u32 = 60_000;
 const HIGH_REFRESH_RATE_MILLIHZ: u32 = 144_000;
 const MVP_STEP_LABEL: &str = "MVP_STEP";
 const MVP_RESULT_LABEL: &str = "MVP_RESULT";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum LogLevelArg {
+    /// Info-level logging, clean output (default)
+    #[default]
+    Standard,
+    /// Debug-level with module targets, file:line, thread names
+    Debug,
+    /// Maximum verbosity including wgpu/winit internals
+    Trace,
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ModeArg {
@@ -94,6 +109,8 @@ struct Cli {
     mvp_repeat: u16,
     #[arg(long, default_value_t = false)]
     tty: bool,
+    #[arg(long, value_enum, default_value = "standard")]
+    log_level: LogLevelArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,21 +120,31 @@ enum RunOutcome {
 }
 
 fn main() -> Result<()> {
-    init_tracing();
     let cli = Cli::parse();
+    init_tracing(cli.log_level);
     match run(cli)? {
         RunOutcome::Harness => Ok(()),
         RunOutcome::Interactive { exit_code } => std::process::exit(normalize_exit_code(exit_code)),
     }
 }
 
-fn init_tracing() {
+fn init_tracing(level: LogLevelArg) {
+    let (default_filter, show_target, show_thread) = match level {
+        LogLevelArg::Standard => ("info", false, false),
+        LogLevelArg::Debug => ("debug", true, true),
+        LogLevelArg::Trace => ("trace", true, true),
+    };
+    let show_loc = level != LogLevelArg::Standard;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
+        .with_env_filter(env_filter)
+        .with_target(show_target)
+        .with_thread_names(show_thread)
+        .with_file(show_loc)
+        .with_line_number(show_loc)
         .try_init();
 }
 
@@ -198,12 +225,14 @@ fn run(cli: Cli) -> Result<RunOutcome> {
         )
         .context("failed to run TTY interactive runtime")?
     } else {
+        let clipboard: Arc<dyn ClipboardAdapter> = Arc::new(PlatformClipboard::default());
         match gui_runtime::run_interactive_gui_pty(
             &launch_plan.executable,
             &launch_plan.args,
             render_mode,
             cli.refresh_rate_millihz,
             cli.window_count,
+            clipboard,
         ) {
             Ok(code) => code,
             Err(error) => {

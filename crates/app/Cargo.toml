@@ -24,4 +24,4 @@ rldyourterm-settings = { path = "../features/settings" }
 rldyourterm-shell-integration = { path = "../features/shell_integration" }
 rldyourterm-core = { path = "../core" }
 rldyourterm-diagnostics = { path = "../features/diagnostics" }
-arboard.workspace = true
+image.workspace = true

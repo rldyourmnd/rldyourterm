@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=rldyourterm
+Comment=AI-optimized terminal emulator
+Exec=rldyourterm-app --mode auto --shell fish --window-count 1
+Icon=rldyourterm
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=rldyourterm
+StartupNotify=true
