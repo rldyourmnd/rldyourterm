@@ -12,6 +12,7 @@ use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfi
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use tracing::{info, warn};
@@ -40,6 +41,9 @@ const TAB_WIDTH: usize = 4;
 
 const COLOR_BG: u32 = 0x0014_1b1f;
 const COLOR_FG: u32 = 0x00d8_d8d8;
+const RUNTIME_PALETTE_HELP_LINE: &str =
+    "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
+const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
 
 #[derive(Debug)]
 enum GuiEvent {
@@ -61,6 +65,13 @@ enum GpuFailureHandling {
     },
     FatalForcedGpu,
     Ignored,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePaletteAction {
+    ApplyCommand(&'static str),
+    ShowInfo,
+    Close,
 }
 
 fn dispatch_gpu_failure_command(
@@ -263,7 +274,9 @@ struct GuiRuntimeApp {
     surface: Option<SoftbufferSurface<Rc<Window>, Rc<Window>>>,
     window_size: PhysicalSize<u32>,
     terminal: TerminalBuffer,
+    settings: SettingsService,
     modifiers: ModifiersState,
+    palette_open: bool,
     redraw_pending: bool,
 
     exit_code: Option<i32>,
@@ -306,7 +319,9 @@ impl GuiRuntimeApp {
             surface: None,
             window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
             terminal: TerminalBuffer::new(MAX_SCROLLBACK_LINES),
+            settings: SettingsService::default(),
             modifiers: ModifiersState::default(),
+            palette_open: false,
             redraw_pending: true,
             exit_code: None,
             fatal_error: None,
@@ -393,6 +408,58 @@ impl GuiRuntimeApp {
         self.redraw_pending = true;
     }
 
+    fn emit_runtime_notice(&mut self, message: &str) {
+        let mut line = String::from("\r\n");
+        line.push_str(message);
+        line.push_str("\r\n");
+        self.terminal.push_bytes(line.as_bytes());
+        self.queue_redraw();
+    }
+
+    fn toggle_palette(&mut self) {
+        self.palette_open = !self.palette_open;
+        if self.palette_open {
+            self.emit_runtime_notice(RUNTIME_PALETTE_HELP_LINE);
+        } else {
+            self.emit_runtime_notice(RUNTIME_PALETTE_CLOSED_LINE);
+        }
+    }
+
+    fn handle_palette_action(&mut self, event: &WinitKeyEvent) -> Result<bool> {
+        if !self.palette_open {
+            return Ok(false);
+        }
+
+        let Some(action) = runtime_palette_action_for_winit_key(
+            event.logical_key.as_ref(),
+            self.settings.state().debug_mode,
+        ) else {
+            return Ok(true);
+        };
+
+        match action {
+            RuntimePaletteAction::Close => {
+                self.palette_open = false;
+                self.emit_runtime_notice(RUNTIME_PALETTE_CLOSED_LINE);
+            }
+            RuntimePaletteAction::ShowInfo => {
+                let info_line = runtime_palette_info_line(&self.ui_runtime, &self.settings);
+                self.emit_runtime_notice(&info_line);
+            }
+            RuntimePaletteAction::ApplyCommand(command) => {
+                let result_line = dispatch_runtime_palette_command(
+                    &mut self.ui_runtime,
+                    &mut self.settings,
+                    command,
+                )?;
+                self.palette_open = false;
+                self.emit_runtime_notice(&result_line);
+            }
+        }
+
+        Ok(true)
+    }
+
     fn request_redraw_if_needed(&mut self) {
         if !self.redraw_pending {
             return;
@@ -437,6 +504,21 @@ impl GuiRuntimeApp {
             self.exit_code.get_or_insert(0);
             event_loop.exit();
             return;
+        }
+
+        if is_runtime_palette_shortcut(event, self.modifiers) {
+            self.toggle_palette();
+            return;
+        }
+
+        match self.handle_palette_action(event) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                self.fatal_error = Some(error);
+                event_loop.exit();
+                return;
+            }
         }
 
         if let Some(bytes) = encode_winit_key_event(event, self.modifiers)
@@ -867,6 +949,143 @@ fn join_pump_thread_with_timeout(handle: JoinHandle<()>, thread_label: &'static 
     );
 }
 
+fn is_runtime_palette_shortcut(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
+    is_runtime_palette_shortcut_key(event.logical_key.as_ref(), modifiers)
+}
+
+fn is_runtime_palette_shortcut_key(key: Key<&str>, modifiers: ModifiersState) -> bool {
+    if !modifiers.shift_key() || !(modifiers.control_key() || modifiers.super_key()) {
+        return false;
+    }
+
+    match key {
+        Key::Character(text) => text.eq_ignore_ascii_case("p"),
+        _ => false,
+    }
+}
+
+fn runtime_palette_action_for_winit_key(
+    key: Key<&str>,
+    diagnostics_enabled: bool,
+) -> Option<RuntimePaletteAction> {
+    match key {
+        Key::Named(NamedKey::Escape) => Some(RuntimePaletteAction::Close),
+        Key::Character(text) if text == "1" => Some(RuntimePaletteAction::ApplyCommand("mode cpu")),
+        Key::Character(text) if text == "2" => Some(RuntimePaletteAction::ApplyCommand("mode gpu")),
+        Key::Character(text) if text == "3" => {
+            Some(RuntimePaletteAction::ApplyCommand("mode auto"))
+        }
+        Key::Character(text) if text.eq_ignore_ascii_case("d") => {
+            if diagnostics_enabled {
+                Some(RuntimePaletteAction::ApplyCommand("debug off"))
+            } else {
+                Some(RuntimePaletteAction::ApplyCommand("debug on"))
+            }
+        }
+        Key::Character(text) if text.eq_ignore_ascii_case("i") => {
+            Some(RuntimePaletteAction::ShowInfo)
+        }
+        _ => None,
+    }
+}
+
+fn dispatch_runtime_palette_command(
+    ui_runtime: &mut UiRuntime,
+    settings: &mut SettingsService,
+    input: &str,
+) -> Result<String> {
+    match settings.apply_palette_command(input) {
+        SettingsPaletteApplyOutcome::Applied {
+            command, current, ..
+        } => {
+            apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
+            Ok(runtime_palette_status_line(
+                command,
+                current.mode,
+                current.debug_mode,
+                ui_runtime.active_render_path(),
+            ))
+        }
+        SettingsPaletteApplyOutcome::Noop { command, state, .. } => {
+            apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
+            Ok(runtime_palette_status_line(
+                command,
+                state.mode,
+                state.debug_mode,
+                ui_runtime.active_render_path(),
+            ))
+        }
+        SettingsPaletteApplyOutcome::Rejected { reason, .. } => {
+            warn!(?reason, input = input, "runtime palette command rejected");
+            Ok(format!(
+                "[palette] rejected input={input} reason={reason:?}"
+            ))
+        }
+    }
+}
+
+fn apply_palette_settings_command_to_ui_runtime(
+    ui_runtime: &mut UiRuntime,
+    command: SettingsCommand,
+) -> Result<()> {
+    if let SettingsCommand::SetMode(mode) = command {
+        let _ = ui_runtime
+            .handle_command(UiRuntimeCommand::SetRenderMode(mode))
+            .context("failed to dispatch UiRuntimeCommand::SetRenderMode from runtime palette")?;
+    }
+    Ok(())
+}
+
+fn runtime_palette_status_line(
+    command: SettingsCommand,
+    mode: RenderMode,
+    diagnostics_enabled: bool,
+    active_render_path: ActiveRenderPath,
+) -> String {
+    match command {
+        SettingsCommand::SetMode(_) => format!(
+            "[palette] mode={} active-path={}",
+            render_mode_token(mode),
+            active_render_path_token(active_render_path),
+        ),
+        SettingsCommand::SetDebugMode(_) => format!(
+            "[palette] diagnostics={} mode={} active-path={}",
+            on_off_token(diagnostics_enabled),
+            render_mode_token(mode),
+            active_render_path_token(active_render_path),
+        ),
+        _ => format!("[palette] command-applied input={command:?}"),
+    }
+}
+
+fn runtime_palette_info_line(ui_runtime: &UiRuntime, settings: &SettingsService) -> String {
+    format!(
+        "[palette] info mode={} active-path={} diagnostics={}",
+        render_mode_token(ui_runtime.render_mode()),
+        active_render_path_token(ui_runtime.active_render_path()),
+        on_off_token(settings.state().debug_mode),
+    )
+}
+
+fn render_mode_token(mode: RenderMode) -> &'static str {
+    match mode {
+        RenderMode::Cpu => "cpu",
+        RenderMode::Gpu => "gpu",
+        RenderMode::Auto => "auto",
+    }
+}
+
+fn active_render_path_token(path: ActiveRenderPath) -> &'static str {
+    match path {
+        ActiveRenderPath::Cpu => "cpu",
+        ActiveRenderPath::Gpu => "gpu",
+    }
+}
+
+fn on_off_token(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
 fn is_local_shutdown_key(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
     if !modifiers.control_key() {
         return false;
@@ -931,10 +1150,13 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuFailureHandling, TerminalBuffer, dispatch_gpu_failure_command, encode_ctrl_letter,
+        GpuFailureHandling, TerminalBuffer, dispatch_gpu_failure_command,
+        dispatch_runtime_palette_command, encode_ctrl_letter, is_runtime_palette_shortcut_key,
     };
     use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+    use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime};
+    use winit::keyboard::{Key, ModifiersState};
 
     #[test]
     fn terminal_buffer_keeps_recent_lines() {
@@ -972,6 +1194,57 @@ mod tests {
         assert_eq!(encode_ctrl_letter('c'), Some(0x03));
         assert_eq!(encode_ctrl_letter('z'), Some(0x1a));
         assert_eq!(encode_ctrl_letter('1'), None);
+    }
+
+    #[test]
+    fn detects_palette_shortcut_with_ctrl_or_cmd_shift_p() {
+        let key = Key::Character("p".into());
+        assert!(is_runtime_palette_shortcut_key(
+            key.as_ref(),
+            ModifiersState::CONTROL | ModifiersState::SHIFT
+        ));
+        assert!(is_runtime_palette_shortcut_key(
+            key.as_ref(),
+            ModifiersState::SUPER | ModifiersState::SHIFT
+        ));
+        assert!(!is_runtime_palette_shortcut_key(
+            key.as_ref(),
+            ModifiersState::CONTROL
+        ));
+        assert!(!is_runtime_palette_shortcut_key(
+            key.as_ref(),
+            ModifiersState::SHIFT
+        ));
+    }
+
+    #[test]
+    fn palette_dispatch_updates_render_mode_via_runtime_path() {
+        let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+        let mut settings = SettingsService::default();
+
+        let message = dispatch_runtime_palette_command(&mut ui_runtime, &mut settings, "mode cpu")
+            .expect("dispatch mode cpu");
+        assert!(message.contains("mode=cpu"));
+        assert_eq!(settings.state().mode, RenderMode::Cpu);
+        assert_eq!(ui_runtime.render_mode(), RenderMode::Cpu);
+    }
+
+    #[test]
+    fn palette_dispatch_toggles_diagnostics_state() {
+        let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+        let mut settings = SettingsService::default();
+
+        let on_message =
+            dispatch_runtime_palette_command(&mut ui_runtime, &mut settings, "debug on")
+                .expect("dispatch debug on");
+        assert!(on_message.contains("diagnostics=on"));
+        assert!(settings.state().debug_mode);
+
+        let off_message =
+            dispatch_runtime_palette_command(&mut ui_runtime, &mut settings, "debug off")
+                .expect("dispatch debug off");
+        assert!(off_message.contains("diagnostics=off"));
+        assert!(!settings.state().debug_mode);
     }
 
     fn test_ui_runtime(mode: RenderMode) -> UiRuntime {
