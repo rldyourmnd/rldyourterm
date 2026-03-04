@@ -1937,7 +1937,6 @@ dependencies = [
  "clap",
  "crossterm",
  "font8x8",
- "rldyourterm-core",
  "rldyourterm-diagnostics",
  "rldyourterm-foundation",
  "rldyourterm-foundation-platform",
@@ -1965,6 +1964,7 @@ dependencies = [
 name = "rldyourterm-diagnostics"
 version = "0.1.0"
 dependencies = [
+ "rldyourterm-foundation",
  "rldyourterm-services",
  "serde",
  "serde_json",
@@ -2042,7 +2042,6 @@ dependencies = [
 name = "rldyourterm-ui"
 version = "0.1.0"
 dependencies = [
- "rldyourterm-core",
  "rldyourterm-services",
  "tracing",
 ]

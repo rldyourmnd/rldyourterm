@@ -3,7 +3,6 @@ use std::time::Duration;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use rldyourterm_core::state::TerminalState;
 use rldyourterm_services::error::ServiceError;
 use rldyourterm_services::render_mode::{
     ActiveRenderPath, FallbackDecision, GpuFailureKind, RenderMode, RenderModeController,
@@ -15,6 +14,7 @@ use rldyourterm_services::render_pacing::{
 use rldyourterm_services::session::{
     SessionBoundary, SessionController, SessionState, SessionTransition,
 };
+use rldyourterm_services::TerminalState;
 use tracing::{info, warn};
 
 pub const SINGLE_WINDOW_BASELINE: u8 = 1;

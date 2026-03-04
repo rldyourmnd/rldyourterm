@@ -25,6 +25,11 @@ pub enum DiagnosticKind {
     DisplayRefreshChanged,
     RenderCadenceUpdated,
     SettingsApply,
+    SettingsRejected,
+    ShellResolved,
+    ShellResolutionFailed,
+    ShellFallbackApplied,
+    ShellLaunchPlanned,
     Resize,
     ResourceWarning,
 }
