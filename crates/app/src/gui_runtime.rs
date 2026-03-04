@@ -30,7 +30,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-use winit::window::{Window, WindowId};
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use winit::platform::startup_notify::{
+    EventLoopExtStartupNotify, WindowAttributesExtStartupNotify,
+};
+use winit::window::{Icon, Window, WindowId};
 
 const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
@@ -39,9 +43,6 @@ const DEFAULT_ROWS: u16 = 32;
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
-#[cfg(target_os = "macos")]
-const MACOS_FORCE_FOCUS_ENV: &str = "RLDYOURTERM_GUI_FORCE_FOCUS";
-
 const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
 const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
@@ -300,7 +301,6 @@ struct GuiRuntimeApp {
     render_attempt_sequence: u64,
     gpu_failure_sequence: u64,
     initial_mode: RenderMode,
-    refresh_rate_millihz: u32,
 
     window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
@@ -353,7 +353,6 @@ impl GuiRuntimeApp {
             render_attempt_sequence: 0,
             gpu_failure_sequence: 0,
             initial_mode,
-            refresh_rate_millihz,
             window: None,
             window_id: None,
             _context: None,
@@ -375,14 +374,19 @@ impl GuiRuntimeApp {
             return Ok(());
         }
 
-        let title = format!(
-            "rldyourterm GUI MVP [{:?}] {} mHz",
-            self.initial_mode, self.refresh_rate_millihz
-        );
+        let mut attributes = Window::default_attributes()
+            .with_title("rldyourterm")
+            .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT))
+            .with_visible(true)
+            .with_active(true)
+            .with_window_icon(generate_app_icon());
 
-        let attributes = Window::default_attributes()
-            .with_title(title)
-            .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT));
+        // Activation token for Wayland/X11 focus handoff
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(token) = event_loop.read_token_from_env() {
+            attributes = attributes.with_activation_token(token);
+        }
+
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -434,25 +438,11 @@ impl GuiRuntimeApp {
     }
 
     fn apply_startup_visibility_handshake(&self) {
-        #[cfg(target_os = "macos")]
         if let Some(window) = self.window.as_ref() {
-            let force_focus = std::env::var(MACOS_FORCE_FOCUS_ENV)
-                .ok()
-                .map(|value| {
-                    let normalized = value.trim().to_ascii_lowercase();
-                    matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
-                })
-                .unwrap_or(false);
-
             window.set_visible(true);
-            if force_focus {
-                window.focus_window();
-            }
-
-            info!(
-                env_flag = MACOS_FORCE_FOCUS_ENV,
-                force_focus, "applied macOS startup visibility handshake"
-            );
+            window.focus_window();
+            window.request_redraw();
+            info!("applied startup visibility handshake");
         }
     }
 
@@ -1708,6 +1698,37 @@ fn is_disconnect_error(error: &io::Error) -> bool {
             | ErrorKind::NotConnected
             | ErrorKind::UnexpectedEof
     )
+}
+
+/// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
+fn generate_app_icon() -> Option<Icon> {
+    const SIZE: u32 = 32;
+    const BG: [u8; 4] = [0x14, 0x1b, 0x1f, 0xFF];
+    const CURSOR: [u8; 4] = [0x00, 0xd4, 0xaa, 0xFF];
+    const GLOW: [u8; 4] = [0x00, 0x6a, 0x55, 0x60];
+
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let offset = ((y * SIZE + x) * 4) as usize;
+            // Cursor block: centered vertical rectangle (cols 12-19, rows 6-25)
+            let is_cursor = (12..=19).contains(&x) && (6..=25).contains(&y);
+            // Glow: 1px border around cursor
+            let is_glow = !is_cursor && (11..=20).contains(&x) && (5..=26).contains(&y);
+
+            let color = if is_cursor {
+                CURSOR
+            } else if is_glow {
+                GLOW
+            } else {
+                BG
+            };
+            rgba[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+
+    Icon::from_rgba(rgba, SIZE, SIZE).ok()
 }
 
 #[cfg(test)]
