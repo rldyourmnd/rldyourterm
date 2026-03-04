@@ -207,6 +207,7 @@ impl CpuRenderer {
 #[cfg(test)]
 mod tests {
     use super::{CpuRenderer, CpuRendererConfig, DEFAULT_SCROLLBACK_CAP};
+    use rldyourterm_core::grid::Attrs;
     use rldyourterm_core::state::TerminalState;
 
     fn state_with_default_scrollback(width: u16, height: u16) -> TerminalState {
@@ -216,9 +217,18 @@ mod tests {
     #[test]
     fn full_render_is_deterministic_and_cpu_mode() {
         let mut state = state_with_default_scrollback(4, 2);
-        state.grid.put_char(0, 0, 'a').expect("put row 0 col 0");
-        state.grid.put_char(0, 1, 'b').expect("put row 0 col 1");
-        state.grid.put_char(1, 0, 'x').expect("put row 1 col 0");
+        state
+            .grid
+            .put_char(0, 0, 'a', Attrs::default())
+            .expect("put row 0 col 0");
+        state
+            .grid
+            .put_char(0, 1, 'b', Attrs::default())
+            .expect("put row 0 col 1");
+        state
+            .grid
+            .put_char(1, 0, 'x', Attrs::default())
+            .expect("put row 1 col 0");
         state.cursor.row = 1;
         state.cursor.col = 2;
 
@@ -267,7 +277,10 @@ mod tests {
         assert_eq!(no_changes.stats.fallback_rows, 0);
         assert_eq!(no_changes.stats.dropped_rows, 0);
 
-        state.grid.put_char(1, 2, 'x').expect("dirty row update");
+        state
+            .grid
+            .put_char(1, 2, 'x', Attrs::default())
+            .expect("dirty row update");
         let delta = renderer.render(&mut state);
         assert_eq!(delta.rows.len(), 1);
         assert_eq!(delta.rows[0].row, 1);
@@ -315,8 +328,14 @@ mod tests {
     #[test]
     fn stats_account_for_utf8_bytes_without_losing_cell_count() {
         let mut state = state_with_default_scrollback(2, 1);
-        state.grid.put_char(0, 0, 'é').expect("put row 0 col 0");
-        state.grid.put_char(0, 1, '🦀').expect("put row 0 col 1");
+        state
+            .grid
+            .put_char(0, 0, 'é', Attrs::default())
+            .expect("put row 0 col 0");
+        state
+            .grid
+            .put_char(0, 1, '🦀', Attrs::default())
+            .expect("put row 0 col 1");
 
         let renderer = CpuRenderer::default();
         let frame = renderer.render_full(&state);
@@ -344,8 +363,14 @@ mod tests {
     #[test]
     fn full_render_does_not_consume_dirty_rows() {
         let mut state = state_with_default_scrollback(2, 2);
-        state.grid.put_char(0, 0, 'a').expect("put row 0 col 0");
-        state.grid.put_char(1, 1, 'z').expect("put row 1 col 1");
+        state
+            .grid
+            .put_char(0, 0, 'a', Attrs::default())
+            .expect("put row 0 col 0");
+        state
+            .grid
+            .put_char(1, 1, 'z', Attrs::default())
+            .expect("put row 1 col 1");
         let renderer = CpuRenderer::default();
 
         let full_first = renderer.render_full(&state);
@@ -376,10 +401,22 @@ mod tests {
         let renderer = CpuRenderer::default();
         let _ = renderer.render_delta(&mut state);
 
-        state.grid.put_char(2, 1, 'z').expect("put row 2 col 1");
-        state.grid.put_char(0, 0, 'a').expect("put row 0 col 0");
-        state.grid.put_char(2, 2, 'x').expect("put row 2 col 2");
-        state.grid.put_char(1, 3, 'q').expect("put row 1 col 3");
+        state
+            .grid
+            .put_char(2, 1, 'z', Attrs::default())
+            .expect("put row 2 col 1");
+        state
+            .grid
+            .put_char(0, 0, 'a', Attrs::default())
+            .expect("put row 0 col 0");
+        state
+            .grid
+            .put_char(2, 2, 'x', Attrs::default())
+            .expect("put row 2 col 2");
+        state
+            .grid
+            .put_char(1, 3, 'q', Attrs::default())
+            .expect("put row 1 col 3");
 
         let frame = renderer.render_delta(&mut state);
         assert_eq!(frame.rows.len(), 3);
@@ -403,10 +440,22 @@ mod tests {
         let renderer = CpuRenderer::default();
         let _ = renderer.render_delta(&mut state);
 
-        state.grid.put_char(0, 0, 'é').expect("put row 0 col 0");
-        state.grid.put_char(0, 1, '🦀').expect("put row 0 col 1");
-        state.grid.put_char(0, 2, 'a').expect("put row 0 col 2");
-        state.grid.put_char(1, 0, 'ß').expect("put row 1 col 0");
+        state
+            .grid
+            .put_char(0, 0, 'é', Attrs::default())
+            .expect("put row 0 col 0");
+        state
+            .grid
+            .put_char(0, 1, '🦀', Attrs::default())
+            .expect("put row 0 col 1");
+        state
+            .grid
+            .put_char(0, 2, 'a', Attrs::default())
+            .expect("put row 0 col 2");
+        state
+            .grid
+            .put_char(1, 0, 'ß', Attrs::default())
+            .expect("put row 1 col 0");
 
         let frame = renderer.render_delta(&mut state);
         assert_eq!(frame.rows.len(), 2);
