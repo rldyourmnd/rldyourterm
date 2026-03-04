@@ -14,7 +14,6 @@ use rldyourterm_services::render_pacing::{
 use rldyourterm_services::session::{
     SessionBoundary, SessionController, SessionState, SessionTransition,
 };
-use rldyourterm_services::TerminalState;
 use tracing::{info, warn};
 
 pub const SINGLE_WINDOW_BASELINE: u8 = 1;
@@ -185,7 +184,6 @@ pub struct UiRuntime {
     session: SessionController,
     render_mode: RenderModeController,
     pacing: RenderPacingController,
-    terminal: TerminalState,
     window_count: u8,
     release_governance: ReleaseGovernance,
 }
@@ -207,11 +205,6 @@ impl UiRuntime {
             .cadence()
             .unwrap_or(RenderCadence::from_monitor(0))
             .refresh_rate_millihz;
-        let terminal = TerminalState::new(
-            DEFAULT_TERMINAL_WIDTH,
-            DEFAULT_TERMINAL_HEIGHT,
-            config.scrollback_cap,
-        );
 
         info!(
             mode = ?render_mode.mode(),
@@ -224,7 +217,6 @@ impl UiRuntime {
             session,
             render_mode,
             pacing,
-            terminal,
             window_count: config.window_count,
             release_governance: ReleaseGovernance::ManualOnly,
         })
@@ -382,23 +374,23 @@ impl UiRuntime {
             } => {
                 let sample = (refresh_rate_millihz != 0).then_some(refresh_rate_millihz);
                 let resync = self.pacing.resync_after_monitor_transfer(sample);
-                if !resync.schedule_invalidated {
-                    UiCommandOutcome::Noop
-                } else {
-                    UiCommandOutcome::CadenceResynced {
-                        previous_refresh_rate_millihz: resync
-                            .previous
-                            .map(|cadence| cadence.refresh_rate_millihz),
-                        current_refresh_rate_millihz: resync
-                            .current
-                            .map(|cadence| cadence.refresh_rate_millihz),
-                        generation: resync.generation,
-                        schedule_invalidated: resync.schedule_invalidated,
-                        monitor_transfer: matches!(
-                            resync.trigger,
-                            CadenceResyncTrigger::MonitorTransfer
-                        ),
-                    }
+                debug_assert!(
+                    resync.schedule_invalidated,
+                    "monitor transfer resync must always invalidate schedule"
+                );
+                UiCommandOutcome::CadenceResynced {
+                    previous_refresh_rate_millihz: resync
+                        .previous
+                        .map(|cadence| cadence.refresh_rate_millihz),
+                    current_refresh_rate_millihz: resync
+                        .current
+                        .map(|cadence| cadence.refresh_rate_millihz),
+                    generation: resync.generation,
+                    schedule_invalidated: resync.schedule_invalidated,
+                    monitor_transfer: matches!(
+                        resync.trigger,
+                        CadenceResyncTrigger::MonitorTransfer
+                    ),
                 }
             }
             UiRuntimeCommand::AssertSingleWindow { requested } => {
@@ -452,10 +444,6 @@ impl UiRuntime {
         self.pacing
             .cadence()
             .unwrap_or(RenderCadence::from_monitor(0))
-    }
-
-    pub fn terminal(&self) -> &TerminalState {
-        &self.terminal
     }
 
     pub fn window_count(&self) -> u8 {
