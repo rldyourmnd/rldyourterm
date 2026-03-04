@@ -12,6 +12,9 @@ use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfi
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+use rldyourterm_services::session::{
+    FatalBoundaryReason, SessionBoundary, SessionController, SessionState, SessionTransitionOutcome,
+};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
@@ -49,7 +52,10 @@ const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
 enum GuiEvent {
     Output(Vec<u8>),
     Exited(i32),
-    Failure(String),
+    PtyFailure {
+        boundary: SessionBoundary,
+        message: String,
+    },
 }
 
 type SpawnedPty = (Arc<dyn PtyIo>, Box<dyn Write + Send>, Box<dyn Read + Send>);
@@ -72,6 +78,18 @@ enum RuntimePaletteAction {
     ApplyCommand(&'static str),
     ShowInfo,
     Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyBoundaryPolicyDecision {
+    Continue { attempt: u8, remaining_budget: u8 },
+    Fatal { reason: FatalBoundaryReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyBoundaryLoopAction {
+    Continue,
+    ExitLoop,
 }
 
 fn dispatch_gpu_failure_command(
@@ -234,9 +252,10 @@ fn spawn_reader_pump(
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    let _ = proxy.send_event(GuiEvent::Failure(format!(
-                        "PTY reader pump failed: {error}"
-                    )));
+                    let _ = proxy.send_event(GuiEvent::PtyFailure {
+                        boundary: SessionBoundary::PtyRead,
+                        message: format!("PTY reader pump failed: {error}"),
+                    });
                     break;
                 }
             }
@@ -250,7 +269,10 @@ fn spawn_wait_pump(pty: Arc<dyn PtyIo>, proxy: EventLoopProxy<GuiEvent>) -> Join
             let _ = proxy.send_event(GuiEvent::Exited(code));
         }
         Err(error) => {
-            let _ = proxy.send_event(GuiEvent::Failure(format!("PTY wait failed: {error}")));
+            let _ = proxy.send_event(GuiEvent::PtyFailure {
+                boundary: SessionBoundary::PtyWait,
+                message: format!("PTY wait failed: {error}"),
+            });
         }
     })
 }
@@ -260,6 +282,7 @@ struct GuiRuntimeApp {
     writer: Box<dyn Write + Send>,
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
+    session_policy: SessionController,
     ui_runtime: UiRuntime,
     gpu_renderer: GpuRenderer,
     started_at: Instant,
@@ -300,12 +323,17 @@ impl GuiRuntimeApp {
             scrollback_cap: MAX_SCROLLBACK_LINES,
         })
         .context("failed to bootstrap UI runtime for GUI app")?;
+        let mut session_policy = SessionController::new();
+        session_policy
+            .mark_running()
+            .context("failed to initialize GUI session boundary policy")?;
 
         Ok(Self {
             pty,
             writer,
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
+            session_policy,
             ui_runtime,
             gpu_renderer: GpuRenderer::default(),
             started_at: Instant::now(),
@@ -359,7 +387,7 @@ impl GuiRuntimeApp {
         self.window = Some(window);
         self.apply_startup_visibility_handshake();
 
-        self.update_viewport_geometry();
+        self.update_viewport_geometry(event_loop);
         self.queue_redraw();
         Ok(())
     }
@@ -470,7 +498,7 @@ impl GuiRuntimeApp {
         }
     }
 
-    fn update_viewport_geometry(&mut self) {
+    fn update_viewport_geometry(&mut self, event_loop: &ActiveEventLoop) {
         let cols = ((self.window_size.width as usize) / CELL_WIDTH)
             .max(1)
             .min(u16::MAX as usize) as u16;
@@ -486,7 +514,23 @@ impl GuiRuntimeApp {
             pixel_width: self.window_size.width.min(u16::MAX as u32) as u16,
             pixel_height: self.window_size.height.min(u16::MAX as u32) as u16,
         }) {
-            warn!(error = %error, cols, rows, "failed to resize PTY to viewport");
+            let detail = format!("failed to resize PTY to viewport: {error}");
+            match self.handle_pty_boundary_failure(SessionBoundary::PtyResize, &detail) {
+                Ok(PtyBoundaryLoopAction::Continue) => {}
+                Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                    event_loop.exit();
+                }
+                Err(policy_error) => {
+                    self.fatal_error = Some(policy_error);
+                    event_loop.exit();
+                }
+            }
+            return;
+        }
+
+        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyResize) {
+            self.fatal_error = Some(error);
+            event_loop.exit();
         }
     }
 
@@ -524,10 +568,25 @@ impl GuiRuntimeApp {
         if let Some(bytes) = encode_winit_key_event(event, self.modifiers)
             && let Err(error) = write_all_and_flush(&mut *self.writer, &bytes)
         {
-            if self.handle_writer_error(error, event_loop) {
-                return;
+            match self.handle_pty_io_error(
+                SessionBoundary::PtyWrite,
+                error,
+                "failed to write keyboard input to PTY",
+            ) {
+                Ok(PtyBoundaryLoopAction::Continue) => {}
+                Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                    event_loop.exit();
+                }
+                Err(policy_error) => {
+                    self.fatal_error = Some(policy_error);
+                    event_loop.exit();
+                }
             }
-            self.fatal_error = Some(anyhow!("failed to write keyboard input to PTY"));
+            return;
+        }
+
+        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
+            self.fatal_error = Some(error);
             event_loop.exit();
         }
     }
@@ -538,35 +597,114 @@ impl GuiRuntimeApp {
         }
 
         if let Err(error) = write_all_and_flush(&mut *self.writer, text.as_bytes()) {
-            if self.handle_writer_error(error, event_loop) {
-                return;
+            match self.handle_pty_io_error(
+                SessionBoundary::PtyWrite,
+                error,
+                "failed to write IME text to PTY",
+            ) {
+                Ok(PtyBoundaryLoopAction::Continue) => {}
+                Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                    event_loop.exit();
+                }
+                Err(policy_error) => {
+                    self.fatal_error = Some(policy_error);
+                    event_loop.exit();
+                }
             }
-            self.fatal_error = Some(anyhow!("failed to write IME text to PTY"));
+            return;
+        }
+
+        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
+            self.fatal_error = Some(error);
             event_loop.exit();
         }
     }
 
-    fn handle_writer_error(&mut self, error: io::Error, event_loop: &ActiveEventLoop) -> bool {
-        if !is_disconnect_error(&error) {
-            return false;
+    fn handle_pty_io_error(
+        &mut self,
+        boundary: SessionBoundary,
+        error: io::Error,
+        error_context: &'static str,
+    ) -> Result<PtyBoundaryLoopAction> {
+        if is_disconnect_error(&error) {
+            match self
+                .pty
+                .try_wait()
+                .context("failed to poll PTY after disconnecting GUI I/O failure")?
+            {
+                Some(code) => {
+                    self.exit_code = Some(code);
+                    info!(
+                        boundary = session_boundary_token(boundary),
+                        code, "PTY child already exited after disconnecting GUI I/O failure"
+                    );
+                    return Ok(PtyBoundaryLoopAction::ExitLoop);
+                }
+                None => {}
+            }
         }
 
-        match self.pty.try_wait() {
-            Ok(Some(code)) => {
-                self.exit_code = Some(code);
-            }
-            Ok(None) => {
-                self.exit_code.get_or_insert(0);
-            }
-            Err(wait_error) => {
-                self.fatal_error = Some(anyhow!(
-                    "failed to poll PTY after write error: {wait_error}"
+        let detail = format!("{error_context}: {error}");
+        self.handle_pty_boundary_failure(boundary, &detail)
+    }
+
+    fn handle_pty_boundary_failure(
+        &mut self,
+        boundary: SessionBoundary,
+        detail: &str,
+    ) -> Result<PtyBoundaryLoopAction> {
+        match classify_pty_boundary_failure(&mut self.session_policy, boundary)? {
+            PtyBoundaryPolicyDecision::Continue {
+                attempt,
+                remaining_budget,
+            } => {
+                warn!(
+                    boundary = session_boundary_token(boundary),
+                    attempt,
+                    remaining_budget,
+                    state = self.session_policy.state().as_str(),
+                    detail,
+                    "recoverable PTY boundary failure in GUI runtime; continuing in degraded mode"
+                );
+                self.emit_runtime_notice(&format!(
+                    "[runtime] recoverable pty-boundary={} attempt={} remaining-budget={} detail={detail}",
+                    session_boundary_token(boundary),
+                    attempt,
+                    remaining_budget,
                 ));
+                Ok(PtyBoundaryLoopAction::Continue)
             }
+            PtyBoundaryPolicyDecision::Fatal { reason } => Err(anyhow!(
+                "fatal PTY boundary failure boundary={} reason={} detail={detail}",
+                session_boundary_token(boundary),
+                fatal_boundary_reason_token(reason),
+            )),
+        }
+    }
+
+    fn mark_pty_boundary_recovered(&mut self, boundary: SessionBoundary) -> Result<()> {
+        if self.session_policy.state() != SessionState::Degraded {
+            return Ok(());
         }
 
-        event_loop.exit();
-        true
+        let transition = self.session_policy.mark_running().map_err(|error| {
+            anyhow!(
+                "failed to mark PTY boundary recovery boundary={}: {error}",
+                session_boundary_token(boundary),
+            )
+        })?;
+
+        info!(
+            boundary = session_boundary_token(boundary),
+            from = transition.from.as_str(),
+            to = transition.to.as_str(),
+            "PTY boundary recovered; GUI runtime returned to running state"
+        );
+        self.emit_runtime_notice(&format!(
+            "[runtime] recovered pty-boundary={}",
+            session_boundary_token(boundary),
+        ));
+        Ok(())
     }
 
     fn draw_frame(&mut self) -> Result<()> {
@@ -675,6 +813,38 @@ impl GuiRuntimeApp {
     }
 }
 
+fn classify_pty_boundary_failure(
+    session_policy: &mut SessionController,
+    boundary: SessionBoundary,
+) -> Result<PtyBoundaryPolicyDecision> {
+    let transition = session_policy
+        .handle_boundary_failure(boundary)
+        .map_err(|error| {
+            anyhow!(
+                "failed to apply PTY boundary policy boundary={}: {error}",
+                session_boundary_token(boundary)
+            )
+        })?;
+
+    match transition.outcome {
+        SessionTransitionOutcome::RecoverableBoundary {
+            attempt,
+            remaining_budget,
+            ..
+        } => Ok(PtyBoundaryPolicyDecision::Continue {
+            attempt,
+            remaining_budget,
+        }),
+        SessionTransitionOutcome::FatalBoundary { reason, .. } => {
+            Ok(PtyBoundaryPolicyDecision::Fatal { reason })
+        }
+        other => Err(anyhow!(
+            "unexpected session transition for boundary={} outcome={other:?}",
+            session_boundary_token(boundary),
+        )),
+    }
+}
+
 impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if let Err(error) = self.bootstrap_window(event_loop) {
@@ -687,15 +857,28 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         match event {
             GuiEvent::Output(data) => {
                 self.terminal.push_bytes(&data);
+                if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
+                    self.fatal_error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
                 self.queue_redraw();
             }
             GuiEvent::Exited(code) => {
                 self.exit_code = Some(code);
                 event_loop.exit();
             }
-            GuiEvent::Failure(message) => {
-                self.fatal_error = Some(anyhow!(message));
-                event_loop.exit();
+            GuiEvent::PtyFailure { boundary, message } => {
+                match self.handle_pty_boundary_failure(boundary, &message) {
+                    Ok(PtyBoundaryLoopAction::Continue) => {}
+                    Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                        event_loop.exit();
+                    }
+                    Err(policy_error) => {
+                        self.fatal_error = Some(policy_error);
+                        event_loop.exit();
+                    }
+                }
             }
         }
     }
@@ -720,13 +903,13 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             }
             WindowEvent::Resized(size) => {
                 self.window_size = size;
-                self.update_viewport_geometry();
+                self.update_viewport_geometry(event_loop);
                 self.queue_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
                     self.window_size = window.inner_size();
-                    self.update_viewport_geometry();
+                    self.update_viewport_geometry(event_loop);
                     self.queue_redraw();
                 }
             }
@@ -1086,6 +1269,25 @@ fn on_off_token(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
+fn session_boundary_token(boundary: SessionBoundary) -> &'static str {
+    match boundary {
+        SessionBoundary::StartupSpawn => "startup-spawn",
+        SessionBoundary::PtyRead => "pty-read",
+        SessionBoundary::PtyWrite => "pty-write",
+        SessionBoundary::PtyResize => "pty-resize",
+        SessionBoundary::PtyWait => "pty-wait",
+        SessionBoundary::PtyWriterAcquire => "pty-writer-acquire",
+        SessionBoundary::Stop => "stop",
+    }
+}
+
+fn fatal_boundary_reason_token(reason: FatalBoundaryReason) -> &'static str {
+    match reason {
+        FatalBoundaryReason::BoundaryFatal => "boundary-fatal",
+        FatalBoundaryReason::RecoverableBudgetExhausted => "recoverable-budget-exhausted",
+    }
+}
+
 fn is_local_shutdown_key(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
     if !modifiers.control_key() {
         return false;
@@ -1150,10 +1352,12 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuFailureHandling, TerminalBuffer, dispatch_gpu_failure_command,
+        GpuFailureHandling, PtyBoundaryPolicyDecision, TerminalBuffer,
+        classify_pty_boundary_failure, dispatch_gpu_failure_command,
         dispatch_runtime_palette_command, encode_ctrl_letter, is_runtime_palette_shortcut_key,
     };
     use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+    use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime};
     use winit::keyboard::{Key, ModifiersState};
@@ -1301,5 +1505,52 @@ mod tests {
                 .expect("gpu failure decision");
         assert_eq!(decision, GpuFailureHandling::FatalForcedGpu);
         assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+    }
+
+    #[test]
+    fn gui_write_boundary_policy_stays_recoverable_with_budget() {
+        let mut session_policy = SessionController::with_recoverable_budget(2);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let decision =
+            classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
+                .expect("recoverable write boundary should classify");
+
+        assert_eq!(
+            decision,
+            PtyBoundaryPolicyDecision::Continue {
+                attempt: 1,
+                remaining_budget: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn gui_write_boundary_policy_escalates_after_budget_exhaustion() {
+        let mut session_policy = SessionController::with_recoverable_budget(1);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let first = classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
+            .expect("first write boundary should stay recoverable");
+        assert_eq!(
+            first,
+            PtyBoundaryPolicyDecision::Continue {
+                attempt: 1,
+                remaining_budget: 0,
+            }
+        );
+
+        let second = classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
+            .expect("second write boundary should escalate after budget exhaustion");
+        assert_eq!(
+            second,
+            PtyBoundaryPolicyDecision::Fatal {
+                reason: FatalBoundaryReason::RecoverableBudgetExhausted,
+            }
+        );
     }
 }

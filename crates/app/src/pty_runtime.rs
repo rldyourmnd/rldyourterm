@@ -5,9 +5,12 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
-use rldyourterm_foundation::api::pty::{PtyFactory, PtySize, PtySpawnConfig};
+use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_services::session::{
+    FatalBoundaryReason, SessionBoundary, SessionController, SessionState, SessionTransitionOutcome,
+};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::SINGLE_WINDOW_BASELINE;
 use tracing::{info, warn};
@@ -133,6 +136,10 @@ pub fn run_interactive_pty(
 
     let _raw_mode_guard = RawModeGuard::new()?;
     let read_pump = spawn_read_pump(reader);
+    let mut session_policy = SessionController::new();
+    session_policy
+        .mark_running()
+        .context("failed to initialize TTY session boundary policy")?;
     let mut settings = SettingsService::default();
     let _ = settings.apply(SettingsCommand::SetMode(runtime_config.initial_mode));
     let mut active_mode = settings.state().mode;
@@ -259,20 +266,29 @@ pub fn run_interactive_pty(
 
                 if let Some(bytes) = encode_key_event(key_event) {
                     if let Err(error) = write_all_and_flush(&mut *writer, &bytes) {
-                        if is_disconnect_error(&error) {
-                            match pty
-                                .try_wait()
-                                .context("failed to poll PTY after write failure")
-                            {
-                                Ok(Some(code)) => exit_code = Some(code),
-                                Ok(None) => {}
-                                Err(wait_error) => fatal_error = Some(wait_error),
+                        match handle_pty_io_failure(
+                            &mut session_policy,
+                            &*pty,
+                            SessionBoundary::PtyWrite,
+                            error,
+                            "failed to write key event to PTY",
+                        ) {
+                            Ok(Some(code)) => {
+                                exit_code = Some(code);
+                                break;
                             }
-                            break;
+                            Ok(None) => continue,
+                            Err(policy_error) => {
+                                fatal_error = Some(policy_error);
+                                break;
+                            }
                         }
-                        fatal_error = Some(
-                            anyhow::Error::new(error).context("failed to write key event to PTY"),
-                        );
+                    }
+
+                    if let Err(error) =
+                        mark_pty_boundary_recovered(&mut session_policy, SessionBoundary::PtyWrite)
+                    {
+                        fatal_error = Some(error);
                         break;
                     }
                 }
@@ -285,21 +301,22 @@ pub fn run_interactive_pty(
                     pixel_height: 0,
                 };
                 if let Err(error) = pty.resize(resized) {
-                    match pty
-                        .try_wait()
-                        .context("failed to poll PTY after resize failure")
-                    {
-                        Ok(Some(code)) => {
-                            exit_code = Some(code);
-                        }
-                        Ok(None) => {
-                            fatal_error =
-                                Some(anyhow::Error::new(error).context("failed to resize PTY"));
-                        }
-                        Err(wait_error) => {
-                            fatal_error = Some(wait_error);
-                        }
+                    let detail = format!("failed to resize PTY: {error}");
+                    if let Err(policy_error) = handle_pty_boundary_failure(
+                        &mut session_policy,
+                        SessionBoundary::PtyResize,
+                        &detail,
+                    ) {
+                        fatal_error = Some(policy_error);
+                        break;
                     }
+                    continue;
+                }
+
+                if let Err(error) =
+                    mark_pty_boundary_recovered(&mut session_policy, SessionBoundary::PtyResize)
+                {
+                    fatal_error = Some(error);
                     break;
                 }
             }
@@ -333,6 +350,125 @@ pub fn run_interactive_pty(
         return Err(error);
     }
     Ok(exit_code.unwrap_or(0))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyBoundaryPolicyDecision {
+    Continue { attempt: u8, remaining_budget: u8 },
+    Fatal { reason: FatalBoundaryReason },
+}
+
+fn classify_pty_boundary_failure(
+    session_policy: &mut SessionController,
+    boundary: SessionBoundary,
+) -> Result<PtyBoundaryPolicyDecision> {
+    let transition = session_policy
+        .handle_boundary_failure(boundary)
+        .map_err(|error| {
+            anyhow!(
+                "failed to apply PTY boundary policy boundary={}: {error}",
+                session_boundary_token(boundary)
+            )
+        })?;
+
+    match transition.outcome {
+        SessionTransitionOutcome::RecoverableBoundary {
+            attempt,
+            remaining_budget,
+            ..
+        } => Ok(PtyBoundaryPolicyDecision::Continue {
+            attempt,
+            remaining_budget,
+        }),
+        SessionTransitionOutcome::FatalBoundary { reason, .. } => {
+            Ok(PtyBoundaryPolicyDecision::Fatal { reason })
+        }
+        other => Err(anyhow!(
+            "unexpected session transition for boundary={} outcome={other:?}",
+            session_boundary_token(boundary)
+        )),
+    }
+}
+
+fn handle_pty_io_failure(
+    session_policy: &mut SessionController,
+    pty: &dyn PtyIo,
+    boundary: SessionBoundary,
+    error: io::Error,
+    error_context: &'static str,
+) -> Result<Option<i32>> {
+    if is_disconnect_error(&error) {
+        match pty
+            .try_wait()
+            .context("failed to poll PTY after disconnecting I/O failure")?
+        {
+            Some(code) => {
+                info!(
+                    boundary = session_boundary_token(boundary),
+                    code, "PTY child already exited after disconnecting I/O failure"
+                );
+                return Ok(Some(code));
+            }
+            None => {}
+        }
+    }
+
+    let detail = format!("{error_context}: {error}");
+    handle_pty_boundary_failure(session_policy, boundary, &detail).map(|_| None)
+}
+
+fn handle_pty_boundary_failure(
+    session_policy: &mut SessionController,
+    boundary: SessionBoundary,
+    detail: &str,
+) -> Result<()> {
+    match classify_pty_boundary_failure(session_policy, boundary)? {
+        PtyBoundaryPolicyDecision::Continue {
+            attempt,
+            remaining_budget,
+        } => {
+            warn!(
+                boundary = session_boundary_token(boundary),
+                attempt,
+                remaining_budget,
+                state = session_policy.state().as_str(),
+                detail,
+                "recoverable PTY boundary failure in TTY runtime; continuing in degraded mode"
+            );
+            write_runtime_boundary_line(boundary, attempt, remaining_budget, detail);
+            Ok(())
+        }
+        PtyBoundaryPolicyDecision::Fatal { reason } => Err(anyhow!(
+            "fatal PTY boundary failure boundary={} reason={} detail={detail}",
+            session_boundary_token(boundary),
+            fatal_boundary_reason_token(reason),
+        )),
+    }
+}
+
+fn mark_pty_boundary_recovered(
+    session_policy: &mut SessionController,
+    boundary: SessionBoundary,
+) -> Result<()> {
+    if session_policy.state() != SessionState::Degraded {
+        return Ok(());
+    }
+
+    let transition = session_policy.mark_running().map_err(|error| {
+        anyhow!(
+            "failed to mark PTY boundary recovery boundary={}: {error}",
+            session_boundary_token(boundary),
+        )
+    })?;
+
+    info!(
+        boundary = session_boundary_token(boundary),
+        from = transition.from.as_str(),
+        to = transition.to.as_str(),
+        "PTY boundary recovered; TTY runtime returned to running state"
+    );
+    write_runtime_boundary_recovered_line(boundary);
+    Ok(())
 }
 
 fn ensure_single_window(window_count: u8) -> Result<()> {
@@ -453,6 +589,27 @@ fn write_runtime_palette_line(line: &str) {
     }
 }
 
+fn write_runtime_boundary_line(
+    boundary: SessionBoundary,
+    attempt: u8,
+    remaining_budget: u8,
+    detail: &str,
+) {
+    write_runtime_palette_line(&format!(
+        "[runtime] recoverable pty-boundary={} attempt={} remaining-budget={} detail={detail}",
+        session_boundary_token(boundary),
+        attempt,
+        remaining_budget,
+    ));
+}
+
+fn write_runtime_boundary_recovered_line(boundary: SessionBoundary) {
+    write_runtime_palette_line(&format!(
+        "[runtime] recovered pty-boundary={}",
+        session_boundary_token(boundary)
+    ));
+}
+
 fn is_runtime_palette_shortcut(key_event: KeyEvent) -> bool {
     if !key_event.modifiers.contains(KeyModifiers::SHIFT) {
         return false;
@@ -557,6 +714,25 @@ fn on_off_token(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
+fn session_boundary_token(boundary: SessionBoundary) -> &'static str {
+    match boundary {
+        SessionBoundary::StartupSpawn => "startup-spawn",
+        SessionBoundary::PtyRead => "pty-read",
+        SessionBoundary::PtyWrite => "pty-write",
+        SessionBoundary::PtyResize => "pty-resize",
+        SessionBoundary::PtyWait => "pty-wait",
+        SessionBoundary::PtyWriterAcquire => "pty-writer-acquire",
+        SessionBoundary::Stop => "stop",
+    }
+}
+
+fn fatal_boundary_reason_token(reason: FatalBoundaryReason) -> &'static str {
+    match reason {
+        FatalBoundaryReason::BoundaryFatal => "boundary-fatal",
+        FatalBoundaryReason::RecoverableBudgetExhausted => "recoverable-budget-exhausted",
+    }
+}
+
 fn is_local_shutdown_key(key_event: KeyEvent) -> bool {
     key_event.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key_event.code, KeyCode::Char('q') | KeyCode::Char('Q'))
@@ -595,11 +771,13 @@ fn encode_ctrl_letter(ch: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_poll_timeouts, dispatch_runtime_palette_command, encode_ctrl_letter,
-        encode_key_event, ensure_single_window, frame_budget_millis, is_runtime_palette_shortcut,
+        PtyBoundaryPolicyDecision, classify_pty_boundary_failure, derive_poll_timeouts,
+        dispatch_runtime_palette_command, encode_ctrl_letter, encode_key_event,
+        ensure_single_window, frame_budget_millis, is_runtime_palette_shortcut,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
+    use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
 
     #[test]
@@ -740,5 +918,52 @@ mod tests {
         let off_result = dispatch_runtime_palette_command(&mut settings, "debug off");
         assert!(!settings.state().debug_mode);
         assert!(off_result.message.contains("diagnostics=off"));
+    }
+
+    #[test]
+    fn pty_write_boundary_policy_stays_recoverable_with_remaining_budget() {
+        let mut session_policy = SessionController::with_recoverable_budget(2);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let decision =
+            classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
+                .expect("recoverable write boundary should classify");
+
+        assert_eq!(
+            decision,
+            PtyBoundaryPolicyDecision::Continue {
+                attempt: 1,
+                remaining_budget: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn pty_write_boundary_policy_escalates_after_budget_exhaustion() {
+        let mut session_policy = SessionController::with_recoverable_budget(1);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let first = classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
+            .expect("first write boundary should stay recoverable");
+        assert_eq!(
+            first,
+            PtyBoundaryPolicyDecision::Continue {
+                attempt: 1,
+                remaining_budget: 0,
+            }
+        );
+
+        let second = classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
+            .expect("second write boundary should escalate after budget exhaustion");
+        assert_eq!(
+            second,
+            PtyBoundaryPolicyDecision::Fatal {
+                reason: FatalBoundaryReason::RecoverableBudgetExhausted,
+            }
+        );
     }
 }

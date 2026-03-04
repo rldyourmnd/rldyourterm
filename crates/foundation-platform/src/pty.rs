@@ -245,15 +245,10 @@ impl PtyIo for PlatformPtyIo {
         let _ = Self::refresh_exit_state(&mut inner, PtyOperation::TryWait)?;
         Self::ensure_open(&inner, PtyOperation::AcquireWriterLease)?;
 
-        inner.writer.take().ok_or_else(|| {
-            FoundationError::pty(
-                PtyOperation::AcquireWriterLease,
-                PtyFailureCode::SingleWriterInvariantViolation,
-                Recoverability::Fatal,
-                "pty writer is already acquired",
-                None,
-            )
-        })
+        inner
+            .writer
+            .take()
+            .ok_or_else(|| single_writer_violation(PtyOperation::AcquireWriterLease))
     }
 
     fn resize(&self, size: PtySize) -> FoundationResult<()> {
@@ -488,4 +483,39 @@ fn is_pty_eof(error: &io::Error) -> bool {
         error.kind(),
         ErrorKind::UnexpectedEof | ErrorKind::BrokenPipe | ErrorKind::NotConnected
     ) || error.raw_os_error() == Some(5)
+}
+
+fn single_writer_violation(operation: PtyOperation) -> FoundationError {
+    FoundationError::pty(
+        operation,
+        PtyFailureCode::SingleWriterInvariantViolation,
+        Recoverability::Degrade,
+        "pty writer is already acquired",
+        None,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::single_writer_violation;
+    use rldyourterm_foundation::error::{
+        FoundationError, PtyFailureCode, PtyOperation, Recoverability,
+    };
+
+    #[test]
+    fn single_writer_violation_contract_is_degrade_recoverable() {
+        let error = single_writer_violation(PtyOperation::AcquireWriterLease);
+
+        assert_eq!(
+            error,
+            FoundationError::Pty {
+                operation: PtyOperation::AcquireWriterLease,
+                code: PtyFailureCode::SingleWriterInvariantViolation,
+                recoverability: Recoverability::Degrade,
+                message: "pty writer is already acquired".to_string(),
+                correlation_id: None,
+            }
+        );
+        assert!(error.recoverability().is_recoverable());
+    }
 }

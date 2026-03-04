@@ -352,6 +352,9 @@ impl Default for SessionController {
 mod tests {
     use super::*;
     use crate::error::{BoundaryClassification, BoundarySeverity, BoundaryStage, ServiceError};
+    use rldyourterm_foundation::error::{
+        FoundationError, PtyFailureCode, PtyOperation, Recoverability,
+    };
 
     #[test]
     fn start_success_moves_starting_to_running_with_fish() {
@@ -436,6 +439,32 @@ mod tests {
         assert_eq!(
             SessionBoundary::PtyWriterAcquire.classify_for_state(SessionState::Running),
             BoundaryClassification::new(BoundaryStage::Run, BoundarySeverity::Recoverable)
+        );
+    }
+
+    #[test]
+    fn writer_boundary_recoverability_matches_foundation_single_writer_contract() {
+        let mut controller = SessionController::new();
+        controller.start_succeeded().expect("start should succeed");
+
+        let session_classification =
+            controller.classify_boundary(SessionBoundary::PtyWriterAcquire);
+        let foundation_contract = FoundationError::pty(
+            PtyOperation::AcquireWriterLease,
+            PtyFailureCode::SingleWriterInvariantViolation,
+            Recoverability::Degrade,
+            "pty writer is already acquired",
+            None,
+        );
+
+        assert_eq!(
+            session_classification.severity,
+            BoundarySeverity::Recoverable
+        );
+        assert!(foundation_contract.recoverability().is_recoverable());
+        assert_eq!(
+            session_classification.is_recoverable(),
+            foundation_contract.recoverability().is_recoverable()
         );
     }
 
