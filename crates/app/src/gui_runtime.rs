@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
+use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_render_gpu::GpuRenderer;
@@ -78,6 +79,13 @@ enum RuntimePaletteAction {
     ApplyCommand(&'static str),
     ShowInfo,
     Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorAffectingWindowEvent {
+    Moved,
+    Resized,
+    ScaleFactorChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +291,7 @@ struct GuiRuntimeApp {
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
     session_policy: SessionController,
+    diagnostics: DiagnosticsSink,
     ui_runtime: UiRuntime,
     gpu_renderer: GpuRenderer,
     started_at: Instant,
@@ -334,6 +343,7 @@ impl GuiRuntimeApp {
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
             session_policy,
+            diagnostics: DiagnosticsSink::default(),
             ui_runtime,
             gpu_renderer: GpuRenderer::default(),
             started_at: Instant::now(),
@@ -537,6 +547,59 @@ impl GuiRuntimeApp {
     fn handle_close_requested(&mut self, event_loop: &ActiveEventLoop) {
         self.exit_code.get_or_insert(0);
         event_loop.exit();
+    }
+
+    fn handle_monitor_affecting_event(&mut self, monitor_event: MonitorAffectingWindowEvent) {
+        let sampled_refresh_rate_millihz = self
+            .window
+            .as_ref()
+            .and_then(|window| sample_monitor_refresh_rate_millihz(window));
+        let command =
+            cadence_resync_command_for_monitor_event(monitor_event, sampled_refresh_rate_millihz);
+
+        match self.ui_runtime.handle_command(command) {
+            Ok(receipt) => match receipt.outcome {
+                UiCommandOutcome::CadenceResynced {
+                    previous_refresh_rate_millihz,
+                    current_refresh_rate_millihz,
+                    generation,
+                    monitor_transfer,
+                    ..
+                } => {
+                    info!(
+                        monitor_event = monitor_affecting_event_token(monitor_event),
+                        sampled_refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0),
+                        previous_refresh_rate_millihz = ?previous_refresh_rate_millihz,
+                        current_refresh_rate_millihz = ?current_refresh_rate_millihz,
+                        generation,
+                        monitor_transfer,
+                        "GUI runtime re-synced cadence after monitor-affecting event"
+                    );
+                }
+                UiCommandOutcome::Noop => {}
+                other => {
+                    warn!(
+                        monitor_event = monitor_affecting_event_token(monitor_event),
+                        sampled_refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0),
+                        outcome = ?other,
+                        "unexpected UI outcome while processing monitor-affecting cadence event"
+                    );
+                }
+            },
+            Err(error) => {
+                warn!(
+                    monitor_event = monitor_affecting_event_token(monitor_event),
+                    sampled_refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0),
+                    error = %error,
+                    "failed to dispatch cadence re-sync command after monitor-affecting event"
+                );
+                self.emit_runtime_notice(&format!(
+                    "[runtime] cadence-resync dispatch failed event={} sampled-refresh-millihz={} detail={error}",
+                    monitor_affecting_event_token(monitor_event),
+                    sampled_refresh_rate_millihz.unwrap_or(0),
+                ));
+            }
+        }
     }
 
     fn handle_keyboard_input(&mut self, event: &WinitKeyEvent, event_loop: &ActiveEventLoop) {
@@ -765,14 +828,26 @@ impl GuiRuntimeApp {
                         GpuFailureHandling::FallbackToCpu {
                             transition_sequence,
                         } => {
+                            let (diagnostics_event, fallback_notice) =
+                                emit_gpu_auto_fallback_observability(
+                                    &self.diagnostics,
+                                    transition_sequence,
+                                    gpu_failure_sequence,
+                                    render_attempt_sequence,
+                                    failure_kind,
+                                    observed_at_millis,
+                                );
                             warn!(
                                 gpu_failure_sequence,
                                 render_attempt_sequence,
                                 transition_sequence,
+                                diagnostics_event_id = %diagnostics_event.event_id,
+                                diagnostics_correlation = ?diagnostics_event.correlation_id,
                                 mode = ?self.ui_runtime.render_mode(),
                                 active_path = ?self.ui_runtime.active_render_path(),
                                 "gpu failure applied deterministic cpu fallback; session remains active"
                             );
+                            self.emit_runtime_notice(&fallback_notice);
                         }
                         GpuFailureHandling::FatalForcedGpu => {
                             return Err(anyhow!(
@@ -901,15 +976,22 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                     event_loop.exit();
                 }
             }
+            WindowEvent::Moved(_) => {
+                self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Moved);
+            }
             WindowEvent::Resized(size) => {
                 self.window_size = size;
                 self.update_viewport_geometry(event_loop);
+                self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Resized);
                 self.queue_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
                     self.window_size = window.inner_size();
                     self.update_viewport_geometry(event_loop);
+                    self.handle_monitor_affecting_event(
+                        MonitorAffectingWindowEvent::ScaleFactorChanged,
+                    );
                     self.queue_redraw();
                 }
             }
@@ -1269,6 +1351,74 @@ fn on_off_token(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
+fn sample_monitor_refresh_rate_millihz(window: &Window) -> Option<u32> {
+    window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .or_else(|| {
+            window
+                .primary_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+        })
+}
+
+fn cadence_resync_command_for_monitor_event(
+    monitor_event: MonitorAffectingWindowEvent,
+    sampled_refresh_rate_millihz: Option<u32>,
+) -> UiRuntimeCommand {
+    let refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0);
+    match monitor_event {
+        MonitorAffectingWindowEvent::Moved | MonitorAffectingWindowEvent::ScaleFactorChanged => {
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz,
+            }
+        }
+        MonitorAffectingWindowEvent::Resized => UiRuntimeCommand::ResyncCadence {
+            refresh_rate_millihz,
+        },
+    }
+}
+
+fn monitor_affecting_event_token(event: MonitorAffectingWindowEvent) -> &'static str {
+    match event {
+        MonitorAffectingWindowEvent::Moved => "moved",
+        MonitorAffectingWindowEvent::Resized => "resized",
+        MonitorAffectingWindowEvent::ScaleFactorChanged => "scale-factor-changed",
+    }
+}
+
+fn gpu_auto_fallback_correlation_id(
+    transition_sequence: u64,
+    gpu_failure_sequence: u64,
+) -> CorrelationId {
+    CorrelationId::new(format!(
+        "gpu-auto-fallback-transition-{transition_sequence}-failure-{gpu_failure_sequence}"
+    ))
+}
+
+fn emit_gpu_auto_fallback_observability(
+    diagnostics: &DiagnosticsSink,
+    transition_sequence: u64,
+    gpu_failure_sequence: u64,
+    render_attempt_sequence: u64,
+    failure_kind: GpuFailureKind,
+    observed_at_millis: u64,
+) -> (Event, String) {
+    let correlation_id =
+        gpu_auto_fallback_correlation_id(transition_sequence, gpu_failure_sequence);
+    let diagnostics_message = format!(
+        "gpu auto-fallback applied transition-seq={transition_sequence} failure-seq={gpu_failure_sequence} render-attempt-seq={render_attempt_sequence} failure-kind={failure_kind:?} observed-ms={observed_at_millis}"
+    );
+    let event = diagnostics
+        .with_correlation(correlation_id.clone())
+        .emit_kind(EventKind::ResourceWarning, diagnostics_message);
+    let notice = format!(
+        "[runtime] gpu auto-fallback transition-seq={transition_sequence} failure-seq={gpu_failure_sequence} render-attempt-seq={render_attempt_sequence} failure={failure_kind:?} observed-ms={observed_at_millis} correlation-id={}",
+        correlation_id.as_str()
+    );
+    (event, notice)
+}
+
 fn session_boundary_token(boundary: SessionBoundary) -> &'static str {
     match boundary {
         SessionBoundary::StartupSpawn => "startup-spawn",
@@ -1352,14 +1502,16 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuFailureHandling, PtyBoundaryPolicyDecision, TerminalBuffer,
-        classify_pty_boundary_failure, dispatch_gpu_failure_command,
-        dispatch_runtime_palette_command, encode_ctrl_letter, is_runtime_palette_shortcut_key,
+        GpuFailureHandling, MonitorAffectingWindowEvent, PtyBoundaryPolicyDecision, TerminalBuffer,
+        cadence_resync_command_for_monitor_event, classify_pty_boundary_failure,
+        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+        emit_gpu_auto_fallback_observability, encode_ctrl_letter, is_runtime_palette_shortcut_key,
     };
+    use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
-    use rldyourterm_ui::{UiBootstrapConfig, UiRuntime};
+    use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
     use winit::keyboard::{Key, ModifiersState};
 
     #[test]
@@ -1505,6 +1657,92 @@ mod tests {
                 .expect("gpu failure decision");
         assert_eq!(decision, GpuFailureHandling::FatalForcedGpu);
         assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+    }
+
+    #[test]
+    fn monitor_affecting_events_emit_expected_cadence_resync_commands() {
+        let sampled_refresh = Some(144_000);
+
+        assert_eq!(
+            cadence_resync_command_for_monitor_event(
+                MonitorAffectingWindowEvent::Moved,
+                sampled_refresh,
+            ),
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz: 144_000,
+            }
+        );
+        assert_eq!(
+            cadence_resync_command_for_monitor_event(
+                MonitorAffectingWindowEvent::Resized,
+                sampled_refresh,
+            ),
+            UiRuntimeCommand::ResyncCadence {
+                refresh_rate_millihz: 144_000,
+            }
+        );
+        assert_eq!(
+            cadence_resync_command_for_monitor_event(
+                MonitorAffectingWindowEvent::ScaleFactorChanged,
+                sampled_refresh,
+            ),
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz: 144_000,
+            }
+        );
+    }
+
+    #[test]
+    fn cadence_resync_commands_use_zero_when_monitor_timing_is_unavailable() {
+        assert_eq!(
+            cadence_resync_command_for_monitor_event(MonitorAffectingWindowEvent::Moved, None),
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz: 0,
+            }
+        );
+        assert_eq!(
+            cadence_resync_command_for_monitor_event(MonitorAffectingWindowEvent::Resized, None),
+            UiRuntimeCommand::ResyncCadence {
+                refresh_rate_millihz: 0,
+            }
+        );
+        assert_eq!(
+            cadence_resync_command_for_monitor_event(
+                MonitorAffectingWindowEvent::ScaleFactorChanged,
+                None,
+            ),
+            UiRuntimeCommand::ResyncCadenceAfterTransfer {
+                refresh_rate_millihz: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn gpu_auto_fallback_emits_correlated_diagnostics_and_runtime_notice() {
+        let diagnostics = DiagnosticsSink::default();
+        let (event, notice) = emit_gpu_auto_fallback_observability(
+            &diagnostics,
+            7,
+            3,
+            41,
+            GpuFailureKind::SwapchainOutOfDate,
+            2_500,
+        );
+
+        assert_eq!(event.kind, EventKind::ResourceWarning);
+        let correlation = event
+            .correlation_id
+            .as_ref()
+            .expect("fallback diagnostics must include correlation");
+        assert!(event.message.contains("transition-seq=7"));
+        assert!(event.message.contains("failure-seq=3"));
+        assert!(event.message.contains("render-attempt-seq=41"));
+        assert!(event.message.contains("observed-ms=2500"));
+        assert!(notice.contains("transition-seq=7"));
+        assert!(notice.contains("failure-seq=3"));
+        assert!(notice.contains("render-attempt-seq=41"));
+        assert!(notice.contains("observed-ms=2500"));
+        assert!(notice.contains(correlation.as_str()));
     }
 
     #[test]
