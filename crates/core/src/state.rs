@@ -1,7 +1,7 @@
 use crate::{
     cursor::Cursor,
     events::{CoreEvent, DisplayClearMode, IngestDegradeReason, LineClearMode},
-    grid::Grid,
+    grid::{Attrs, Grid},
     parser::{Parser, ParserAction},
     scrollback::Scrollback,
 };
@@ -10,11 +10,29 @@ const MAX_FEED_BYTES_PER_CALL: usize = 64 * 1024;
 const FEED_CHUNK_BYTES: usize = 4 * 1024;
 
 #[derive(Debug)]
+struct AlternateScreenState {
+    grid: Grid,
+    cursor: Cursor,
+    pen: Attrs,
+    scrollback: Scrollback,
+    saved_cursor: Option<(Cursor, Attrs)>,
+    scroll_region: Option<(u16, u16)>,
+}
+
+#[derive(Debug)]
 pub struct TerminalState {
     pub grid: Grid,
     pub cursor: Cursor,
     pub scrollback: Scrollback,
     parser: Parser,
+    pub pen: Attrs,
+    saved_cursor: Option<(Cursor, Attrs)>,
+    scroll_region: Option<(u16, u16)>,
+    alternate_screen: Option<Box<AlternateScreenState>>,
+    window_title: String,
+    pub bracketed_paste: bool,
+    pub application_cursor_keys: bool,
+    pub auto_wrap: bool,
 }
 
 impl TerminalState {
@@ -24,6 +42,41 @@ impl TerminalState {
             cursor: Cursor::new(),
             scrollback: Scrollback::new(scrollback_cap),
             parser: Parser::default(),
+            pen: Attrs::default(),
+            saved_cursor: None,
+            scroll_region: None,
+            alternate_screen: None,
+            window_title: String::new(),
+            bracketed_paste: false,
+            application_cursor_keys: false,
+            auto_wrap: true,
+        }
+    }
+
+    pub fn window_title(&self) -> &str {
+        &self.window_title
+    }
+
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.bracketed_paste
+    }
+
+    pub fn application_cursor_keys_enabled(&self) -> bool {
+        self.application_cursor_keys
+    }
+
+    pub fn auto_wrap_enabled(&self) -> bool {
+        self.auto_wrap
+    }
+
+    pub fn resize(&mut self, new_width: u16, new_height: u16) {
+        self.grid.resize(new_width, new_height);
+        self.cursor.row = self.cursor.row.min(new_height.saturating_sub(1));
+        self.cursor.col = self.cursor.col.min(new_width.saturating_sub(1));
+        self.scroll_region = None;
+
+        if let Some(alt) = self.alternate_screen.as_mut() {
+            alt.grid.resize(new_width, new_height);
         }
     }
 
@@ -80,6 +133,7 @@ impl TerminalState {
             ParserAction::CarriageReturn => self.apply_carriage_return(events),
             ParserAction::Bell => events.push(CoreEvent::Bell),
             ParserAction::Backspace => self.apply_backspace(events),
+            ParserAction::Tab => self.apply_tab(events),
             ParserAction::CursorUp(steps) => self.apply_cursor_relative(-(steps as i32), 0, events),
             ParserAction::CursorDown(steps) => self.apply_cursor_relative(steps as i32, 0, events),
             ParserAction::CursorForward(steps) => {
@@ -91,8 +145,51 @@ impl TerminalState {
             ParserAction::CursorPosition { row, col } => {
                 self.apply_cursor_position(row, col, events)
             }
+            ParserAction::CursorHorizontalAbsolute(col) => {
+                self.apply_cursor_position(self.cursor.row, col, events)
+            }
             ParserAction::ClearDisplay(mode) => self.apply_clear_display(mode, events),
             ParserAction::ClearLine(mode) => self.apply_clear_line(mode, events),
+            ParserAction::SetGraphicsRendition(params) => self.apply_sgr(params.as_slice()),
+            ParserAction::CursorSavePosition => self.apply_cursor_save(),
+            ParserAction::CursorRestorePosition => self.apply_cursor_restore(events),
+            ParserAction::SetCursorVisible(visible) => {
+                self.cursor.visible = visible;
+                events.push(CoreEvent::CursorVisibilityChanged { visible });
+            }
+            ParserAction::AlternateScreenEnter => {
+                self.apply_alternate_screen_enter();
+                events.push(CoreEvent::AlternateScreenEntered);
+            }
+            ParserAction::AlternateScreenLeave => {
+                self.apply_alternate_screen_leave();
+                events.push(CoreEvent::AlternateScreenLeft);
+            }
+            ParserAction::InsertLines(n) => self.apply_insert_lines(n),
+            ParserAction::DeleteLines(n) => self.apply_delete_lines(n),
+            ParserAction::ScrollUp(n) => self.apply_scroll_up(n, events),
+            ParserAction::ScrollDown(n) => self.apply_scroll_down(n),
+            ParserAction::EraseCharacters(n) => self.apply_erase_chars(n),
+            ParserAction::InsertCharacters(n) => self.apply_insert_chars(n),
+            ParserAction::DeleteCharacters(n) => self.apply_delete_chars(n),
+            ParserAction::SetScrollRegion { top, bottom } => {
+                let height = self.grid.height();
+                let bottom = bottom.unwrap_or(height.saturating_sub(1));
+                self.apply_set_scroll_region(top, bottom)
+            }
+            ParserAction::SetWindowTitle(title) => {
+                self.window_title = title.clone();
+                events.push(CoreEvent::WindowTitleChanged { title });
+            }
+            ParserAction::BracketedPasteMode(enabled) => {
+                self.bracketed_paste = enabled;
+            }
+            ParserAction::ApplicationCursorKeys(enabled) => {
+                self.application_cursor_keys = enabled;
+            }
+            ParserAction::AutoWrapMode(enabled) => {
+                self.auto_wrap = enabled;
+            }
             ParserAction::UnsupportedSequence(sequence) => {
                 events.push(CoreEvent::UnsupportedSequenceIgnored { sequence });
             }
@@ -122,17 +219,22 @@ impl TerminalState {
         self.cursor.row = row;
         self.cursor.col = col;
 
-        if self.grid.put_char(row, col, ch).is_ok() {
-            events.push(CoreEvent::CellUpdated { row, col, ch });
+        if self.grid.put_char(row, col, ch, self.pen).is_ok() {
+            events.push(CoreEvent::CellUpdated {
+                row,
+                col,
+                ch,
+                attrs: self.pen,
+            });
         }
 
         let from = self.cursor;
         if col + 1 >= width {
             events.push(CoreEvent::LineWrapped { row });
             self.cursor.col = 0;
-            if row + 1 >= height {
-                self.push_scrolled_lines(1, events);
-                self.cursor.row = height.saturating_sub(1);
+            if row >= self.scroll_bottom() {
+                self.scroll_up_at_bottom(1, events);
+                self.cursor.row = self.scroll_bottom();
             } else {
                 self.cursor.row = row + 1;
             }
@@ -154,10 +256,11 @@ impl TerminalState {
         }
 
         let from = self.cursor;
-        if self.cursor.row + 1 >= self.grid.height() {
-            self.push_scrolled_lines(1, events);
-            self.cursor.row = self.grid.height().saturating_sub(1);
-        } else {
+        let bottom = self.scroll_bottom();
+
+        if self.cursor.row == bottom {
+            self.scroll_up_at_bottom(1, events);
+        } else if self.cursor.row + 1 < self.grid.height() {
             self.cursor.row += 1;
         }
 
@@ -183,6 +286,21 @@ impl TerminalState {
         let from = self.cursor;
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
+            events.push(CoreEvent::CursorMoved {
+                from,
+                to: self.cursor,
+            });
+        }
+    }
+
+    fn apply_tab(&mut self, events: &mut Vec<CoreEvent>) {
+        if self.grid.is_empty() {
+            return;
+        }
+        let from = self.cursor;
+        let next_tab = ((self.cursor.col / 8) + 1) * 8;
+        self.cursor.col = next_tab.min(self.grid.width().saturating_sub(1));
+        if from != self.cursor {
             events.push(CoreEvent::CursorMoved {
                 from,
                 to: self.cursor,
@@ -284,6 +402,188 @@ impl TerminalState {
         events.push(CoreEvent::LineCleared { row, mode });
     }
 
+    fn apply_sgr(&mut self, params: &[Option<u16>]) {
+        if params.is_empty() {
+            self.pen = Attrs::default();
+            return;
+        }
+
+        let mut i = 0;
+        while i < params.len() {
+            let code = params[i].unwrap_or(0);
+            match code {
+                0 => self.pen = Attrs::default(),
+                1 => self.pen.bold = true,
+                2 => self.pen.dim = true,
+                3 => self.pen.italic = true,
+                4 => self.pen.underline = true,
+                7 => self.pen.inverse = true,
+                9 => self.pen.strikethrough = true,
+                22 => {
+                    self.pen.bold = false;
+                    self.pen.dim = false;
+                }
+                23 => self.pen.italic = false,
+                24 => self.pen.underline = false,
+                27 => self.pen.inverse = false,
+                29 => self.pen.strikethrough = false,
+                30..=37 => self.pen.fg = crate::grid::Color::Indexed((code - 30) as u8),
+                38 => {
+                    if let Some(color) = parse_extended_color(params, &mut i) {
+                        self.pen.fg = color;
+                    }
+                }
+                39 => self.pen.fg = crate::grid::Color::Default,
+                40..=47 => self.pen.bg = crate::grid::Color::Indexed((code - 40) as u8),
+                48 => {
+                    if let Some(color) = parse_extended_color(params, &mut i) {
+                        self.pen.bg = color;
+                    }
+                }
+                49 => self.pen.bg = crate::grid::Color::Default,
+                90..=97 => self.pen.fg = crate::grid::Color::Indexed((code - 90 + 8) as u8),
+                100..=107 => self.pen.bg = crate::grid::Color::Indexed((code - 100 + 8) as u8),
+                _ => {} // ignore unknown SGR codes
+            }
+            i += 1;
+        }
+    }
+
+    fn apply_cursor_save(&mut self) {
+        self.saved_cursor = Some((self.cursor, self.pen));
+    }
+
+    fn apply_cursor_restore(&mut self, events: &mut Vec<CoreEvent>) {
+        if let Some((saved_cursor, saved_pen)) = self.saved_cursor {
+            let from = self.cursor;
+            self.cursor = saved_cursor;
+            self.pen = saved_pen;
+            if !self.grid.is_empty() {
+                self.cursor.row = self.cursor.row.min(self.grid.height().saturating_sub(1));
+                self.cursor.col = self.cursor.col.min(self.grid.width().saturating_sub(1));
+            }
+            if from != self.cursor {
+                events.push(CoreEvent::CursorMoved {
+                    from,
+                    to: self.cursor,
+                });
+            }
+        }
+    }
+
+    fn apply_alternate_screen_enter(&mut self) {
+        if self.alternate_screen.is_some() {
+            return;
+        }
+
+        let w = self.grid.width();
+        let h = self.grid.height();
+        let saved = AlternateScreenState {
+            grid: std::mem::replace(&mut self.grid, Grid::new(w, h)),
+            cursor: std::mem::take(&mut self.cursor),
+            pen: std::mem::take(&mut self.pen),
+            scrollback: std::mem::replace(
+                &mut self.scrollback,
+                Scrollback::new(0), // alt screen has no scrollback
+            ),
+            saved_cursor: self.saved_cursor.take(),
+            scroll_region: self.scroll_region.take(),
+        };
+
+        self.alternate_screen = Some(Box::new(saved));
+    }
+
+    fn apply_alternate_screen_leave(&mut self) {
+        if let Some(saved) = self.alternate_screen.take() {
+            self.grid = saved.grid;
+            self.cursor = saved.cursor;
+            self.pen = saved.pen;
+            self.scrollback = saved.scrollback;
+            self.saved_cursor = saved.saved_cursor;
+            self.scroll_region = saved.scroll_region;
+        }
+    }
+
+    fn apply_set_scroll_region(&mut self, top: u16, bottom: u16) {
+        if self.grid.is_empty() {
+            return;
+        }
+        let height = self.grid.height();
+        let top = top.min(height.saturating_sub(1));
+        let bottom = bottom.min(height.saturating_sub(1));
+
+        if top == 0 && bottom == height.saturating_sub(1) {
+            self.scroll_region = None;
+        } else if top <= bottom {
+            self.scroll_region = Some((top, bottom));
+        }
+        // CSI r also homes the cursor
+        let from = self.cursor;
+        self.cursor.row = 0;
+        self.cursor.col = 0;
+        if from != self.cursor {
+            // no event needed for implicit home from CSI r
+        }
+    }
+
+    fn apply_insert_lines(&mut self, n: u16) {
+        let bottom = self.scroll_bottom();
+        self.grid.insert_lines(self.cursor.row, n, bottom);
+    }
+
+    fn apply_delete_lines(&mut self, n: u16) {
+        let bottom = self.scroll_bottom();
+        self.grid.delete_lines(self.cursor.row, n, bottom);
+    }
+
+    fn apply_scroll_up(&mut self, n: u16, events: &mut Vec<CoreEvent>) {
+        let top = self.scroll_top();
+        let bottom = self.scroll_bottom();
+        if top == 0 && bottom == self.grid.height().saturating_sub(1) {
+            self.push_scrolled_lines(n, events);
+        } else {
+            let _ = self.grid.scroll_up_region(n, top, bottom);
+        }
+    }
+
+    fn apply_scroll_down(&mut self, n: u16) {
+        let top = self.scroll_top();
+        let bottom = self.scroll_bottom();
+        self.grid.scroll_down_region(n, top, bottom);
+    }
+
+    fn apply_erase_chars(&mut self, n: u16) {
+        self.grid.erase_chars(self.cursor.row, self.cursor.col, n);
+    }
+
+    fn apply_insert_chars(&mut self, n: u16) {
+        self.grid.insert_chars(self.cursor.row, self.cursor.col, n);
+    }
+
+    fn apply_delete_chars(&mut self, n: u16) {
+        self.grid.delete_chars(self.cursor.row, self.cursor.col, n);
+    }
+
+    fn scroll_top(&self) -> u16 {
+        self.scroll_region.map_or(0, |(top, _)| top)
+    }
+
+    fn scroll_bottom(&self) -> u16 {
+        self.scroll_region
+            .map_or(self.grid.height().saturating_sub(1), |(_, bottom)| bottom)
+    }
+
+    fn scroll_up_at_bottom(&mut self, lines: u16, events: &mut Vec<CoreEvent>) {
+        let top = self.scroll_top();
+        let bottom = self.scroll_bottom();
+
+        if top == 0 && bottom == self.grid.height().saturating_sub(1) {
+            self.push_scrolled_lines(lines, events);
+        } else {
+            let _ = self.grid.scroll_up_region(lines, top, bottom);
+        }
+    }
+
     fn push_scrolled_lines(&mut self, lines: u16, events: &mut Vec<CoreEvent>) {
         let removed = self.grid.scroll_up(lines);
         if removed.is_empty() {
@@ -304,9 +604,31 @@ impl TerminalState {
     }
 }
 
+fn parse_extended_color(params: &[Option<u16>], i: &mut usize) -> Option<crate::grid::Color> {
+    let next = params.get(*i + 1).copied().flatten()?;
+    match next {
+        5 => {
+            // 256-color: 38;5;N or 48;5;N
+            let n = params.get(*i + 2).copied().flatten()?;
+            *i += 2;
+            Some(crate::grid::Color::Indexed(n as u8))
+        }
+        2 => {
+            // truecolor: 38;2;R;G;B or 48;2;R;G;B
+            let r = params.get(*i + 2).copied().flatten()?;
+            let g = params.get(*i + 3).copied().flatten()?;
+            let b = params.get(*i + 4).copied().flatten()?;
+            *i += 4;
+            Some(crate::grid::Color::Rgb(r as u8, g as u8, b as u8))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::events::{CoreEvent, DisplayClearMode, IngestDegradeReason};
+    use crate::grid::{Attrs, Color};
 
     use super::{FEED_CHUNK_BYTES, MAX_FEED_BYTES_PER_CALL, TerminalState};
 
@@ -363,7 +685,8 @@ mod tests {
     #[test]
     fn unsupported_sequence_is_reported_without_panicking() {
         let mut state = TerminalState::new(4, 1, 5);
-        let events = state.feed(b"\x1b[?25l");
+        // Use a truly unsupported private mode
+        let events = state.feed(b"\x1b[?9999h");
 
         assert!(
             events
@@ -510,5 +833,252 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn sgr_sets_pen_attributes() {
+        let mut state = TerminalState::new(10, 2, 5);
+        // ESC[1;31m = bold + red fg
+        let _ = state.feed(b"\x1b[1;31mA");
+        assert!(state.pen.bold);
+        assert_eq!(state.pen.fg, Color::Indexed(1));
+        let cell = state.grid.get_cell(0, 0).expect("cell");
+        assert_eq!(cell.ch, 'A');
+        assert!(cell.attrs.bold);
+        assert_eq!(cell.attrs.fg, Color::Indexed(1));
+    }
+
+    #[test]
+    fn sgr_reset_clears_pen() {
+        let mut state = TerminalState::new(10, 2, 5);
+        let _ = state.feed(b"\x1b[1;31mA\x1b[0mB");
+        assert_eq!(state.pen, Attrs::default());
+        let cell = state.grid.get_cell(0, 1).expect("cell B");
+        assert_eq!(cell.attrs, Attrs::default());
+    }
+
+    #[test]
+    fn sgr_256_color() {
+        let mut state = TerminalState::new(10, 2, 5);
+        let _ = state.feed(b"\x1b[38;5;196mR");
+        assert_eq!(state.pen.fg, Color::Indexed(196));
+    }
+
+    #[test]
+    fn sgr_truecolor() {
+        let mut state = TerminalState::new(10, 2, 5);
+        let _ = state.feed(b"\x1b[38;2;255;128;0mO");
+        assert_eq!(state.pen.fg, Color::Rgb(255, 128, 0));
+    }
+
+    #[test]
+    fn tab_advances_to_next_stop() {
+        let mut state = TerminalState::new(20, 1, 5);
+        let _ = state.feed(b"AB\t");
+        assert_eq!(state.cursor.col, 8);
+    }
+
+    #[test]
+    fn cursor_save_restore_preserves_pen() {
+        let mut state = TerminalState::new(10, 5, 5);
+        let _ = state.feed(b"\x1b[1;31m\x1b7\x1b[0m\x1b8");
+        assert!(state.pen.bold);
+        assert_eq!(state.pen.fg, Color::Indexed(1));
+    }
+
+    #[test]
+    fn alternate_screen_enter_leave_roundtrip() {
+        let mut state = TerminalState::new(4, 2, 5);
+        let _ = state.feed(b"ABCD");
+        let _ = state.feed(b"\x1b[?1049h");
+        assert_eq!(state.grid.row_string(0).expect("alt row 0"), "    ");
+
+        let _ = state.feed(b"XY");
+        let _ = state.feed(b"\x1b[?1049l");
+        assert_eq!(state.grid.row_string(0).expect("main row 0"), "ABCD");
+    }
+
+    #[test]
+    fn scroll_region_confines_scrolling() {
+        let mut state = TerminalState::new(3, 5, 10);
+        for row in 0..5u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..3u16 {
+                let _ = state.grid.put_char(row, col, ch, Attrs::default());
+            }
+        }
+        // Set scroll region rows 1..3 (0-indexed)
+        let _ = state.feed(b"\x1b[2;4r");
+        // Move to row 3 (bottom of region) and send LF
+        state.cursor.row = 3;
+        state.cursor.col = 0;
+        let _ = state.feed(b"\n");
+
+        assert_eq!(state.grid.row_string(0).expect("row 0"), "AAA");
+        assert_eq!(state.grid.row_string(1).expect("row 1"), "CCC");
+        assert_eq!(state.grid.row_string(2).expect("row 2"), "DDD");
+        assert_eq!(state.grid.row_string(3).expect("row 3"), "   ");
+        assert_eq!(state.grid.row_string(4).expect("row 4"), "EEE");
+    }
+
+    #[test]
+    fn resize_preserves_content() {
+        let mut state = TerminalState::new(4, 3, 10);
+        let _ = state.feed(b"AB");
+        state.resize(6, 4);
+        assert_eq!(state.grid.width(), 6);
+        assert_eq!(state.grid.height(), 4);
+        assert_eq!(state.grid.get_char(0, 0).expect("cell"), 'A');
+        assert_eq!(state.grid.get_char(0, 1).expect("cell"), 'B');
+    }
+
+    #[test]
+    fn resize_clamps_cursor() {
+        let mut state = TerminalState::new(10, 10, 10);
+        state.cursor.row = 8;
+        state.cursor.col = 9;
+        state.resize(5, 5);
+        assert_eq!(state.cursor.row, 4);
+        assert_eq!(state.cursor.col, 4);
+    }
+
+    #[test]
+    fn cursor_visibility_via_csi_25() {
+        let mut state = TerminalState::new(10, 2, 5);
+        assert!(state.cursor.visible);
+        let events = state.feed(b"\x1b[?25l");
+        assert!(!state.cursor.visible);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CoreEvent::CursorVisibilityChanged { visible: false }))
+        );
+        let events = state.feed(b"\x1b[?25h");
+        assert!(state.cursor.visible);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CoreEvent::CursorVisibilityChanged { visible: true }))
+        );
+    }
+
+    #[test]
+    fn window_title_from_osc() {
+        let mut state = TerminalState::new(10, 2, 5);
+        let events = state.feed(b"\x1b]0;My Title\x07");
+        assert_eq!(state.window_title(), "My Title");
+        assert!(
+            events.iter().any(
+                |e| matches!(e, CoreEvent::WindowTitleChanged { title } if title == "My Title")
+            )
+        );
+    }
+
+    #[test]
+    fn scroll_region_print_wrap_stays_in_region() {
+        let mut state = TerminalState::new(4, 8, 10);
+        // Set scroll region rows 3..6 (1-indexed: 4;7r -> 0-indexed 3..6)
+        let _ = state.feed(b"\x1b[4;7r");
+        // Move cursor to row 5 (bottom of region), col 3 (last col)
+        state.cursor.row = 6;
+        state.cursor.col = 3;
+        // Print a char at the last column - should wrap within region
+        let _ = state.feed(b"X");
+        // Cursor should wrap to col 0 and stay at scroll_bottom (row 6),
+        // region should have scrolled internally
+        assert_eq!(state.cursor.row, 6);
+        assert_eq!(state.cursor.col, 0);
+        // Row 0-2 and row 7 should be unaffected (outside region)
+    }
+
+    #[test]
+    fn cursor_restore_is_non_consuming() {
+        let mut state = TerminalState::new(10, 10, 5);
+        // Save cursor at (5, 10) - ESC 7
+        state.cursor.row = 5;
+        state.cursor.col = 9;
+        let _ = state.feed(b"\x1b7");
+        // Restore - ESC 8
+        state.cursor.row = 0;
+        state.cursor.col = 0;
+        let _ = state.feed(b"\x1b8");
+        assert_eq!(state.cursor.row, 5);
+        assert_eq!(state.cursor.col, 9);
+        // Restore again - should still work (non-consuming)
+        state.cursor.row = 0;
+        state.cursor.col = 0;
+        let _ = state.feed(b"\x1b8");
+        assert_eq!(state.cursor.row, 5);
+        assert_eq!(state.cursor.col, 9);
+    }
+
+    #[test]
+    fn cursor_restore_survives_resize() {
+        let mut state = TerminalState::new(10, 10, 5);
+        state.cursor.row = 5;
+        state.cursor.col = 9;
+        let _ = state.feed(b"\x1b7");
+        // Resize smaller
+        state.resize(3, 3);
+        // Restore - should clamp to (2, 2)
+        let _ = state.feed(b"\x1b8");
+        assert_eq!(state.cursor.row, 2);
+        assert_eq!(state.cursor.col, 2);
+        // Resize back to original
+        state.resize(10, 10);
+        // Restore again - should get original (5, 9) since saved_cursor is preserved
+        let _ = state.feed(b"\x1b8");
+        assert_eq!(state.cursor.row, 5);
+        assert_eq!(state.cursor.col, 9);
+    }
+
+    #[test]
+    fn scroll_region_single_line() {
+        let mut state = TerminalState::new(10, 5, 5);
+        // ESC[3;3r -> 1-line region at row 2 (0-indexed)
+        let _ = state.feed(b"\x1b[3;3r");
+        assert_eq!(state.scroll_region, Some((2, 2)));
+    }
+
+    #[test]
+    fn bracketed_paste_mode_toggle() {
+        let mut state = TerminalState::new(10, 2, 5);
+        assert!(!state.bracketed_paste_enabled());
+        let _ = state.feed(b"\x1b[?2004h");
+        assert!(state.bracketed_paste_enabled());
+        let _ = state.feed(b"\x1b[?2004l");
+        assert!(!state.bracketed_paste_enabled());
+    }
+
+    #[test]
+    fn application_cursor_keys_mode() {
+        let mut state = TerminalState::new(10, 2, 5);
+        assert!(!state.application_cursor_keys_enabled());
+        let _ = state.feed(b"\x1b[?1h");
+        assert!(state.application_cursor_keys_enabled());
+        let _ = state.feed(b"\x1b[?1l");
+        assert!(!state.application_cursor_keys_enabled());
+    }
+
+    #[test]
+    fn auto_wrap_mode() {
+        let mut state = TerminalState::new(10, 2, 5);
+        assert!(state.auto_wrap_enabled());
+        let _ = state.feed(b"\x1b[?7l");
+        assert!(!state.auto_wrap_enabled());
+        let _ = state.feed(b"\x1b[?7h");
+        assert!(state.auto_wrap_enabled());
+    }
+
+    #[test]
+    fn osc_st_terminator_sets_title() {
+        let mut state = TerminalState::new(10, 2, 5);
+        let events = state.feed(b"\x1b]0;Title ST\x1b\\");
+        assert_eq!(state.window_title(), "Title ST");
+        assert!(
+            events.iter().any(
+                |e| matches!(e, CoreEvent::WindowTitleChanged { title } if title == "Title ST")
+            )
+        );
     }
 }
