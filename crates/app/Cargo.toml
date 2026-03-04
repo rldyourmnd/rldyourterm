@@ -22,4 +22,6 @@ rldyourterm-render-cpu = { path = "../features/render_cpu" }
 rldyourterm-render-gpu = { path = "../features/render_gpu" }
 rldyourterm-settings = { path = "../features/settings" }
 rldyourterm-shell-integration = { path = "../features/shell_integration" }
+rldyourterm-core = { path = "../core" }
 rldyourterm-diagnostics = { path = "../features/diagnostics" }
+arboard.workspace = true
