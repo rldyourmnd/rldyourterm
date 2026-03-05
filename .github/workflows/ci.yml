@@ -11,18 +11,71 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # ==================== Platform Matrix Jobs ====================
+
   check:
-    name: Check
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, macos]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.7.3
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - run: cargo check --workspace
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, macos]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.7.3
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - run: cargo test --workspace
+
+  # ==================== Code Coverage ====================
+
+  coverage:
+    name: Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2.7.3
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev
-      - run: cargo check --workspace
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Upload to codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ==================== Lint & Format ====================
 
   clippy:
     name: Clippy
@@ -39,19 +92,6 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev
       - run: cargo clippy --workspace -- -D warnings
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.7.3
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
-      - run: cargo test --workspace
-
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -61,6 +101,8 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  # ==================== MSRV Check ====================
 
   msrv:
     name: MSRV (1.92)
@@ -77,6 +119,8 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev
       - run: cargo check --workspace
 
+  # ==================== Security ====================
+
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -88,3 +132,11 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/dependency-review-action@v4
