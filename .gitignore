@@ -3,6 +3,7 @@
 
 # Local agent/session state
 .serena/
+.claude/
 
 # Rust build artifacts
 target/
