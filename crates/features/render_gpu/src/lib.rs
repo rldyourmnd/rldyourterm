@@ -360,6 +360,18 @@ const ATLAS_SLOTS: usize = (ATLAS_GLYPH_COLS * ATLAS_GLYPH_ROWS) as usize; // 81
 
 // Default terminal colors (must match gui_runtime)
 const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
+
+// Attribute flag bits packed in upper bits of CellInstance::atlas_and_flags.
+// Lower 16 bits = atlas slot index (supports 65536 glyphs).
+const ATTR_BOLD: u32 = 1 << 16;
+const ATTR_ITALIC: u32 = 1 << 17;
+const ATTR_UNDERLINE: u32 = 1 << 18;
+const ATTR_STRIKETHROUGH: u32 = 1 << 19;
+const ATTR_DIM: u32 = 1 << 20;
+const ATTR_INVERSE: u32 = 1 << 21;
+
+// Sentinel value indicating no active selection (u32::MAX).
+const SELECTION_NONE: u32 = u32::MAX;
 const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const INITIAL_CELL_BUFFER_CAPACITY: usize = 120 * 32;
 
@@ -377,7 +389,10 @@ struct GridUniforms {
     cursor_row: u32,
     cursor_col: u32,
     cursor_visible: u32,
-    _pad: u32,
+    selection_start: u32,
+    selection_end: u32,
+    blink_visible: u32,
+    _pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -404,6 +419,8 @@ struct GpuBackend {
     cell_bind_group_layout: wgpu::BindGroupLayout,
     cell_bind_group: wgpu::BindGroup,
     cell_buffer: wgpu::Buffer,
+    cell_buffer_back: wgpu::Buffer,
+    cell_bind_group_back: wgpu::BindGroup,
     cell_buffer_capacity: usize,
     cell_instances: Vec<CellInstance>,
     glyph_cache: GlyphCache,
@@ -415,6 +432,9 @@ struct GpuBackend {
 impl GpuBackend {
     /// Updates `cell_instances` in-place for rows marked dirty. Clean rows are
     /// skipped entirely, preserving previous frame data in CPU vec and GPU buffer.
+    ///
+    /// Text attribute flags (bold, italic, underline, strikethrough, dim, inverse)
+    /// are packed into upper bits of `atlas_and_flags` for shader-side rendering.
     fn prepare_dirty_rows(&mut self, terminal: &TerminalState, dirty_rows: &[bool]) {
         let cols = terminal.grid.width() as usize;
         let rows = terminal.grid.height() as usize;
@@ -428,22 +448,11 @@ impl GpuBackend {
             if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
                 for (col, cell) in row_cells.iter().take(cols).enumerate() {
                     let attrs = &cell.attrs;
-                    let mut fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
-                    let mut bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
-
-                    if attrs.dim {
-                        let r = (fg >> 16) & 0xFF;
-                        let g = (fg >> 8) & 0xFF;
-                        let b = fg & 0xFF;
-                        fg = ((r / 2) << 16) | ((g / 2) << 8) | (b / 2);
-                    }
-
-                    if attrs.inverse {
-                        std::mem::swap(&mut fg, &mut bg);
-                    }
+                    let fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
+                    let bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
 
                     let slot = if cell.ch == ' ' {
-                        0
+                        0u16
                     } else {
                         ensure_glyph_in_atlas(
                             cell.ch,
@@ -455,8 +464,28 @@ impl GpuBackend {
                         )
                     };
 
+                    let mut flags = slot as u32;
+                    if attrs.bold {
+                        flags |= ATTR_BOLD;
+                    }
+                    if attrs.italic {
+                        flags |= ATTR_ITALIC;
+                    }
+                    if attrs.underline {
+                        flags |= ATTR_UNDERLINE;
+                    }
+                    if attrs.strikethrough {
+                        flags |= ATTR_STRIKETHROUGH;
+                    }
+                    if attrs.dim {
+                        flags |= ATTR_DIM;
+                    }
+                    if attrs.inverse {
+                        flags |= ATTR_INVERSE;
+                    }
+
                     self.cell_instances[row_offset + col] = CellInstance {
-                        atlas_and_flags: slot as u32,
+                        atlas_and_flags: flags,
                         fg_color: fg,
                         bg_color: bg,
                         _pad: 0,
@@ -781,13 +810,25 @@ impl GpuRenderer {
 
         // Cell instance buffer (initial capacity for 120x32 terminal)
         let initial_capacity = INITIAL_CELL_BUFFER_CAPACITY;
+        let cell_buf_size = (initial_capacity * std::mem::size_of::<CellInstance>()) as u64;
+        let cell_buf_usage = wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC;
         let cell_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cell-instances"),
-            size: (initial_capacity * std::mem::size_of::<CellInstance>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            size: cell_buf_size,
+            usage: cell_buf_usage,
             mapped_at_creation: false,
         });
         let cell_bind_group = create_cell_bind_group(&device, &cell_bgl, &cell_buffer);
+
+        let cell_buffer_back = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cell-instances-back"),
+            size: cell_buf_size,
+            usage: cell_buf_usage,
+            mapped_at_creation: false,
+        });
+        let cell_bind_group_back = create_cell_bind_group(&device, &cell_bgl, &cell_buffer_back);
 
         info!(
             format = ?format,
@@ -817,6 +858,8 @@ impl GpuRenderer {
             cell_bind_group_layout: cell_bgl,
             cell_bind_group,
             cell_buffer,
+            cell_buffer_back,
+            cell_bind_group_back,
             cell_buffer_capacity: initial_capacity,
             cell_instances: vec![
                 CellInstance {
@@ -855,12 +898,14 @@ impl GpuRenderer {
     /// Renders the terminal state to the GPU surface.
     ///
     /// `dirty_rows` indicates which grid rows changed since last render.
+    /// `scroll_count` is lines scrolled since last frame (for GPU DMA scroll optimization).
     /// Only dirty rows are re-prepared on the CPU and uploaded to the GPU buffer.
     /// The GPU buffer retains previous frame data for clean rows.
     pub fn render_frame(
         &mut self,
         terminal: &TerminalState,
         dirty_rows: &[bool],
+        scroll_count: usize,
     ) -> Result<(), GpuRenderError> {
         let backend = self
             .backend
@@ -892,19 +937,34 @@ impl GpuRenderer {
         self.last_cursor_col = cursor_col;
         self.last_cursor_visible = cursor_visible;
 
-        // Grow cell buffer and CPU-side instance cache if needed
+        // Grow both cell buffers and CPU-side instance cache if needed
         let next_capacity = next_cell_buffer_capacity(backend.cell_buffer_capacity, cell_count);
         if next_capacity != backend.cell_buffer_capacity {
+            let buf_size = (next_capacity * std::mem::size_of::<CellInstance>()) as u64;
+            let buf_usage = wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC;
             backend.cell_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("cell-instances"),
-                size: (next_capacity * std::mem::size_of::<CellInstance>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                size: buf_size,
+                usage: buf_usage,
                 mapped_at_creation: false,
             });
             backend.cell_bind_group = create_cell_bind_group(
                 &backend.device,
                 &backend.cell_bind_group_layout,
                 &backend.cell_buffer,
+            );
+            backend.cell_buffer_back = backend.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cell-instances-back"),
+                size: buf_size,
+                usage: buf_usage,
+                mapped_at_creation: false,
+            });
+            backend.cell_bind_group_back = create_cell_bind_group(
+                &backend.device,
+                &backend.cell_bind_group_layout,
+                &backend.cell_buffer_back,
             );
             backend.cell_buffer_capacity = next_capacity;
             backend.cell_instances.resize(
@@ -918,20 +978,119 @@ impl GpuRenderer {
             );
         }
 
-        // Prepare cell instance data ONLY for dirty rows (in-place update)
-        backend.prepare_dirty_rows(terminal, dirty_rows);
-
-        // Upload only dirty row ranges to GPU (coalesced into contiguous spans)
         let instance_size = std::mem::size_of::<CellInstance>();
         let row_byte_size = grid_cols * instance_size;
-        upload_dirty_ranges(
-            &backend.queue,
-            &backend.cell_buffer,
-            &backend.cell_instances,
-            dirty_rows,
-            grid_cols,
-            row_byte_size,
-        );
+
+        // Scroll-aware upload: if scroll happened, use GPU DMA to shift existing data
+        // in back buffer, then upload only the new rows.
+        if scroll_count > 0 && scroll_count < grid_rows {
+            // GPU DMA: copy shifted rows from front buffer to back buffer
+            let src_offset = (scroll_count * row_byte_size) as u64;
+            let copy_rows = grid_rows - scroll_count;
+            let copy_size = (copy_rows * row_byte_size) as u64;
+
+            let mut encoder =
+                backend
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("scroll-dma"),
+                    });
+            encoder.copy_buffer_to_buffer(
+                &backend.cell_buffer,
+                src_offset,
+                &backend.cell_buffer_back,
+                0,
+                copy_size,
+            );
+            backend.queue.submit(Some(encoder.finish()));
+
+            // CPU: prepare and update only the NEW rows at the bottom
+            let first_new_row = grid_rows - scroll_count;
+            for row in first_new_row..grid_rows {
+                let row_offset = row * grid_cols;
+                if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
+                    for (col, cell) in row_cells.iter().take(grid_cols).enumerate() {
+                        let attrs = &cell.attrs;
+                        let fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
+                        let bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
+                        let slot = if cell.ch == ' ' {
+                            0u16
+                        } else {
+                            ensure_glyph_in_atlas(
+                                cell.ch,
+                                &mut backend.glyph_cache,
+                                &mut backend.char_to_slot,
+                                &mut backend.next_atlas_slot,
+                                &backend.atlas_texture,
+                                &backend.queue,
+                            )
+                        };
+                        let mut flags = slot as u32;
+                        if attrs.bold {
+                            flags |= ATTR_BOLD;
+                        }
+                        if attrs.italic {
+                            flags |= ATTR_ITALIC;
+                        }
+                        if attrs.underline {
+                            flags |= ATTR_UNDERLINE;
+                        }
+                        if attrs.strikethrough {
+                            flags |= ATTR_STRIKETHROUGH;
+                        }
+                        if attrs.dim {
+                            flags |= ATTR_DIM;
+                        }
+                        if attrs.inverse {
+                            flags |= ATTR_INVERSE;
+                        }
+                        backend.cell_instances[row_offset + col] = CellInstance {
+                            atlas_and_flags: flags,
+                            fg_color: fg,
+                            bg_color: bg,
+                            _pad: 0,
+                        };
+                    }
+                }
+            }
+
+            // Upload new rows to back buffer
+            let upload_offset = (first_new_row * row_byte_size) as u64;
+            let instance_start = first_new_row * grid_cols;
+            let instance_end = grid_rows * grid_cols;
+            backend.queue.write_buffer(
+                &backend.cell_buffer_back,
+                upload_offset,
+                bytemuck::cast_slice(&backend.cell_instances[instance_start..instance_end]),
+            );
+
+            // Also update the CPU shadow for the shifted rows (for future partial updates)
+            for row in 0..copy_rows {
+                let src_start = (row + scroll_count) * grid_cols;
+                let dst_start = row * grid_cols;
+                backend
+                    .cell_instances
+                    .copy_within(src_start..src_start + grid_cols, dst_start);
+            }
+
+            // Swap front/back buffers
+            std::mem::swap(&mut backend.cell_buffer, &mut backend.cell_buffer_back);
+            std::mem::swap(
+                &mut backend.cell_bind_group,
+                &mut backend.cell_bind_group_back,
+            );
+        } else {
+            // Standard path: prepare dirty rows and upload coalesced ranges
+            backend.prepare_dirty_rows(terminal, dirty_rows);
+            upload_dirty_ranges(
+                &backend.queue,
+                &backend.cell_buffer,
+                &backend.cell_instances,
+                dirty_rows,
+                grid_cols,
+                row_byte_size,
+            );
+        }
 
         // Update grid uniforms
         let uniforms = GridUniforms {
@@ -946,7 +1105,10 @@ impl GpuRenderer {
             cursor_row,
             cursor_col,
             cursor_visible,
-            _pad: 0,
+            selection_start: SELECTION_NONE,
+            selection_end: SELECTION_NONE,
+            blink_visible: 1,
+            _pad: [0; 2],
         };
         backend.queue.write_buffer(
             &backend.grid_uniform_buffer,
@@ -1614,7 +1776,7 @@ mod tests {
         let terminal = TerminalState::new(80, 24, 100);
         let dirty = vec![true; 24];
         assert_eq!(
-            renderer.render_frame(&terminal, &dirty),
+            renderer.render_frame(&terminal, &dirty, 0),
             Err(GpuRenderError::BackendUnavailable)
         );
     }
@@ -1706,8 +1868,27 @@ mod tests {
 
     #[test]
     fn grid_uniforms_bytemuck_pod_layout() {
-        assert_eq!(std::mem::size_of::<GridUniforms>(), 48);
+        assert_eq!(std::mem::size_of::<GridUniforms>(), 64);
         assert_eq!(std::mem::align_of::<GridUniforms>(), 4);
+    }
+
+    #[test]
+    fn attr_flags_do_not_overlap_atlas_index() {
+        assert_eq!(ATTR_BOLD & 0xFFFF, 0);
+        assert_eq!(ATTR_ITALIC & 0xFFFF, 0);
+        assert_eq!(ATTR_UNDERLINE & 0xFFFF, 0);
+        assert_eq!(ATTR_STRIKETHROUGH & 0xFFFF, 0);
+        assert_eq!(ATTR_DIM & 0xFFFF, 0);
+        assert_eq!(ATTR_INVERSE & 0xFFFF, 0);
+        // All flags use distinct bits
+        let all_flags =
+            ATTR_BOLD | ATTR_ITALIC | ATTR_UNDERLINE | ATTR_STRIKETHROUGH | ATTR_DIM | ATTR_INVERSE;
+        assert_eq!(all_flags.count_ones(), 6);
+    }
+
+    #[test]
+    fn selection_none_sentinel_is_u32_max() {
+        assert_eq!(SELECTION_NONE, u32::MAX);
     }
 
     #[test]
