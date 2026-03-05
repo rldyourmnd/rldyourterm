@@ -41,8 +41,10 @@ pub(crate) fn classify_pty_boundary_failure(
         SessionTransitionOutcome::FatalBoundary { reason, .. } => {
             Ok(PtyBoundaryPolicyDecision::Fatal { reason })
         }
-        other => Err(anyhow!(
-            "unexpected session transition for boundary={} outcome={other:?}",
+        outcome @ (SessionTransitionOutcome::Started { .. }
+        | SessionTransitionOutcome::StopRequested
+        | SessionTransitionOutcome::Stopped) => Err(anyhow!(
+            "unexpected session transition for boundary={} outcome={outcome:?}",
             session_boundary_token(boundary)
         )),
     }
