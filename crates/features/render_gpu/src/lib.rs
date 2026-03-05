@@ -6,7 +6,8 @@ use rldyourterm_foundation::error::GpuFailureKind;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use tracing::info;
+use std::path::Path;
+use tracing::{debug, info, warn};
 
 pub const DEFAULT_SURFACE_RETRY_BUDGET: u8 = 3;
 pub const DEFAULT_SURFACE_RECONFIGURE_RETRY_BUDGET: u8 = 2;
@@ -394,6 +395,8 @@ struct GpuBackend {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    pipeline_cache: Option<wgpu::PipelineCache>,
+    adapter_info: wgpu::AdapterInfo,
     grid_uniform_buffer: wgpu::Buffer,
     grid_bind_group: wgpu::BindGroup,
     atlas_texture: wgpu::Texture,
@@ -442,12 +445,19 @@ impl GpuRenderer {
 
     /// Initializes the GPU backend with wgpu device, surface, pipeline, and glyph atlas.
     /// Must be called from the main thread (winit event loop) before any rendering.
+    ///
+    /// `cache_dir` — optional directory for persisting the wgpu pipeline cache across runs.
+    /// When provided, compiled shader machine code is saved/loaded to eliminate cold-start
+    /// compilation spikes (Vulkan only).
     pub fn initialize(
         &mut self,
         target: impl Into<wgpu::SurfaceTarget<'static>>,
         width: u32,
         height: u32,
+        cache_dir: Option<&Path>,
     ) -> Result<(), GpuRenderError> {
+        let t0 = std::time::Instant::now();
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default().with_env());
 
         let surface = instance
@@ -461,15 +471,36 @@ impl GpuRenderer {
         }))
         .map_err(|_| GpuRenderError::BackendUnavailable)?;
 
+        let adapter_info = adapter.get_info();
+        debug!(
+            backend = ?adapter_info.backend,
+            adapter = adapter_info.name,
+            elapsed_ms = t0.elapsed().as_millis(),
+            "gpu init: adapter acquired"
+        );
+
+        // Request PIPELINE_CACHE feature when the adapter supports it (Vulkan).
+        let pipeline_cache_supported = adapter.features().contains(wgpu::Features::PIPELINE_CACHE);
+        let required_features = if pipeline_cache_supported {
+            wgpu::Features::PIPELINE_CACHE
+        } else {
+            wgpu::Features::empty()
+        };
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("rldyourterm-gpu"),
-            required_features: wgpu::Features::empty(),
+            required_features,
             required_limits: wgpu::Limits::downlevel_defaults(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: Default::default(),
             trace: wgpu::Trace::Off,
         }))
         .map_err(|_| GpuRenderError::DeviceLost)?;
+
+        debug!(
+            elapsed_ms = t0.elapsed().as_millis(),
+            pipeline_cache_supported, "gpu init: device created"
+        );
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -493,10 +524,19 @@ impl GpuRenderer {
         };
         surface.configure(&device, &config);
 
-        // Build glyph atlas using fontdue rasterization
+        // Build glyph atlas with essential ranges only (ASCII + Box Drawing + Block Elements).
+        // Non-essential glyphs (Cyrillic, Latin Extended, Greek, etc.) are loaded on-demand
+        // via ensure_glyph_in_atlas when first encountered in terminal output.
         let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
         let (atlas_texture, char_to_slot, next_atlas_slot) =
             build_glyph_atlas(&device, &queue, &mut glyph_cache);
+
+        debug!(
+            glyph_count = char_to_slot.len(),
+            elapsed_ms = t0.elapsed().as_millis(),
+            "gpu init: atlas built (deferred mode)"
+        );
+
         let atlas_view = atlas_texture.create_view(&Default::default());
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
@@ -509,6 +549,39 @@ impl GpuRenderer {
             label: Some("terminal-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("terminal.wgsl").into()),
         });
+
+        // Pipeline cache: load from disk if available, create new otherwise.
+        let pipeline_cache = if pipeline_cache_supported {
+            let cache_data = cache_dir.and_then(|dir| {
+                let key = wgpu::util::pipeline_cache_key(&adapter_info)?;
+                let path = dir.join(key);
+                match std::fs::read(&path) {
+                    Ok(data) => {
+                        debug!(
+                            bytes = data.len(),
+                            path = %path.display(),
+                            "gpu init: loaded pipeline cache from disk"
+                        );
+                        Some(data)
+                    }
+                    Err(_) => None,
+                }
+            });
+
+            // SAFETY: data (if Some) was previously obtained from PipelineCache::get_data
+            // for the same adapter (keyed by pipeline_cache_key). fallback: true ensures
+            // a fresh empty cache is created if the data is corrupt or incompatible.
+            let cache = unsafe {
+                device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                    label: Some("rldyourterm-pipeline-cache"),
+                    data: cache_data.as_deref(),
+                    fallback: true,
+                })
+            };
+            Some(cache)
+        } else {
+            None
+        };
 
         // Bind group layouts
         let grid_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -593,8 +666,13 @@ impl GpuRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
-            cache: None,
+            cache: pipeline_cache.as_ref(),
         });
+
+        debug!(
+            elapsed_ms = t0.elapsed().as_millis(),
+            "gpu init: pipeline compiled"
+        );
 
         // Uniform buffer
         let grid_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -640,12 +718,14 @@ impl GpuRenderer {
 
         info!(
             format = ?format,
-            backend = ?adapter.get_info().backend,
-            adapter_name = adapter.get_info().name,
+            backend = ?adapter_info.backend,
+            adapter_name = adapter_info.name,
             width,
             height,
             atlas_slots = ATLAS_SLOTS,
             glyph_count = char_to_slot.len(),
+            pipeline_cache_supported,
+            elapsed_ms = t0.elapsed().as_millis(),
             "GPU backend initialized"
         );
 
@@ -655,6 +735,8 @@ impl GpuRenderer {
             surface,
             config,
             pipeline,
+            pipeline_cache,
+            adapter_info,
             grid_uniform_buffer,
             grid_bind_group,
             atlas_texture,
@@ -841,6 +923,45 @@ impl GpuRenderer {
 
         Ok(())
     }
+
+    /// Persist the pipeline cache to disk for faster startup on subsequent runs.
+    /// Writes atomically (temp file + rename) to avoid corrupt cache files.
+    /// No-op if pipeline caching is unsupported or no cache directory was provided.
+    pub fn save_pipeline_cache(&self, cache_dir: &Path) {
+        let Some(backend) = &self.backend else {
+            return;
+        };
+        let Some(cache) = &backend.pipeline_cache else {
+            return;
+        };
+        let Some(data) = cache.get_data() else {
+            debug!("pipeline cache: no data to persist");
+            return;
+        };
+        let Some(key) = wgpu::util::pipeline_cache_key(&backend.adapter_info) else {
+            debug!("pipeline cache: adapter does not produce a cache key");
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(cache_dir) {
+            warn!(error = %e, "pipeline cache: failed to create cache directory");
+            return;
+        }
+        let path = cache_dir.join(key);
+        let temp = path.with_extension("tmp");
+        if let Err(e) = std::fs::write(&temp, &data) {
+            warn!(error = %e, "pipeline cache: failed to write temp file");
+            return;
+        }
+        if let Err(e) = std::fs::rename(&temp, &path) {
+            warn!(error = %e, "pipeline cache: failed to rename temp to final");
+            return;
+        }
+        debug!(
+            bytes = data.len(),
+            path = %path.display(),
+            "pipeline cache: persisted to disk"
+        );
+    }
 }
 
 impl Default for GpuRenderer {
@@ -921,18 +1042,14 @@ fn build_glyph_atlas(
     char_to_slot.insert(' ', 0);
     let mut next_slot: u16 = 1;
 
-    // Pre-populate common Unicode ranges using fontdue rasterization
+    // Pre-populate only essential ranges at startup for fast init.
+    // Non-essential ranges (Cyrillic, Latin Extended, Greek, Hiragana, Powerline, etc.)
+    // are loaded on-demand via ensure_glyph_in_atlas when first encountered in terminal
+    // output. Typical cost: ~0.1ms per glyph, transparent to the user.
     let ranges: &[(u32, u32)] = &[
-        (0x0020, 0x007F), // ASCII
-        (0x00A0, 0x00FF), // Latin-1 Supplement
-        (0x0100, 0x017F), // Latin Extended-A
-        (0x0400, 0x04FF), // Cyrillic
-        (0x0370, 0x03FF), // Greek
-        (0x2500, 0x257F), // Box Drawing
-        (0x2580, 0x259F), // Block Elements
-        (0x3040, 0x309F), // Hiragana
-        (0x2600, 0x26FF), // Miscellaneous Symbols
-        (0xE0A0, 0xE0D4), // Powerline
+        (0x0020, 0x007F), // ASCII (required immediately for shell output)
+        (0x2500, 0x257F), // Box Drawing (required for TUI apps like htop, vim)
+        (0x2580, 0x259F), // Block Elements (required for TUI progress bars)
     ];
 
     for &(start, end) in ranges {
