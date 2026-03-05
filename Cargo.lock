@@ -2011,7 +2011,7 @@ dependencies = [
 name = "rldyourterm-render-cpu"
 version = "0.1.0"
 dependencies = [
- "rldyourterm-core",
+ "rldyourterm-services",
  "tracing",
 ]
 
@@ -2021,9 +2021,9 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "pollster",
- "rldyourterm-core",
  "rldyourterm-font",
  "rldyourterm-foundation",
+ "rldyourterm-services",
  "tracing",
  "wgpu",
 ]
@@ -2043,7 +2043,7 @@ dependencies = [
 name = "rldyourterm-settings"
 version = "0.1.0"
 dependencies = [
- "rldyourterm-core",
+ "rldyourterm-services",
  "serde",
  "tracing",
 ]

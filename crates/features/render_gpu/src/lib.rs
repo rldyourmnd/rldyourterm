@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
-use rldyourterm_core::grid::{self, CELL_HEIGHT, CELL_WIDTH, Color};
-use rldyourterm_core::state::TerminalState;
 use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
 use rldyourterm_foundation::error::GpuFailureKind;
+use rldyourterm_services::TerminalState;
+use rldyourterm_services::grid::{self, CELL_HEIGHT, CELL_WIDTH, Color};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -1828,7 +1828,7 @@ mod tests {
     fn color_to_u32_indexed() {
         // Index 1 = standard red = 0xCC0000 in ANSI palette
         let result = grid::color_to_u32(Color::Indexed(1), (0, 0, 0));
-        assert_eq!(result, rldyourterm_core::grid::ANSI_PALETTE[1]);
+        assert_eq!(result, grid::ANSI_PALETTE[1]);
     }
 
     #[test]
