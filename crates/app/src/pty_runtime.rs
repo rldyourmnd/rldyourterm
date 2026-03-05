@@ -502,7 +502,7 @@ fn current_pty_size() -> PtySize {
 fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut stdout = io::stdout();
-        let mut buffer = [0_u8; 4096];
+        let mut buffer = [0_u8; 65536];
 
         loop {
             match reader.read(&mut buffer) {

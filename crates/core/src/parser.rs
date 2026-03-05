@@ -44,6 +44,7 @@ impl Default for SgrParams {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParserAction {
     Print(char),
+    PrintText(String),
     LineFeed,
     CarriageReturn,
     Bell,
@@ -125,7 +126,7 @@ pub struct Parser {
 
 impl Parser {
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<ParserAction> {
-        let mut actions = Vec::new();
+        let mut actions = Vec::with_capacity(bytes.len() / 2);
         for &byte in bytes {
             match self.state {
                 ParseState::Ground => self.handle_ground_byte(byte, &mut actions),
@@ -506,7 +507,7 @@ impl Parser {
 
             match std::str::from_utf8(slice) {
                 Ok(valid) => {
-                    actions.extend(valid.chars().map(ParserAction::Print));
+                    emit_text(valid, actions);
                     consumed = self.text_buffer.len();
                     break;
                 }
@@ -514,7 +515,7 @@ impl Parser {
                     let valid_up_to = err.valid_up_to();
                     if valid_up_to > 0 {
                         match std::str::from_utf8(&slice[..valid_up_to]) {
-                            Ok(prefix) => actions.extend(prefix.chars().map(ParserAction::Print)),
+                            Ok(prefix) => emit_text(prefix, actions),
                             Err(_) => actions.push(ParserAction::Print(REPLACEMENT_CHAR)),
                         }
                     }
@@ -546,6 +547,23 @@ impl Parser {
             actions.push(ParserAction::Print(REPLACEMENT_CHAR));
             self.text_buffer.clear();
         }
+    }
+}
+
+fn emit_text(text: &str, actions: &mut Vec<ParserAction>) {
+    let mut chars = text.chars();
+    match chars.next() {
+        None => {}
+        Some(first) => match chars.next() {
+            None => actions.push(ParserAction::Print(first)),
+            Some(second) => {
+                let mut s = String::with_capacity(text.len());
+                s.push(first);
+                s.push(second);
+                s.extend(chars);
+                actions.push(ParserAction::PrintText(s));
+            }
+        },
     }
 }
 
@@ -625,8 +643,7 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                ParserAction::Print('a'),
-                ParserAction::Print('b'),
+                ParserAction::PrintText("ab".into()),
                 ParserAction::CarriageReturn,
                 ParserAction::LineFeed,
                 ParserAction::Bell,
@@ -963,12 +980,12 @@ mod tests {
     fn dcs_followed_by_normal_text() {
         let mut parser = Parser::default();
         let actions = parser.feed(b"\x1bP+q71756572792d6f732d6e616d65\x1b\\Hello");
-        // DCS absorbed, then "Hello" printed
-        let print_actions: Vec<_> = actions
-            .iter()
-            .filter(|a| matches!(a, ParserAction::Print(_)))
-            .collect();
-        assert_eq!(print_actions.len(), 5);
+        // DCS absorbed, then "Hello" printed as batch
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::PrintText(t) if t == "Hello"))
+        );
     }
 
     #[test]
@@ -1020,9 +1037,7 @@ mod tests {
             actions,
             vec![
                 ParserAction::SetWindowTitle("Hello".to_string()),
-                ParserAction::Print('A'),
-                ParserAction::Print('B'),
-                ParserAction::Print('C'),
+                ParserAction::PrintText("ABC".into()),
             ]
         );
     }
