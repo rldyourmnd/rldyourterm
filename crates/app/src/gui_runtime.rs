@@ -6,9 +6,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use rldyourterm_core::events::CoreEvent;
-use rldyourterm_core::grid::{self, CELL_HEIGHT, CELL_WIDTH};
-use rldyourterm_core::state::TerminalState;
 use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
 use rldyourterm_font::GlyphCache;
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
@@ -21,6 +18,9 @@ use rldyourterm_foundation::api::window::{
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_foundation_platform::window::PlatformWindowFactory;
 use rldyourterm_render_gpu::GpuRenderer;
+use rldyourterm_services::CoreEvent;
+use rldyourterm_services::TerminalState;
+use rldyourterm_services::grid::{self, CELL_HEIGHT, CELL_WIDTH};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
@@ -1126,7 +1126,7 @@ impl GuiRuntimeApp {
                 .render_frame(&self.terminal, dirty_rows, scroll_count)
             {
                 Ok(()) => {
-                    self.terminal.grid.take_dirty_rows();
+                    self.terminal.grid.clear_dirty_rows();
                     let _ = self
                         .ui_runtime
                         .handle_command(UiRuntimeCommand::GpuFramePresented)
@@ -1204,6 +1204,14 @@ impl GuiRuntimeApp {
                                 "gpu failure applied deterministic cpu fallback; session remains active"
                             );
                             self.emit_runtime_notice(&fallback_notice);
+
+                            // Defensive: if session was degraded from prior PTY boundary issue,
+                            // re-mark as running since terminal is operational on CPU path
+                            if self.session_policy.state() == SessionState::Degraded
+                                && let Err(error) = self.session_policy.mark_running()
+                            {
+                                tracing::warn!(%error, "session mark_running after CPU fallback failed");
+                            }
                         }
                         GpuFailureHandling::FatalForcedGpu => {
                             return Err(anyhow!(
@@ -1456,23 +1464,22 @@ fn render_terminal(
     let visible_rows = (height / CELL_HEIGHT).max(1).min(grid_rows);
     let visible_cols = (width / CELL_WIDTH).max(1).min(grid_cols);
 
-    // Collect dirty rows and ensure cursor rows are included
-    let mut dirty = terminal.grid.take_dirty_rows();
-
-    // Always include current cursor row for fresh cursor rendering
+    // Build dirty set: grid dirty rows + cursor rows (current and previous)
+    // Using dirty_rows() &[bool] for O(1) lookup instead of Vec::contains O(n)
+    let dirty_flags = terminal.grid.dirty_rows();
     let cursor_row = terminal.cursor.row;
-    if (cursor_row as usize) < visible_rows && !dirty.contains(&cursor_row) {
-        dirty.push(cursor_row);
-    }
 
-    // Include previous cursor row to erase old cursor overlay
-    if let Some(prev) = prev_cursor_row
-        && prev != cursor_row
-        && (prev as usize) < visible_rows
-        && !dirty.contains(&prev)
-    {
-        dirty.push(prev);
+    let mut dirty: Vec<u16> = Vec::with_capacity(visible_rows / 4 + 2);
+    for row in 0..visible_rows {
+        let r = row as u16;
+        if dirty_flags.get(row).copied().unwrap_or(false)
+            || r == cursor_row
+            || prev_cursor_row == Some(r)
+        {
+            dirty.push(r);
+        }
     }
+    terminal.grid.clear_dirty_rows();
 
     if dirty.is_empty() {
         return;
@@ -1550,7 +1557,7 @@ fn render_terminal(
     }
 }
 
-fn resolve_cell_colors(attrs: &rldyourterm_core::grid::Attrs) -> (u32, u32) {
+fn resolve_cell_colors(attrs: &grid::Attrs) -> (u32, u32) {
     let mut fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
     let mut bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
 

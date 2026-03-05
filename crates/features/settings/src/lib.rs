@@ -1,4 +1,4 @@
-use rldyourterm_core::render_mode::RenderMode;
+use rldyourterm_services::render_mode::RenderMode;
 use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_PROFILE_SCHEMA_VERSION: u16 = 1;

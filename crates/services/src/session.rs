@@ -124,6 +124,7 @@ pub struct SessionTransition {
     pub from: SessionState,
     pub to: SessionState,
     pub outcome: SessionTransitionOutcome,
+    pub sequence: u64,
 }
 
 #[derive(Debug)]
@@ -133,6 +134,7 @@ pub struct SessionController {
     active_shell: Option<SessionShell>,
     recoverable_boundaries: u8,
     max_recoverable_boundaries: u8,
+    transition_seq: u64,
 }
 
 impl SessionController {
@@ -147,6 +149,7 @@ impl SessionController {
             active_shell: None,
             recoverable_boundaries: 0,
             max_recoverable_boundaries,
+            transition_seq: 0,
         }
     }
 
@@ -334,7 +337,13 @@ impl SessionController {
     ) -> SessionTransition {
         let from = self.state;
         self.state = to;
-        SessionTransition { from, to, outcome }
+        self.transition_seq += 1;
+        SessionTransition {
+            from,
+            to,
+            outcome,
+            sequence: self.transition_seq,
+        }
     }
 
     fn invalid_transition(&self, event: &'static str) -> ServiceError {

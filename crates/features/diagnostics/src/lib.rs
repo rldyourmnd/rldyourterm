@@ -77,7 +77,7 @@ pub struct Event {
     pub kind: EventKind,
     pub message: String,
     pub correlation_id: Option<CorrelationId>,
-    pub payload_json: Option<String>,
+    pub(crate) payload_json: Option<String>,
     pub timestamp_ms: u64,
 }
 
@@ -98,7 +98,8 @@ impl Event {
         self
     }
 
-    pub fn with_payload_json(mut self, payload_json: impl Into<String>) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn with_payload_json(mut self, payload_json: impl Into<String>) -> Self {
         self.payload_json = Some(payload_json.into());
         self
     }
@@ -143,8 +144,9 @@ pub enum DiagnosticsPayloadError {
     },
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettingsApplyPayload {
+pub(crate) struct SettingsApplyPayload {
     pub command: String,
     pub outcome: String,
     pub previous_state: String,
@@ -169,8 +171,9 @@ pub struct SettingsApplyTypedPayload {
     pub reject_reason: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ShellResolutionPayload {
+pub(crate) struct ShellResolutionPayload {
     pub requested: String,
     pub resolved: Option<String>,
     pub fallback_applied: bool,
@@ -380,7 +383,8 @@ impl DiagnosticsSink {
         self.emit(Event::new(kind, message))
     }
 
-    pub fn emit_serialized_payload<T: Serialize>(
+    #[allow(dead_code)]
+    pub(crate) fn emit_serialized_payload<T: Serialize>(
         &self,
         kind: EventKind,
         message: impl Into<String>,
@@ -394,7 +398,8 @@ impl DiagnosticsSink {
         Ok(self.emit(event))
     }
 
-    pub fn emit_settings_apply(
+    #[allow(dead_code)]
+    pub(crate) fn emit_settings_apply(
         &self,
         correlation_id: Option<CorrelationId>,
         payload: &SettingsApplyPayload,
@@ -417,7 +422,8 @@ impl DiagnosticsSink {
         )
     }
 
-    pub fn emit_shell_resolution(
+    #[allow(dead_code)]
+    pub(crate) fn emit_shell_resolution(
         &self,
         correlation_id: Option<CorrelationId>,
         payload: &ShellResolutionPayload,
@@ -513,6 +519,7 @@ impl<'a> CorrelatedDiagnosticsSink<'a> {
     }
 }
 
+#[allow(dead_code)]
 fn settings_apply_event_kind(payload: &SettingsApplyPayload) -> EventKind {
     if payload.reject_reason.is_some() || payload.outcome.eq_ignore_ascii_case("rejected") {
         EventKind::SettingsRejected
@@ -521,6 +528,7 @@ fn settings_apply_event_kind(payload: &SettingsApplyPayload) -> EventKind {
     }
 }
 
+#[allow(dead_code)]
 fn shell_resolution_event_kind(payload: &ShellResolutionPayload) -> EventKind {
     if payload.error.is_some() {
         EventKind::ShellResolutionFailed

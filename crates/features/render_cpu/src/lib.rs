@@ -1,5 +1,5 @@
-use rldyourterm_core::render_mode::RenderMode;
-use rldyourterm_core::{cursor::Cursor, grid::Grid, state::TerminalState};
+use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_services::{Cursor, Grid, TerminalState};
 use tracing::warn;
 
 pub const DEFAULT_SCROLLBACK_CAP: usize = 50_000;
@@ -207,8 +207,8 @@ impl CpuRenderer {
 #[cfg(test)]
 mod tests {
     use super::{CpuRenderer, CpuRendererConfig, DEFAULT_SCROLLBACK_CAP};
-    use rldyourterm_core::grid::Attrs;
-    use rldyourterm_core::state::TerminalState;
+    use rldyourterm_services::TerminalState;
+    use rldyourterm_services::grid::Attrs;
 
     fn state_with_default_scrollback(width: u16, height: u16) -> TerminalState {
         TerminalState::new(width, height, DEFAULT_SCROLLBACK_CAP)
