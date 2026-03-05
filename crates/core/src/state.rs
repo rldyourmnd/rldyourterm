@@ -73,6 +73,7 @@ impl TerminalState {
         self.grid.resize(new_width, new_height);
         self.cursor.row = self.cursor.row.min(new_height.saturating_sub(1));
         self.cursor.col = self.cursor.col.min(new_width.saturating_sub(1));
+        self.cursor.wrap_pending = false;
         self.scroll_region = None;
 
         if let Some(alt) = self.alternate_screen.as_mut() {
@@ -148,6 +149,17 @@ impl TerminalState {
             ParserAction::CursorHorizontalAbsolute(col) => {
                 self.apply_cursor_position(self.cursor.row, col, events)
             }
+            ParserAction::CursorNextLine(n) => {
+                self.apply_cursor_relative(n as i32, 0, events);
+                self.apply_carriage_return(events);
+            }
+            ParserAction::CursorPreviousLine(n) => {
+                self.apply_cursor_relative(-(n as i32), 0, events);
+                self.apply_carriage_return(events);
+            }
+            ParserAction::VerticalPositionAbsolute(row) => {
+                self.apply_cursor_position(row, self.cursor.col, events)
+            }
             ParserAction::ClearDisplay(mode) => self.apply_clear_display(mode, events),
             ParserAction::ClearLine(mode) => self.apply_clear_line(mode, events),
             ParserAction::SetGraphicsRendition(params) => self.apply_sgr(params.as_slice()),
@@ -176,6 +188,16 @@ impl TerminalState {
                 let height = self.grid.height();
                 let bottom = bottom.unwrap_or(height.saturating_sub(1));
                 self.apply_set_scroll_region(top, bottom)
+            }
+            ParserAction::ReverseIndex => self.apply_reverse_index(events),
+            ParserAction::NextLine => {
+                self.apply_carriage_return(events);
+                self.apply_line_feed(events);
+            }
+            ParserAction::ApplicationKeypadMode(_enabled) => {
+                // Acknowledged but no terminal state change needed.
+                // Keypad mode affects key encoding on the input side,
+                // which is handled in gui_runtime's encode_winit_key_event.
             }
             ParserAction::SetWindowTitle(title) => {
                 self.window_title = title.clone();
@@ -230,6 +252,22 @@ impl TerminalState {
         }
 
         let width = self.grid.width();
+
+        // VT100 deferred wrap: if wrap_pending is set from a previous print
+        // at the last column, execute the actual wrap now before printing.
+        if self.cursor.wrap_pending {
+            self.cursor.wrap_pending = false;
+            let row = self.cursor.row;
+            events.push(CoreEvent::LineWrapped { row });
+            self.cursor.col = 0;
+            if row >= self.scroll_bottom() {
+                self.scroll_up_at_bottom(1, events);
+                self.cursor.row = self.scroll_bottom();
+            } else {
+                self.cursor.row = row + 1;
+            }
+        }
+
         let height = self.grid.height();
         let row = self.cursor.row.min(height.saturating_sub(1));
         let col = self.cursor.col.min(width.saturating_sub(1));
@@ -248,17 +286,11 @@ impl TerminalState {
         let from = self.cursor;
         if col + 1 >= width {
             if self.auto_wrap {
-                events.push(CoreEvent::LineWrapped { row });
-                self.cursor.col = 0;
-                if row >= self.scroll_bottom() {
-                    self.scroll_up_at_bottom(1, events);
-                    self.cursor.row = self.scroll_bottom();
-                } else {
-                    self.cursor.row = row + 1;
-                }
-            } else {
-                self.cursor.col = col;
+                // Deferred wrap: stay at last column, set pending flag.
+                // The wrap will execute on the next printable character.
+                self.cursor.wrap_pending = true;
             }
+            // In both auto_wrap and no-wrap mode, cursor stays at last column
         } else {
             self.cursor.col = col + 1;
         }
@@ -276,6 +308,7 @@ impl TerminalState {
             return;
         }
 
+        self.cursor.wrap_pending = false;
         let from = self.cursor;
         let bottom = self.scroll_bottom();
 
@@ -303,7 +336,31 @@ impl TerminalState {
         }
     }
 
+    fn apply_reverse_index(&mut self, events: &mut Vec<CoreEvent>) {
+        if self.grid.is_empty() {
+            return;
+        }
+
+        self.cursor.wrap_pending = false;
+        let from = self.cursor;
+        let top = self.scroll_top();
+
+        if self.cursor.row == top {
+            self.apply_scroll_down(1);
+        } else if self.cursor.row > 0 {
+            self.cursor.row -= 1;
+        }
+
+        if from != self.cursor {
+            events.push(CoreEvent::CursorMoved {
+                from,
+                to: self.cursor,
+            });
+        }
+    }
+
     fn apply_backspace(&mut self, events: &mut Vec<CoreEvent>) {
+        self.cursor.wrap_pending = false;
         let from = self.cursor;
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
@@ -318,6 +375,7 @@ impl TerminalState {
         if self.grid.is_empty() {
             return;
         }
+        self.cursor.wrap_pending = false;
         let from = self.cursor;
         let next_tab = ((self.cursor.col / 8) + 1) * 8;
         self.cursor.col = next_tab.min(self.grid.width().saturating_sub(1));
@@ -393,6 +451,9 @@ impl TerminalState {
                 let _ = self.grid.clear_row_to_inclusive(row, col);
             }
             DisplayClearMode::All => self.grid.clear(),
+            DisplayClearMode::Scrollback => {
+                self.scrollback.clear();
+            }
         }
 
         events.push(CoreEvent::DisplayCleared { mode });
@@ -656,27 +717,47 @@ mod tests {
     #[test]
     fn feed_wraps_and_scrolls_into_scrollback() {
         let mut state = TerminalState::new(3, 2, 10);
+        // With deferred wrap, 'i' at last column sets wrap_pending
+        // but does NOT trigger the second scroll until the next char.
         let events = state.feed(b"abcdefghi");
 
-        assert_eq!(state.grid.row_string(0).expect("row 0"), "ghi");
-        assert_eq!(state.grid.row_string(1).expect("row 1"), "   ");
-        assert_eq!(
-            state.scrollback.iter().collect::<Vec<_>>(),
-            vec!["abc", "def"]
-        );
+        assert_eq!(state.grid.row_string(0).expect("row 0"), "def");
+        assert_eq!(state.grid.row_string(1).expect("row 1"), "ghi");
+        assert_eq!(state.scrollback.iter().collect::<Vec<_>>(), vec!["abc"]);
+        assert!(state.cursor.wrap_pending);
         assert_eq!(
             events
                 .iter()
                 .filter(|event| matches!(event, CoreEvent::GridScrolled { .. }))
                 .count(),
-            2
+            1
+        );
+
+        // Feeding one more char triggers the deferred wrap and second scroll
+        let events2 = state.feed(b"j");
+        assert_eq!(state.grid.row_string(0).expect("row 0 after j"), "ghi");
+        assert_eq!(state.grid.row_string(1).expect("row 1 after j"), "j  ");
+        assert_eq!(
+            state.scrollback.iter().collect::<Vec<_>>(),
+            vec!["abc", "def"]
+        );
+        assert!(!state.cursor.wrap_pending);
+        assert_eq!(
+            events2
+                .iter()
+                .filter(|event| matches!(event, CoreEvent::GridScrolled { .. }))
+                .count(),
+            1
         );
     }
 
     #[test]
     fn scrollback_trim_event_is_emitted_at_cap_boundary() {
         let mut state = TerminalState::new(2, 1, 1);
-        let events = state.feed(b"abcd");
+        // With deferred wrap, 5 chars triggers 2 scrolls:
+        // 'b' sets wrap_pending, 'c' triggers 1st scroll ("ab" -> scrollback),
+        // 'd' sets wrap_pending, 'e' triggers 2nd scroll ("cd" -> scrollback, "ab" trimmed).
+        let events = state.feed(b"abcde");
 
         assert_eq!(state.scrollback.len(), 1);
         assert_eq!(state.scrollback.get(0), Some("cd"));
@@ -1006,15 +1087,15 @@ mod tests {
         }
         // Set scroll region rows 3..6 (1-indexed: 4;7r -> 0-indexed 3..6)
         let _ = state.feed(b"\x1b[4;7r");
-        // Move cursor to row 5 (bottom of region), col 3 (last col)
+        // Move cursor to bottom of region, last column
         state.cursor.row = 6;
         state.cursor.col = 3;
-        // Print a char at the last column - should wrap within region
-        let events = state.feed(b"X");
-        // Cursor should wrap to col 0 and stay at scroll_bottom (row 6),
-        // region should have scrolled internally
+        // Print two chars: 'X' at last column sets wrap_pending,
+        // 'Y' triggers the deferred wrap + region scroll.
+        let events = state.feed(b"XY");
+        // After deferred wrap + scroll, cursor is at (6, 1)
         assert_eq!(state.cursor.row, 6);
-        assert_eq!(state.cursor.col, 0);
+        assert_eq!(state.cursor.col, 1);
         // Invariant: region-local wrap must not emit global scroll events.
         assert!(
             events
@@ -1035,11 +1116,12 @@ mod tests {
         // Rows outside region remain unchanged.
         assert_eq!(state.grid.row_string(2).expect("row 2"), "CCCC");
         assert_eq!(state.grid.row_string(7).expect("row 7"), "HHHH");
-        // Rows inside region shift up by one; bottom line is cleared.
+        // Region scrolled up by one: DDDD dropped, each line shifted up.
+        // Row 6 had GGGX (X written before scroll), moved to row 5.
         assert_eq!(state.grid.row_string(3).expect("row 3"), "EEEE");
         assert_eq!(state.grid.row_string(4).expect("row 4"), "FFFF");
         assert_eq!(state.grid.row_string(5).expect("row 5"), "GGGX");
-        assert_eq!(state.grid.row_string(6).expect("row 6"), "    ");
+        assert_eq!(state.grid.row_string(6).expect("row 6"), "Y   ");
     }
 
     #[test]
@@ -1181,6 +1263,87 @@ mod tests {
     }
 
     #[test]
+    fn reverse_index_scrolls_down_at_top_of_region() {
+        let mut state = TerminalState::new(4, 5, 10);
+        // Set scroll region rows 1..3 (0-indexed)
+        let _ = state.feed(b"\x1b[2;4r");
+        // Move cursor to top of region
+        state.cursor.row = 1;
+        state.cursor.col = 2;
+        // Reverse index at top of region should scroll down
+        let _ = state.feed(b"\x1bM");
+        assert_eq!(state.cursor.row, 1);
+        assert_eq!(state.cursor.col, 2);
+    }
+
+    #[test]
+    fn reverse_index_moves_cursor_up() {
+        let mut state = TerminalState::new(10, 10, 5);
+        state.cursor.row = 5;
+        state.cursor.col = 3;
+        let _ = state.feed(b"\x1bM");
+        assert_eq!(state.cursor.row, 4);
+        assert_eq!(state.cursor.col, 3);
+    }
+
+    #[test]
+    fn next_line_moves_down_and_to_col_zero() {
+        let mut state = TerminalState::new(10, 10, 5);
+        state.cursor.row = 3;
+        state.cursor.col = 7;
+        let _ = state.feed(b"\x1bE");
+        assert_eq!(state.cursor.row, 4);
+        assert_eq!(state.cursor.col, 0);
+    }
+
+    #[test]
+    fn clear_scrollback_empties_scrollback_buffer() {
+        let mut state = TerminalState::new(3, 2, 10);
+        // Fill scrollback
+        let _ = state.feed(b"abcdefghi");
+        assert!(!state.scrollback.is_empty());
+        // Clear scrollback
+        let events = state.feed(b"\x1b[3J");
+        assert!(state.scrollback.is_empty());
+        assert!(events.iter().any(|e| matches!(
+            e,
+            CoreEvent::DisplayCleared {
+                mode: DisplayClearMode::Scrollback
+            }
+        )));
+    }
+
+    #[test]
+    fn cursor_next_line_moves_down_and_to_col_zero() {
+        let mut state = TerminalState::new(10, 10, 5);
+        state.cursor.row = 2;
+        state.cursor.col = 5;
+        let _ = state.feed(b"\x1b[3E");
+        assert_eq!(state.cursor.row, 5);
+        assert_eq!(state.cursor.col, 0);
+    }
+
+    #[test]
+    fn cursor_previous_line_moves_up_and_to_col_zero() {
+        let mut state = TerminalState::new(10, 10, 5);
+        state.cursor.row = 5;
+        state.cursor.col = 7;
+        let _ = state.feed(b"\x1b[2F");
+        assert_eq!(state.cursor.row, 3);
+        assert_eq!(state.cursor.col, 0);
+    }
+
+    #[test]
+    fn vertical_position_absolute_sets_row() {
+        let mut state = TerminalState::new(10, 10, 5);
+        state.cursor.row = 0;
+        state.cursor.col = 5;
+        let _ = state.feed(b"\x1b[4d");
+        assert_eq!(state.cursor.row, 3);
+        assert_eq!(state.cursor.col, 5);
+    }
+
+    #[test]
     fn device_ok_emits_terminal_response() {
         let mut state = TerminalState::new(10, 4, 5);
         let events = state.feed(b"\x1b[5n");
@@ -1189,5 +1352,98 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[0n"))
         );
+    }
+
+    #[test]
+    fn deferred_wrap_sets_flag_at_last_column() {
+        let mut state = TerminalState::new(3, 2, 5);
+        let _ = state.feed(b"abc");
+        // After 'c' at last column (col 2), cursor stays at col 2 with wrap_pending
+        assert_eq!(state.cursor.row, 0);
+        assert_eq!(state.cursor.col, 2);
+        assert!(state.cursor.wrap_pending);
+    }
+
+    #[test]
+    fn deferred_wrap_cr_clears_without_wrapping() {
+        // This is the exact fish right-prompt scenario:
+        // print to last column, then CR should stay on same row.
+        let mut state = TerminalState::new(3, 2, 5);
+        let _ = state.feed(b"abc");
+        assert!(state.cursor.wrap_pending);
+        // CR clears wrap_pending and moves to col 0, same row
+        let _ = state.feed(b"\r");
+        assert_eq!(state.cursor.row, 0);
+        assert_eq!(state.cursor.col, 0);
+        assert!(!state.cursor.wrap_pending);
+    }
+
+    #[test]
+    fn deferred_wrap_cuf_clears_without_wrapping() {
+        let mut state = TerminalState::new(5, 2, 5);
+        let _ = state.feed(b"abcde");
+        assert!(state.cursor.wrap_pending);
+        // CUF(2) clears wrap_pending and moves forward (clamped to width)
+        let _ = state.feed(b"\x1b[2C");
+        assert_eq!(state.cursor.row, 0);
+        assert!(!state.cursor.wrap_pending);
+    }
+
+    #[test]
+    fn deferred_wrap_next_char_triggers_wrap() {
+        let mut state = TerminalState::new(3, 2, 5);
+        let _ = state.feed(b"abc");
+        assert!(state.cursor.wrap_pending);
+        assert_eq!(state.cursor.row, 0);
+        // Next printable char triggers the deferred wrap
+        let _ = state.feed(b"d");
+        assert_eq!(state.cursor.row, 1);
+        assert_eq!(state.cursor.col, 1);
+        assert!(!state.cursor.wrap_pending);
+        assert_eq!(state.grid.row_string(0).expect("row 0"), "abc");
+        assert_eq!(state.grid.row_string(1).expect("row 1"), "d  ");
+    }
+
+    #[test]
+    fn deferred_wrap_fish_right_prompt_pattern() {
+        // Simulates the fish shell right-prompt pattern that caused the staircase bug:
+        // print chars to fill the last column, then CR + CUF to reposition.
+        let mut state = TerminalState::new(10, 3, 5);
+        // Fill row 0 to the last column
+        let _ = state.feed(b"0123456789");
+        assert!(state.cursor.wrap_pending);
+        assert_eq!(state.cursor.row, 0);
+        assert_eq!(state.cursor.col, 9);
+        // CR (like fish does after drawing right prompt)
+        let _ = state.feed(b"\r");
+        assert_eq!(state.cursor.row, 0); // Must stay on same row!
+        assert_eq!(state.cursor.col, 0);
+        assert!(!state.cursor.wrap_pending);
+        // CUF to reposition cursor (like fish does to go back to command line)
+        let _ = state.feed(b"\x1b[5C");
+        assert_eq!(state.cursor.row, 0);
+        assert_eq!(state.cursor.col, 5);
+        assert!(!state.cursor.wrap_pending);
+    }
+
+    #[test]
+    fn deferred_wrap_lf_clears_without_wrapping() {
+        let mut state = TerminalState::new(3, 3, 5);
+        let _ = state.feed(b"abc");
+        assert!(state.cursor.wrap_pending);
+        // LF clears wrap_pending and moves down, col stays at 2
+        let _ = state.feed(b"\n");
+        assert_eq!(state.cursor.row, 1);
+        assert_eq!(state.cursor.col, 2);
+        assert!(!state.cursor.wrap_pending);
+    }
+
+    #[test]
+    fn deferred_wrap_resize_clears_flag() {
+        let mut state = TerminalState::new(3, 2, 5);
+        let _ = state.feed(b"abc");
+        assert!(state.cursor.wrap_pending);
+        state.resize(5, 3);
+        assert!(!state.cursor.wrap_pending);
     }
 }
