@@ -1582,4 +1582,50 @@ mod tests {
             state.feed(b"\x1b[2K"); // erase entire line
         }
     }
+
+    #[test]
+    fn stress_throughput_1mb_mixed_ansi() {
+        // Baseline throughput: 1MB of mixed ASCII + ANSI must complete in <5s.
+        // On modern hardware, terminal parsers typically handle 50-200 MB/s.
+        // A 5s budget is generous — catches regressions, not micro-benchmarks.
+        let mut state = TerminalState::new(120, 50, 50_000);
+        let mut data = Vec::with_capacity(1_048_576);
+        // Build 1MB of realistic AI CLI output: colored text lines
+        let line = b"\x1b[1;32m  INFO\x1b[0m processing batch \x1b[33m#1234\x1b[0m: tokens=512 latency=42ms\r\n";
+        while data.len() < 1_048_576 {
+            data.extend_from_slice(line);
+        }
+        let start = std::time::Instant::now();
+        // Feed in 64KB chunks (realistic PTY read size)
+        for chunk in data.chunks(65_536) {
+            state.feed(chunk);
+        }
+        let elapsed = start.elapsed();
+        let mb_per_sec = 1.0 / elapsed.as_secs_f64();
+        // Assert completion and reasonable speed
+        assert!(
+            elapsed.as_secs() < 5,
+            "1MB throughput took {elapsed:?} ({mb_per_sec:.1} MB/s) — regression detected"
+        );
+        assert!(state.scrollback.len() > 0);
+    }
+
+    #[test]
+    fn stress_memory_stability_after_sustained_output() {
+        // Simulate long-running AI CLI session: 100K lines of output.
+        // Verify scrollback cap holds and no unbounded growth.
+        let mut state = TerminalState::new(80, 24, 50_000);
+        let line = b"output line with some content for the terminal buffer test\r\n";
+        for _ in 0..100_000 {
+            state.feed(line);
+        }
+        // Scrollback must be capped
+        assert!(state.scrollback.len() <= 50_000);
+        // Grid must be intact
+        assert_eq!(state.grid.height(), 24);
+        assert_eq!(state.grid.width(), 80);
+        // Cursor must be in valid bounds
+        assert!(state.cursor.row < 24);
+        assert!(state.cursor.col < 80);
+    }
 }
