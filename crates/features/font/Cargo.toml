@@ -1,0 +1,10 @@
+[package]
+name = "rldyourterm-font"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fontdue = "0.9"
+font8x8.workspace = true
