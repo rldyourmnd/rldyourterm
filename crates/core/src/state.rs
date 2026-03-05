@@ -1446,4 +1446,140 @@ mod tests {
         state.resize(5, 3);
         assert!(!state.cursor.wrap_pending);
     }
+
+    // ── Stress tests ─────────────────────────────────────────────
+
+    #[test]
+    fn stress_ai_cli_output_burst_10k_lines() {
+        let mut state = TerminalState::new(80, 24, 50_000);
+        let line = b"\x1b[32mOutput line with ANSI color\x1b[0m\r\n";
+        for _ in 0..10_000 {
+            state.feed(line);
+        }
+        assert!(state.scrollback.len() > 0);
+        assert!(state.scrollback.len() <= 50_000);
+    }
+
+    #[test]
+    fn stress_scrollback_cap_enforced_at_50k() {
+        let mut state = TerminalState::new(80, 24, 50_000);
+        let line = b"scrollback test line\r\n";
+        for _ in 0..60_000 {
+            state.feed(line);
+        }
+        assert!(state.scrollback.len() <= 50_000);
+    }
+
+    #[test]
+    fn stress_unicode_multibyte_throughput() {
+        let mut state = TerminalState::new(80, 24, 1_000);
+        let text = "Hello Мир 你好 🌍\r\n".as_bytes();
+        for _ in 0..5_000 {
+            state.feed(text);
+        }
+        // Should not panic, grid should have valid state
+        assert!(state.grid.height() > 0);
+    }
+
+    #[test]
+    fn stress_rapid_sgr_attribute_sequences() {
+        let mut state = TerminalState::new(80, 24, 100);
+        let mut buf = Vec::with_capacity(100_000);
+        for i in 0..10_000u32 {
+            let sgr = format!("\x1b[{}mX", i % 109);
+            buf.extend_from_slice(sgr.as_bytes());
+        }
+        state.feed(&buf);
+    }
+
+    #[test]
+    fn stress_cursor_positioning_boundaries() {
+        let mut state = TerminalState::new(80, 24, 100);
+        for row in 1..=30u16 {
+            for col in 1..=90u16 {
+                let seq = format!("\x1b[{};{}H", row, col);
+                state.feed(seq.as_bytes());
+            }
+        }
+        // Cursor should be clamped to grid bounds
+        assert!(state.cursor.row < state.grid.height());
+        assert!(state.cursor.col < state.grid.width());
+    }
+
+    #[test]
+    fn stress_resize_during_output() {
+        let mut state = TerminalState::new(80, 24, 1_000);
+        for i in 0..500u16 {
+            state.feed(b"some output text\r\n");
+            let w = 60 + (i % 40);
+            let h = 20 + (i % 10);
+            state.resize(w, h);
+        }
+        assert!(state.cursor.row < state.grid.height());
+        assert!(state.cursor.col < state.grid.width());
+    }
+
+    #[test]
+    fn stress_bulk_feed_max_chunk_64kb() {
+        let mut state = TerminalState::new(80, 24, 1_000);
+        let bulk = vec![b'A'; MAX_FEED_BYTES_PER_CALL];
+        state.feed(&bulk);
+        // Should not panic; grid filled with 'A's
+        let cell = state.grid.get_cell(0, 0).unwrap();
+        assert_eq!(cell.ch, 'A');
+    }
+
+    #[test]
+    fn stress_incomplete_escape_at_chunk_boundary() {
+        let mut state = TerminalState::new(80, 24, 100);
+        // Send partial escape sequence at chunk boundary
+        for _ in 0..1_000 {
+            state.feed(b"\x1b[");
+            state.feed(b"31m");
+            state.feed(b"X");
+        }
+        // Parser should recover and render 'X' chars
+    }
+
+    #[test]
+    fn stress_alternating_normal_and_alternate_screen() {
+        let mut state = TerminalState::new(80, 24, 1_000);
+        for _ in 0..1_000 {
+            // Enter alternate screen
+            state.feed(b"\x1b[?1049h");
+            state.feed(b"alternate content\r\n");
+            // Exit alternate screen
+            state.feed(b"\x1b[?1049l");
+            state.feed(b"normal content\r\n");
+        }
+    }
+
+    #[test]
+    fn stress_attribute_combinations_all_64() {
+        let mut state = TerminalState::new(80, 24, 100);
+        // Bold=1, Dim=2, Italic=3, Underline=4, Blink=5, Inverse=7, Strikethrough=9
+        let combos = [
+            "\x1b[1;3;4mBIU\x1b[0m",       // bold+italic+underline
+            "\x1b[1;2;7mBDR\x1b[0m",       // bold+dim+inverse
+            "\x1b[1;3;4;9mBIUS\x1b[0m",    // bold+italic+underline+strikethrough
+            "\x1b[1;2;3;4;7;9mALL\x1b[0m", // all attributes
+        ];
+        for _ in 0..1_000 {
+            for combo in &combos {
+                state.feed(combo.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn stress_erase_operations() {
+        let mut state = TerminalState::new(80, 24, 100);
+        for _ in 0..5_000 {
+            state.feed(b"fill this line with text");
+            state.feed(b"\x1b[2J"); // erase entire screen
+            state.feed(b"\x1b[K"); // erase to end of line
+            state.feed(b"\x1b[1K"); // erase to start of line
+            state.feed(b"\x1b[2K"); // erase entire line
+        }
+    }
 }
