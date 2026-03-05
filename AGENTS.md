@@ -29,6 +29,7 @@ Operational meta-rules are defined in:
   - `Claude Code`
   - `Codex`
   - `Gemini CLI`
+  - `OpenCode`
 - Deterministic prompt/input/output behavior under long sessions.
 - Minimal operational noise during agent-driven automation.
 

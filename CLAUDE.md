@@ -2,7 +2,7 @@
 
 ## Project
 
-Crash-intolerant AI terminal runtime written in Rust. A custom terminal emulator optimized for long-running AI CLI sessions (Claude Code, Codex, Gemini CLI).
+Crash-intolerant AI terminal runtime written in Rust. A custom terminal emulator optimized for long-running AI CLI sessions (Claude Code, Codex, Gemini CLI, OpenCode).
 
 **Priorities (hard order):** stability > AI CLI compatibility > speed
 
@@ -10,7 +10,7 @@ Crash-intolerant AI terminal runtime written in Rust. A custom terminal emulator
 
 ## Architecture
 
-Cargo workspace with 11 crates following VSA (Vertical Slice Architecture). Dependency flow is strictly inward:
+Cargo workspace with 12 crates following VSA (Vertical Slice Architecture). Dependency flow is strictly inward:
 
 ```
 app -> ui -> features -> services -> core
@@ -31,8 +31,9 @@ app -> ui -> features -> services -> core
 | rldyourterm-foundation-platform | crates/foundation-platform | OS adapters: portable-pty, winit, arboard |
 | rldyourterm-services | crates/services | Controllers: Session, RenderMode, RenderPacing |
 | rldyourterm-ui | crates/ui | UiRuntime: bootstrap, command loop, tick, single-window |
-| render_cpu | crates/features/render_cpu | CPU renderer (softbuffer + font8x8) |
-| render_gpu | crates/features/render_gpu | GPU renderer (wgpu): surface management, error recovery |
+| rldyourterm-font | crates/features/font | Glyph rasterization (fontdue + JetBrains Mono Nerd Font), shared cache |
+| render_cpu | crates/features/render_cpu | CPU renderer (softbuffer): delta/full modes, dirty row tracking |
+| render_gpu | crates/features/render_gpu | GPU renderer (wgpu): dynamic glyph atlas, surface error recovery |
 | settings | crates/features/settings | SettingsService: mode, shell, theme, command palette |
 | shell_integration | crates/features/shell_integration | Shell detection, resolution (fish+starship, zsh fallback) |
 | diagnostics | crates/features/diagnostics | Structured events, correlation IDs, typed payloads |
@@ -118,6 +119,31 @@ type(scope): description
 ```
 
 Types: feat, fix, refactor, docs, test, chore, perf, style. English only.
+
+## Quality Standards
+
+Three non-negotiable quality pillars (hard priority order):
+
+### 1. Stability (Crash-Intolerant)
+- No `panic!`, `unwrap()`, or `todo!()` in library/production code
+- Every error boundary uses typed `Result<T, E>` with `thiserror` enums
+- GPU/PTY/runtime faults must not terminate active shell sessions
+- Bounded retry with deterministic fallback at every critical boundary
+- Event-correlated observability for all state transitions
+
+### 2. AI CLI Compatibility
+- First-class support: Claude Code, Codex, Gemini CLI, OpenCode
+- Complete VT100/xterm sequence parsing (CSI, OSC, DCS, SGR)
+- Correct key encoding (Ctrl+C/D, arrow keys, F-keys, bracketed paste)
+- High-throughput PTY I/O for long-running AI sessions
+- Full Unicode rendering: ASCII, Latin Extended, Cyrillic, CJK, Nerd Font icons, Box Drawing
+
+### 3. Speed (Ultra-Low Latency)
+- Monitor-driven frame pacing (no hardcoded FPS)
+- Cadence preservation during monitor transfer (no transient loss)
+- Delta rendering with dirty row tracking (CPU renderer)
+- Dynamic glyph atlas with partial texture uploads (GPU renderer)
+- Bounded CPU/RAM growth under sustained load
 
 ## Key Invariants
 
