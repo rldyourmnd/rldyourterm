@@ -12,6 +12,7 @@ pub enum DisplayClearMode {
     Below,
     Above,
     All,
+    Scrollback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

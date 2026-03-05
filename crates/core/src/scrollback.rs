@@ -26,6 +26,10 @@ impl Scrollback {
         self.lines.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        self.lines.clear();
+    }
+
     pub fn push(&mut self, line: String) -> usize {
         if self.cap == 0 {
             return 1;
