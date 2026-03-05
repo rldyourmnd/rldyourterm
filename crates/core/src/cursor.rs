@@ -3,6 +3,11 @@ pub struct Cursor {
     pub row: u16,
     pub col: u16,
     pub visible: bool,
+    /// VT100 deferred wrap flag. When a character is printed at the last column,
+    /// the cursor stays at that column with this flag set. The actual wrap to the
+    /// next line only occurs when the next printable character arrives. Any explicit
+    /// cursor movement (CR, CUF, CHA, CUP, etc.) clears this flag without wrapping.
+    pub wrap_pending: bool,
 }
 
 impl Default for Cursor {
@@ -17,15 +22,17 @@ impl Cursor {
             row: 0,
             col: 0,
             visible: true,
+            wrap_pending: false,
         }
     }
 
     pub fn move_to(&mut self, row: u16, col: u16, width: u16, height: u16) -> bool {
         let next_row = clamp(row, height);
         let next_col = clamp(col, width);
-        let changed = self.row != next_row || self.col != next_col;
+        let changed = self.row != next_row || self.col != next_col || self.wrap_pending;
         self.row = next_row;
         self.col = next_col;
+        self.wrap_pending = false;
         changed
     }
 
@@ -52,11 +59,10 @@ impl Cursor {
     }
 
     pub fn carriage_return(&mut self) -> bool {
-        if self.col == 0 {
-            return false;
-        }
+        let changed = self.col != 0 || self.wrap_pending;
         self.col = 0;
-        true
+        self.wrap_pending = false;
+        changed
     }
 }
 
@@ -97,5 +103,38 @@ mod tests {
         assert_eq!(cursor.row, 3);
         assert_eq!(cursor.col, 0);
         assert!(!cursor.carriage_return());
+    }
+
+    #[test]
+    fn move_to_clears_wrap_pending() {
+        let mut cursor = Cursor::new();
+        cursor.wrap_pending = true;
+        assert!(cursor.move_to(0, 5, 10, 10));
+        assert!(!cursor.wrap_pending);
+    }
+
+    #[test]
+    fn move_relative_clears_wrap_pending() {
+        let mut cursor = Cursor::new();
+        cursor.wrap_pending = true;
+        assert!(cursor.move_relative(0, 3, 10, 10));
+        assert!(!cursor.wrap_pending);
+    }
+
+    #[test]
+    fn carriage_return_clears_wrap_pending() {
+        let mut cursor = Cursor::new();
+        cursor.col = 0;
+        cursor.wrap_pending = true;
+        // Even though col is already 0, wrap_pending makes it a change
+        assert!(cursor.carriage_return());
+        assert_eq!(cursor.col, 0);
+        assert!(!cursor.wrap_pending);
+    }
+
+    #[test]
+    fn new_cursor_has_no_wrap_pending() {
+        let cursor = Cursor::new();
+        assert!(!cursor.wrap_pending);
     }
 }
