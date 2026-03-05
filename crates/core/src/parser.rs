@@ -615,7 +615,7 @@ const fn is_csi_final_byte(byte: u8) -> bool {
 mod tests {
     use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 
-    use super::{MAX_CSI_LEN, Parser, ParserAction, SgrParams};
+    use super::{MAX_CSI_LEN, MAX_OSC_LEN, MAX_SGR_PARAMS, Parser, ParserAction, SgrParams};
 
     #[test]
     fn parses_printable_and_basic_controls() {
@@ -1122,5 +1122,176 @@ mod tests {
         let mut parser = Parser::default();
         let actions = parser.feed(b"\x1b[5n");
         assert_eq!(actions, vec![ParserAction::SendDeviceOk]);
+    }
+
+    // ── Coverage gap tests: boundary conditions ────────────────
+
+    #[test]
+    fn csi_at_exactly_max_len_is_accepted() {
+        let mut parser = Parser::default();
+        // Build a CSI sequence that fills exactly MAX_CSI_LEN bytes
+        // CSI buffer starts accumulating after ESC[, so we need MAX_CSI_LEN
+        // bytes of param+final. Use params that fill up to MAX_CSI_LEN-1
+        // bytes, then the final byte 'm' as the last byte.
+        let mut payload = vec![0x1B, b'['];
+        // Fill with '1;' pairs to approach MAX_CSI_LEN-1 param bytes
+        let param_bytes = MAX_CSI_LEN - 1; // leave room for final byte 'm'
+        for i in 0..param_bytes {
+            if i % 2 == 0 {
+                payload.push(b'1');
+            } else {
+                payload.push(b';');
+            }
+        }
+        payload.push(b'm'); // final byte, this is the MAX_CSI_LEN-th byte
+        let actions = parser.feed(&payload);
+        // Should parse as SGR (not degrade) since it fits exactly in buffer
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::SetGraphicsRendition(_))),
+            "CSI at exactly MAX_CSI_LEN should be accepted, got: {actions:?}"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::IngestDegraded { .. })),
+            "CSI at exactly MAX_CSI_LEN should not degrade"
+        );
+    }
+
+    #[test]
+    fn csi_one_byte_over_max_len_degrades() {
+        let mut parser = Parser::default();
+        let mut payload = vec![0x1B, b'['];
+        // Fill MAX_CSI_LEN bytes of params (no final byte yet)
+        payload.extend(std::iter::repeat_n(b'1', MAX_CSI_LEN));
+        // Now add the final byte - this is the (MAX_CSI_LEN+1)-th byte
+        payload.push(b'm');
+        let actions = parser.feed(&payload);
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                ParserAction::IngestDegraded {
+                    reason: IngestDegradeReason::CsiSequenceTooLong,
+                    ..
+                }
+            )),
+            "CSI one byte over MAX_CSI_LEN should degrade"
+        );
+    }
+
+    #[test]
+    fn osc_at_exactly_max_len_is_accepted() {
+        let mut parser = Parser::default();
+        // OSC format: ESC ] <id> ; <payload> BEL
+        // OSC buffer accumulates bytes after ESC ]
+        let prefix = b"0;";
+        let fill_len = MAX_OSC_LEN - prefix.len();
+        let mut payload = vec![0x1B, b']'];
+        payload.extend_from_slice(prefix);
+        payload.extend(std::iter::repeat_n(b'T', fill_len));
+        payload.push(0x07); // BEL terminator
+        let actions = parser.feed(&payload);
+        // Should parse as SetWindowTitle since it fits exactly
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::SetWindowTitle(_))),
+            "OSC at exactly MAX_OSC_LEN should be accepted, got: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn osc_one_byte_over_max_len_is_discarded() {
+        let mut parser = Parser::default();
+        let prefix = b"0;";
+        let fill_len = MAX_OSC_LEN - prefix.len() + 1; // one byte over
+        let mut payload = vec![0x1B, b']'];
+        payload.extend_from_slice(prefix);
+        payload.extend(std::iter::repeat_n(b'T', fill_len));
+        payload.push(0x07); // BEL
+        let actions = parser.feed(&payload);
+        // Should be discarded (no title set)
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::SetWindowTitle(_))),
+            "OSC one byte over MAX_OSC_LEN should be discarded"
+        );
+    }
+
+    #[test]
+    fn sgr_with_exactly_max_params() {
+        let mut parser = Parser::default();
+        // Build SGR with exactly MAX_SGR_PARAMS params: ESC[1;1;1;...;1m
+        let params_str = vec!["1"; MAX_SGR_PARAMS].join(";");
+        let seq = format!("\x1b[{params_str}m");
+        let actions = parser.feed(seq.as_bytes());
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::SetGraphicsRendition(sgr) if sgr.as_slice().len() == MAX_SGR_PARAMS)),
+            "SGR with exactly MAX_SGR_PARAMS should preserve all params"
+        );
+    }
+
+    #[test]
+    fn sgr_with_params_beyond_max_truncates_silently() {
+        let mut parser = Parser::default();
+        // Build SGR with MAX_SGR_PARAMS + 4 params
+        let params_str = vec!["1"; MAX_SGR_PARAMS + 4].join(";");
+        let seq = format!("\x1b[{params_str}m");
+        let actions = parser.feed(seq.as_bytes());
+        // Should still parse (not crash), extra params truncated
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ParserAction::SetGraphicsRendition(_))),
+            "SGR with excess params should still parse"
+        );
+    }
+
+    #[test]
+    fn mixed_utf8_and_csi_across_feed_boundaries() {
+        let mut parser = Parser::default();
+        // Send first 2 bytes of a 3-byte UTF-8 char (€ = E2 82 AC)
+        let actions1 = parser.feed(&[0xE2, 0x82]);
+        assert!(actions1.is_empty(), "Incomplete UTF-8 should buffer");
+        // Complete the UTF-8 char, then immediately start a CSI
+        let actions2 = parser.feed(&[0xAC, 0x1B, b'[']);
+        assert!(
+            actions2.iter().any(|a| *a == ParserAction::Print('€')),
+            "€ should be printed after completion"
+        );
+        // Complete the CSI in a third feed
+        let actions3 = parser.feed(b"31mA");
+        assert!(
+            actions3
+                .iter()
+                .any(|a| matches!(a, ParserAction::SetGraphicsRendition(_))),
+            "CSI should complete across feeds"
+        );
+        assert!(
+            actions3.iter().any(|a| *a == ParserAction::Print('A')),
+            "'A' should print after CSI"
+        );
+    }
+
+    #[test]
+    fn empty_csi_params_use_defaults() {
+        let mut parser = Parser::default();
+        // ESC[H with no params should default to (1,1)
+        let actions = parser.feed(b"\x1b[H");
+        assert_eq!(
+            actions,
+            vec![ParserAction::CursorPosition { row: 0, col: 0 }]
+        );
+        // ESC[;H with both params empty should also default
+        let actions = parser.feed(b"\x1b[;H");
+        assert_eq!(
+            actions,
+            vec![ParserAction::CursorPosition { row: 0, col: 0 }]
+        );
     }
 }
