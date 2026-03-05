@@ -160,6 +160,9 @@ Three non-negotiable quality pillars (hard priority order):
 - Delta rendering with dirty row tracking (CPU renderer)
 - Dynamic glyph atlas with partial texture uploads (GPU renderer)
 - Bounded CPU/RAM growth under sustained load
+- 64KB PTY read buffer (matches MAX_FEED_BYTES_PER_CALL, 16x fewer syscalls)
+- Batch text processing: `PrintText(String)` parser action avoids per-char Vec pushes
+- Dead event elimination: only grid dirty tracking used by renderers (no CellUpdated/CursorMoved)
 
 ## Key Invariants
 
