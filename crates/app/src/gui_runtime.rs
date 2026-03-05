@@ -1164,6 +1164,10 @@ impl GuiRuntimeApp {
                         GpuFailureHandling::FallbackToCpu {
                             transition_sequence,
                         } => {
+                            // Force full redraw on CPU path: GPU previously cleared dirty
+                            // flags via take_dirty_rows, so the CPU softbuffer has no valid
+                            // content and needs every row repainted.
+                            self.terminal.grid.mark_all_dirty();
                             let (diagnostics_event, fallback_notice) =
                                 emit_gpu_auto_fallback_observability(
                                     &self.diagnostics,
