@@ -378,10 +378,8 @@ impl Parser {
         let (&final_byte, params_raw) = self.csi_buffer.split_last()?;
 
         // Check for private mode prefix '?'
-        if let Some((&first, rest)) = params_raw.split_first() {
-            if first == b'?' {
-                return self.parse_private_csi_action(rest, final_byte);
-            }
+        if let Some((&b'?', rest)) = params_raw.split_first() {
+            return self.parse_private_csi_action(rest, final_byte);
         }
 
         let parsed = parse_params(params_raw).ok()?;

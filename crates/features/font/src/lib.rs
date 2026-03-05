@@ -97,10 +97,11 @@ impl GlyphCache {
         let ch_height = self.cell_height as usize;
 
         // Font8x8 path for pixel-perfect box drawing and block elements at 8px width.
-        if cw == 8 && ch_height == 16 {
-            if let Some(bitmap) = self.try_font8x8_box_block(ch) {
-                return bitmap;
-            }
+        if cw == 8
+            && ch_height == 16
+            && let Some(bitmap) = self.try_font8x8_box_block(ch)
+        {
+            return bitmap;
         }
 
         // fontdue rasterization path
