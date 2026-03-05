@@ -377,7 +377,7 @@ impl TerminalState {
         }
         self.cursor.wrap_pending = false;
         let from = self.cursor;
-        let next_tab = ((self.cursor.col / 8) + 1) * 8;
+        let next_tab = (self.cursor.col / 8).saturating_add(1).saturating_mul(8);
         self.cursor.col = next_tab.min(self.grid.width().saturating_sub(1));
         if from != self.cursor {
             events.push(CoreEvent::CursorMoved {
@@ -1627,5 +1627,181 @@ mod tests {
         // Cursor must be in valid bounds
         assert!(state.cursor.row < 24);
         assert!(state.cursor.col < 80);
+    }
+
+    // ── Coverage gap tests: boundary conditions ────────────────
+
+    #[test]
+    fn feed_at_exactly_max_bytes_boundary() {
+        let mut state = TerminalState::new(80, 24, 100);
+        // Feed exactly MAX_FEED_BYTES_PER_CALL bytes - should not degrade
+        let data = vec![b'X'; MAX_FEED_BYTES_PER_CALL];
+        let events = state.feed(&data);
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                CoreEvent::IngestDegraded {
+                    reason: IngestDegradeReason::InputFeedTooLarge,
+                    ..
+                }
+            )),
+            "Feed at exactly MAX_FEED_BYTES should not emit InputFeedTooLarge"
+        );
+    }
+
+    #[test]
+    fn feed_one_byte_over_max_degrades() {
+        let mut state = TerminalState::new(80, 24, 100);
+        let data = vec![b'X'; MAX_FEED_BYTES_PER_CALL + 1];
+        let events = state.feed(&data);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                CoreEvent::IngestDegraded {
+                    reason: IngestDegradeReason::InputFeedTooLarge,
+                    accepted,
+                    dropped: 1,
+                } if *accepted == MAX_FEED_BYTES_PER_CALL
+            )),
+            "Feed one byte over MAX should degrade with dropped=1"
+        );
+    }
+
+    #[test]
+    fn feed_at_chunk_boundary_processes_all_chunks() {
+        let mut state = TerminalState::new(80, 24, 100);
+        // Feed exactly 3 chunks worth of data
+        let data = vec![b'A'; FEED_CHUNK_BYTES * 3];
+        let events = state.feed(&data);
+        // All data should be processed (no degrade since 12KB < 64KB max)
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            CoreEvent::IngestDegraded {
+                reason: IngestDegradeReason::InputFeedTooLarge,
+                ..
+            }
+        )),);
+        // Grid should have 'A' chars
+        assert_eq!(state.grid.get_char(0, 0).unwrap(), 'A');
+    }
+
+    #[test]
+    fn zero_size_state_feed_does_not_panic() {
+        // TerminalState with zero dimensions
+        let mut state = TerminalState::new(0, 0, 100);
+        // Feed various sequences - none should panic
+        state.feed(b"Hello");
+        state.feed(b"\x1b[31mRed\x1b[0m");
+        state.feed(b"\r\n");
+        state.feed(b"\x1b[2J");
+        state.feed(b"\x1b[H");
+        state.feed(b"\x1b[?1049h\x1b[?1049l");
+    }
+
+    #[test]
+    fn insert_lines_via_csi_count_exceeds_height() {
+        let mut state = TerminalState::new(4, 5, 10);
+        // Fill grid
+        for row in 0..5u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..4u16 {
+                let _ = state.grid.put_char(row, col, ch, Attrs::default());
+            }
+        }
+        // Move cursor to row 1
+        state.cursor.row = 1;
+        state.cursor.col = 0;
+        // CSI 100 L = insert 100 lines (far exceeds grid height)
+        state.feed(b"\x1b[100L");
+        // Should not panic; rows below cursor cleared
+        assert_eq!(state.grid.row_string(0).unwrap(), "AAAA");
+    }
+
+    #[test]
+    fn delete_lines_via_csi_count_exceeds_height() {
+        let mut state = TerminalState::new(4, 5, 10);
+        for row in 0..5u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..4u16 {
+                let _ = state.grid.put_char(row, col, ch, Attrs::default());
+            }
+        }
+        state.cursor.row = 1;
+        state.cursor.col = 0;
+        // CSI 100 M = delete 100 lines
+        state.feed(b"\x1b[100M");
+        // Should not panic; region cleared
+        assert_eq!(state.grid.row_string(0).unwrap(), "AAAA");
+    }
+
+    #[test]
+    fn mixed_sgr_and_utf8_across_chunk_boundaries() {
+        let mut state = TerminalState::new(80, 24, 100);
+        // Build data where a 3-byte UTF-8 char spans a FEED_CHUNK_BYTES boundary
+        let mut data = Vec::with_capacity(FEED_CHUNK_BYTES + 10);
+        // Fill up to FEED_CHUNK_BYTES - 1 with ASCII
+        data.extend(std::iter::repeat_n(b'A', FEED_CHUNK_BYTES - 1));
+        // Add a 3-byte UTF-8 char that will span the chunk boundary
+        data.extend("€".as_bytes()); // E2 82 AC
+        // Add SGR after
+        data.extend(b"\x1b[31mB");
+        state.feed(&data);
+        // Parser should handle the split correctly - no panic
+        // The pen should have red fg from the SGR
+        assert_eq!(state.pen.fg, Color::Indexed(1));
+    }
+
+    #[test]
+    fn cursor_position_at_exact_grid_bounds() {
+        let mut state = TerminalState::new(10, 5, 10);
+        // CUP to exact last cell (1-indexed: row=5, col=10)
+        state.feed(b"\x1b[5;10H");
+        assert_eq!(state.cursor.row, 4);
+        assert_eq!(state.cursor.col, 9);
+        // CUP beyond bounds should clamp
+        state.feed(b"\x1b[100;200H");
+        assert_eq!(state.cursor.row, 4);
+        assert_eq!(state.cursor.col, 9);
+    }
+
+    #[test]
+    fn rapid_resize_to_zero_and_back() {
+        let mut state = TerminalState::new(80, 24, 100);
+        state.feed(b"Hello World");
+        // Resize to zero
+        state.resize(0, 0);
+        assert!(state.grid.is_empty());
+        // Feed should not panic
+        state.feed(b"More data");
+        // Resize back
+        state.resize(80, 24);
+        assert!(!state.grid.is_empty());
+        state.feed(b"Recovered");
+        assert_eq!(state.grid.get_char(0, 0).unwrap(), 'R');
+    }
+
+    #[test]
+    fn tab_does_not_overflow_u16_at_large_col() {
+        // Regression test: ((col / 8) + 1) * 8 overflows u16 when col >= 65528
+        // Saturating arithmetic prevents this.
+        let mut state = TerminalState::new(100, 5, 10);
+        state.cursor.col = 99; // near end of reasonable grid
+        state.feed(b"\t");
+        assert!(state.cursor.col < 100);
+
+        // Extreme case: manually set col to near u16::MAX
+        state.cursor.col = 65530;
+        state.feed(b"\t");
+        // Should clamp to width-1, not panic from overflow
+        assert!(state.cursor.col < 100);
+    }
+
+    #[test]
+    fn sgr_17_params_via_state_feed() {
+        let mut state = TerminalState::new(10, 2, 5);
+        // 17 params: first 16 consumed, 17th silently truncated
+        let _ = state.feed(b"\x1b[1;2;3;4;5;7;9;31;32;33;34;35;36;37;38;39;40mX");
+        // Parser should not crash. Bold (1) should apply from first param.
+        assert!(state.pen.bold);
     }
 }

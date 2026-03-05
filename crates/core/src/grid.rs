@@ -947,4 +947,127 @@ mod tests {
             assert_eq!(grid.get_cell(0, 0).unwrap().ch, ' ');
         }
     }
+
+    // ── Coverage gap tests ─────────────────────────────────────
+
+    #[test]
+    fn zero_size_grid_put_char_returns_error() {
+        let mut grid = Grid::new(0, 0);
+        let result = grid.put_char(0, 0, 'X', Attrs::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_width_grid_operations_are_safe() {
+        let mut grid = Grid::new(0, 5);
+        assert!(grid.is_empty());
+        assert_eq!(grid.width(), 0);
+        assert_eq!(grid.height(), 5);
+        // put_char should fail
+        assert!(grid.put_char(0, 0, 'X', Attrs::default()).is_err());
+        // scroll_up should not panic
+        grid.scroll_up(1);
+        // scroll_up_region should not panic
+        let removed = grid.scroll_up_region(1, 0, 4);
+        assert!(removed.is_empty() || removed.iter().all(|s| s.is_empty()));
+        // clear should not panic
+        grid.clear();
+        // resize to non-zero recovers
+        grid.resize(3, 3);
+        assert!(!grid.is_empty());
+        assert!(grid.put_char(0, 0, 'A', Attrs::default()).is_ok());
+    }
+
+    #[test]
+    fn zero_height_grid_operations_are_safe() {
+        let mut grid = Grid::new(10, 0);
+        assert!(grid.is_empty());
+        assert!(grid.put_char(0, 0, 'X', Attrs::default()).is_err());
+        grid.scroll_up(1);
+        grid.scroll_down_region(1, 0, 0);
+        grid.clear();
+    }
+
+    #[test]
+    fn insert_lines_count_exceeds_region_height() {
+        let mut grid = Grid::new(4, 5);
+        let attrs = Attrs::default();
+        for row in 0..5u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..4u16 {
+                grid.put_char(row, col, ch, attrs).unwrap();
+            }
+        }
+        // Insert 100 lines at row 1 with region bottom at 3
+        // count(100) > region_height(3), should clamp and not panic
+        grid.insert_lines(1, 100, 3);
+        // Region rows 1..3 should be cleared (shifted out)
+        assert_eq!(grid.row_string(0).unwrap(), "AAAA"); // outside region
+        assert_eq!(grid.row_string(1).unwrap(), "    "); // cleared
+        assert_eq!(grid.row_string(2).unwrap(), "    "); // cleared
+        assert_eq!(grid.row_string(3).unwrap(), "    "); // cleared
+        assert_eq!(grid.row_string(4).unwrap(), "EEEE"); // outside region
+    }
+
+    #[test]
+    fn delete_lines_count_exceeds_region_height() {
+        let mut grid = Grid::new(4, 5);
+        let attrs = Attrs::default();
+        for row in 0..5u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..4u16 {
+                grid.put_char(row, col, ch, attrs).unwrap();
+            }
+        }
+        // Delete 100 lines at row 1 with region bottom at 3
+        grid.delete_lines(1, 100, 3);
+        assert_eq!(grid.row_string(0).unwrap(), "AAAA"); // outside region
+        assert_eq!(grid.row_string(1).unwrap(), "    "); // cleared
+        assert_eq!(grid.row_string(2).unwrap(), "    "); // cleared
+        assert_eq!(grid.row_string(3).unwrap(), "    "); // cleared
+        assert_eq!(grid.row_string(4).unwrap(), "EEEE"); // outside region
+    }
+
+    #[test]
+    fn scroll_up_region_lines_equals_region_height() {
+        let mut grid = Grid::new(3, 4);
+        let attrs = Attrs::default();
+        for row in 0..4u16 {
+            let ch = (b'A' + row as u8) as char;
+            for col in 0..3u16 {
+                grid.put_char(row, col, ch, attrs).unwrap();
+            }
+        }
+        // Scroll entire region by exactly its height
+        let removed = grid.scroll_up_region(3, 1, 3);
+        assert_eq!(removed.len(), 3);
+        assert_eq!(removed[0], "BBB");
+        assert_eq!(removed[1], "CCC");
+        assert_eq!(removed[2], "DDD");
+        // Region should be all blank
+        assert_eq!(grid.row_string(1).unwrap(), "   ");
+        assert_eq!(grid.row_string(2).unwrap(), "   ");
+        assert_eq!(grid.row_string(3).unwrap(), "   ");
+        // Outside region unchanged
+        assert_eq!(grid.row_string(0).unwrap(), "AAA");
+    }
+
+    #[test]
+    fn row_cells_on_zero_width_grid_returns_empty_slice() {
+        let grid = Grid::new(0, 3);
+        let cells = grid.row_cells(0).unwrap();
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn resize_from_zero_to_nonzero() {
+        let mut grid = Grid::new(0, 0);
+        assert!(grid.is_empty());
+        grid.resize(10, 5);
+        assert_eq!(grid.width(), 10);
+        assert_eq!(grid.height(), 5);
+        assert!(!grid.is_empty());
+        grid.put_char(4, 9, 'Z', Attrs::default()).unwrap();
+        assert_eq!(grid.get_char(4, 9).unwrap(), 'Z');
+    }
 }
