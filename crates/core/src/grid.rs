@@ -831,4 +831,120 @@ mod tests {
         assert_eq!(grid.dirty_rows().len(), 6);
         assert!(grid.dirty_rows().iter().all(|&d| d));
     }
+
+    // ── Stress tests ─────────────────────────────────────────────
+
+    #[test]
+    fn stress_scroll_up_100k_lines() {
+        let mut grid = Grid::new(80, 50);
+        for _ in 0..100_000 {
+            grid.scroll_up(1);
+        }
+        assert_eq!(grid.height(), 50);
+        assert_eq!(grid.width(), 80);
+        let row = grid.row_cells(0).unwrap();
+        assert_eq!(row[0].ch, ' ');
+    }
+
+    #[test]
+    fn stress_write_all_cells_large_grid() {
+        let mut grid = Grid::new(200, 100);
+        let attrs = Attrs::default();
+        for row in 0..100u16 {
+            for col in 0..200u16 {
+                grid.put_char(row, col, 'A', attrs).unwrap();
+            }
+        }
+        for row in 0..100u16 {
+            let cells = grid.row_cells(row).unwrap();
+            assert!(cells.iter().take(200).all(|c| c.ch == 'A'));
+        }
+    }
+
+    #[test]
+    fn stress_alternating_write_and_scroll_50k() {
+        let mut grid = Grid::new(80, 24);
+        let attrs = Attrs::default();
+        for i in 0..50_000u32 {
+            let ch = char::from(b'A' + (i % 26) as u8);
+            for col in 0..80u16 {
+                grid.put_char(23, col, ch, attrs).unwrap();
+            }
+            grid.scroll_up(1);
+        }
+        assert_eq!(grid.height(), 24);
+        assert_eq!(grid.width(), 80);
+    }
+
+    #[test]
+    fn stress_scroll_count_accumulation_and_reset() {
+        let mut grid = Grid::new(80, 24);
+        for _ in 0..10_000 {
+            grid.scroll_up(1);
+        }
+        assert_eq!(grid.scroll_count(), 10_000);
+        grid.take_dirty_rows();
+        assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn stress_resize_during_active_scroll() {
+        let mut grid = Grid::new(80, 24);
+        for i in 0..200u16 {
+            grid.scroll_up(3);
+            let w = 60 + (i % 40);
+            let h = 20 + (i % 10);
+            grid.resize(w, h);
+        }
+        assert!(grid.height() > 0);
+        assert!(grid.width() > 0);
+    }
+
+    #[test]
+    fn stress_mixed_region_and_full_scroll() {
+        let mut grid = Grid::new(80, 24);
+        for _ in 0..1000 {
+            grid.scroll_up(2);
+            assert!(grid.scroll_count() > 0);
+            grid.scroll_up_region(1, 5, 20);
+            assert_eq!(grid.scroll_count(), 0);
+        }
+    }
+
+    #[test]
+    fn stress_dirty_tracking_accuracy() {
+        let mut grid = Grid::new(80, 50);
+        grid.take_dirty_rows();
+        let attrs = Attrs::default();
+        // Write to specific rows
+        grid.put_char(10, 0, 'X', attrs).unwrap();
+        grid.put_char(30, 5, 'Y', attrs).unwrap();
+        let dirty = grid.dirty_rows();
+        assert!(dirty[10]);
+        assert!(dirty[30]);
+        assert!(!dirty[0]);
+        assert!(!dirty[20]);
+    }
+
+    #[test]
+    fn stress_edge_case_single_cell_grid() {
+        let mut grid = Grid::new(1, 1);
+        let attrs = Attrs::default();
+        grid.put_char(0, 0, 'Z', attrs).unwrap();
+        assert_eq!(grid.get_cell(0, 0).unwrap().ch, 'Z');
+        grid.scroll_up(1);
+        assert_eq!(grid.get_cell(0, 0).unwrap().ch, ' ');
+        grid.resize(1, 1);
+    }
+
+    #[test]
+    fn stress_rapid_clear_cycles() {
+        let mut grid = Grid::new(80, 24);
+        let attrs = Attrs::default();
+        for _ in 0..10_000 {
+            grid.put_char(0, 0, 'X', attrs).unwrap();
+            grid.clear();
+            assert_eq!(grid.get_cell(0, 0).unwrap().ch, ' ');
+        }
+    }
 }
