@@ -481,6 +481,9 @@ impl GpuBackend {
 pub struct GpuRenderer {
     policy: SurfaceRecoveryPolicy,
     backend: Option<GpuBackend>,
+    last_cursor_row: u32,
+    last_cursor_col: u32,
+    last_cursor_visible: u32,
 }
 
 impl fmt::Debug for GpuRenderer {
@@ -498,6 +501,9 @@ impl GpuRenderer {
         Self {
             policy,
             backend: None,
+            last_cursor_row: u32::MAX,
+            last_cursor_col: u32::MAX,
+            last_cursor_visible: u32::MAX,
         }
     }
 
@@ -869,6 +875,23 @@ impl GpuRenderer {
             return Ok(());
         }
 
+        // Frame skip: if no content changed and cursor is identical, skip entirely.
+        let cursor_row = terminal.cursor.row as u32;
+        let cursor_col = terminal.cursor.col as u32;
+        let cursor_visible = u32::from(terminal.cursor.visible);
+        let content_dirty = dirty_rows.iter().any(|&d| d);
+        let cursor_changed = cursor_row != self.last_cursor_row
+            || cursor_col != self.last_cursor_col
+            || cursor_visible != self.last_cursor_visible;
+
+        if !content_dirty && !cursor_changed {
+            return Ok(());
+        }
+
+        self.last_cursor_row = cursor_row;
+        self.last_cursor_col = cursor_col;
+        self.last_cursor_visible = cursor_visible;
+
         // Grow cell buffer and CPU-side instance cache if needed
         let next_capacity = next_cell_buffer_capacity(backend.cell_buffer_capacity, cell_count);
         if next_capacity != backend.cell_buffer_capacity {
@@ -920,9 +943,9 @@ impl GpuRenderer {
             viewport_height: backend.config.height as f32,
             atlas_cols: ATLAS_GLYPH_COLS,
             atlas_rows: ATLAS_GLYPH_ROWS,
-            cursor_row: terminal.cursor.row as u32,
-            cursor_col: terminal.cursor.col as u32,
-            cursor_visible: u32::from(terminal.cursor.visible),
+            cursor_row,
+            cursor_col,
+            cursor_visible,
             _pad: 0,
         };
         backend.queue.write_buffer(
