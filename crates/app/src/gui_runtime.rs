@@ -1108,7 +1108,11 @@ impl GuiRuntimeApp {
             && self.gpu_renderer.is_initialized()
         {
             let dirty_rows = self.terminal.grid.dirty_rows();
-            match self.gpu_renderer.render_frame(&self.terminal, dirty_rows) {
+            let scroll_count = self.terminal.grid.scroll_count();
+            match self
+                .gpu_renderer
+                .render_frame(&self.terminal, dirty_rows, scroll_count)
+            {
                 Ok(()) => {
                     self.terminal.grid.take_dirty_rows();
                     let _ = self

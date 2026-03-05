@@ -111,6 +111,7 @@ pub struct Grid {
     height: u16,
     cells: Vec<Cell>,
     dirty_rows: Vec<bool>,
+    scroll_count: usize,
 }
 
 impl Grid {
@@ -121,6 +122,7 @@ impl Grid {
             height,
             cells: vec![Cell::default(); size],
             dirty_rows: vec![true; height as usize],
+            scroll_count: 0,
         }
     }
 
@@ -180,6 +182,7 @@ impl Grid {
         for cell in &mut self.cells {
             *cell = Cell::default();
         }
+        self.scroll_count = 0;
         self.mark_all_dirty();
     }
 
@@ -250,6 +253,7 @@ impl Grid {
             }
         }
 
+        self.scroll_count += lines;
         self.mark_all_dirty();
         removed
     }
@@ -433,10 +437,17 @@ impl Grid {
         self.width = new_width;
         self.height = new_height;
         self.dirty_rows = vec![true; new_height as usize];
+        self.scroll_count = 0;
     }
 
     pub fn has_dirty_rows(&self) -> bool {
         self.dirty_rows.iter().any(|&d| d)
+    }
+
+    /// Returns lines scrolled since last `take_dirty_rows`. Used by GPU renderer
+    /// to optimize scroll via DMA buffer copy instead of full re-upload.
+    pub fn scroll_count(&self) -> usize {
+        self.scroll_count
     }
 
     pub fn dirty_rows(&self) -> &[bool] {
@@ -451,6 +462,7 @@ impl Grid {
                 *dirty = false;
             }
         }
+        self.scroll_count = 0;
         rows
     }
 
@@ -748,6 +760,44 @@ mod tests {
         grid.take_dirty_rows();
         grid.scroll_up(1);
         assert!(grid.dirty_rows().iter().all(|&d| d));
+    }
+
+    #[test]
+    fn scroll_up_increments_scroll_count() {
+        let mut grid = Grid::new(10, 5);
+        grid.take_dirty_rows();
+        assert_eq!(grid.scroll_count(), 0);
+        grid.scroll_up(1);
+        assert_eq!(grid.scroll_count(), 1);
+        grid.scroll_up(2);
+        assert_eq!(grid.scroll_count(), 3);
+    }
+
+    #[test]
+    fn take_dirty_rows_resets_scroll_count() {
+        let mut grid = Grid::new(10, 5);
+        grid.scroll_up(3);
+        assert_eq!(grid.scroll_count(), 3);
+        grid.take_dirty_rows();
+        assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn clear_resets_scroll_count() {
+        let mut grid = Grid::new(10, 5);
+        grid.scroll_up(2);
+        assert_eq!(grid.scroll_count(), 2);
+        grid.clear();
+        assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn resize_resets_scroll_count() {
+        let mut grid = Grid::new(10, 5);
+        grid.scroll_up(2);
+        assert_eq!(grid.scroll_count(), 2);
+        grid.resize(10, 8);
+        assert_eq!(grid.scroll_count(), 0);
     }
 
     #[test]
