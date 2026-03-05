@@ -886,9 +886,34 @@ fn build_glyph_atlas(
     let mut atlas_data = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
     let mut char_to_slot: HashMap<char, u16> = HashMap::new();
 
-    // Slot 0 = blank (space character / unknown chars)
+    // Slot 0 = blank (space character)
     char_to_slot.insert(' ', 0);
-    let mut next_slot: u16 = 1;
+
+    // Slot 1 = fallback tofu glyph for characters without font8x8 coverage
+    let fallback_glyph: [u8; 8] = [
+        0b01111110, // .######.
+        0b01000010, // .#....#.
+        0b01000010, // .#....#.
+        0b01000010, // .#....#.
+        0b01000010, // .#....#.
+        0b01000010, // .#....#.
+        0b01000010, // .#....#.
+        0b01111110, // .######.
+    ];
+    {
+        let slot_x = (1 % ATLAS_GLYPH_COLS as usize) * ATLAS_GLYPH_SIZE as usize;
+        let slot_y = (1 / ATLAS_GLYPH_COLS as usize) * ATLAS_GLYPH_SIZE as usize;
+        for (gy, &row_bits) in fallback_glyph.iter().enumerate() {
+            for gx in 0..8usize {
+                if (row_bits >> gx) & 1 != 0 {
+                    let px = slot_x + gx;
+                    let py = slot_y + gy;
+                    atlas_data[py * ATLAS_SIZE as usize + px] = 255;
+                }
+            }
+        }
+    }
+    let mut next_slot: u16 = 2;
 
     // Collect all glyphs from font8x8 sets
     let ranges: &[(u32, u32)] = &[
@@ -1002,7 +1027,8 @@ fn prepare_cell_data(
                 let slot = if cell.ch == ' ' {
                     0
                 } else {
-                    char_to_slot.get(&cell.ch).copied().unwrap_or(0)
+                    // Slot 1 = fallback tofu glyph for unknown chars
+                    char_to_slot.get(&cell.ch).copied().unwrap_or(1)
                 };
 
                 cells.push(CellInstance {
