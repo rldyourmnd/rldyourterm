@@ -58,6 +58,9 @@ pub enum ParserAction {
         col: u16,
     },
     CursorHorizontalAbsolute(u16),
+    CursorNextLine(u16),
+    CursorPreviousLine(u16),
+    VerticalPositionAbsolute(u16),
     ClearDisplay(DisplayClearMode),
     ClearLine(LineClearMode),
     SetGraphicsRendition(SgrParams),
@@ -81,6 +84,9 @@ pub enum ParserAction {
     BracketedPasteMode(bool),
     ApplicationCursorKeys(bool),
     AutoWrapMode(bool),
+    ReverseIndex,
+    NextLine,
+    ApplicationKeypadMode(bool),
     SendPrimaryDA,
     SendDeviceStatusReport,
     SendDeviceOk,
@@ -102,6 +108,10 @@ enum ParseState {
     Osc,
     OscDiscard,
     OscEsc,
+    /// DCS (Device Control String): absorb payload until ST terminator.
+    Dcs,
+    /// ESC seen inside DCS payload, waiting for `\` to form ST.
+    DcsEsc,
 }
 
 #[derive(Debug, Default)]
@@ -125,6 +135,8 @@ impl Parser {
                 ParseState::Osc => self.handle_osc_byte(byte, &mut actions),
                 ParseState::OscDiscard => self.handle_osc_discard_byte(byte, &mut actions),
                 ParseState::OscEsc => self.handle_osc_esc_byte(byte, &mut actions),
+                ParseState::Dcs => self.handle_dcs_byte(byte),
+                ParseState::DcsEsc => self.handle_dcs_esc_byte(byte, &mut actions),
             }
         }
         self.flush_text_buffer(&mut actions, true);
@@ -150,6 +162,9 @@ impl Parser {
             ParseState::CsiDiscard => self.emit_oversized_csi(&mut actions),
             ParseState::Osc | ParseState::OscDiscard | ParseState::OscEsc => {
                 // Discard incomplete OSC
+            }
+            ParseState::Dcs | ParseState::DcsEsc => {
+                // Discard incomplete DCS
             }
         }
 
@@ -208,6 +223,26 @@ impl Parser {
             b'8' => {
                 actions.push(ParserAction::CursorRestorePosition);
                 self.state = ParseState::Ground;
+            }
+            b'M' => {
+                actions.push(ParserAction::ReverseIndex);
+                self.state = ParseState::Ground;
+            }
+            b'E' => {
+                actions.push(ParserAction::NextLine);
+                self.state = ParseState::Ground;
+            }
+            b'=' => {
+                actions.push(ParserAction::ApplicationKeypadMode(true));
+                self.state = ParseState::Ground;
+            }
+            b'>' => {
+                actions.push(ParserAction::ApplicationKeypadMode(false));
+                self.state = ParseState::Ground;
+            }
+            b'P' => {
+                // DCS (Device Control String) - absorb payload until ST
+                self.state = ParseState::Dcs;
             }
             _ => {
                 let raw = [0x1B, byte];
@@ -287,6 +322,24 @@ impl Parser {
         }
     }
 
+    fn handle_dcs_byte(&mut self, byte: u8) {
+        if byte == 0x1B {
+            self.state = ParseState::DcsEsc;
+        }
+        // All other bytes are silently absorbed (DCS payload)
+    }
+
+    fn handle_dcs_esc_byte(&mut self, byte: u8, actions: &mut Vec<ParserAction>) {
+        if byte == b'\\' {
+            // ST complete (ESC \) - DCS terminated, return to Ground
+            self.state = ParseState::Ground;
+        } else {
+            // Not ST - the ESC starts a new escape sequence outside DCS
+            self.state = ParseState::Escape;
+            self.handle_escape_byte(byte, actions);
+        }
+    }
+
     fn complete_osc(&mut self, actions: &mut Vec<ParserAction>) {
         let raw = String::from_utf8_lossy(&self.osc_buffer).into_owned();
         if let Some(action) = parse_osc(&raw) {
@@ -337,6 +390,8 @@ impl Parser {
             b'B' => Some(ParserAction::CursorDown(step_param(&parsed))),
             b'C' => Some(ParserAction::CursorForward(step_param(&parsed))),
             b'D' => Some(ParserAction::CursorBack(step_param(&parsed))),
+            b'E' => Some(ParserAction::CursorNextLine(step_param(&parsed))),
+            b'F' => Some(ParserAction::CursorPreviousLine(step_param(&parsed))),
             b'H' | b'f' => {
                 let row = position_param(&parsed, 0);
                 let col = position_param(&parsed, 1);
@@ -346,12 +401,17 @@ impl Parser {
                 let col = position_param(&parsed, 0);
                 Some(ParserAction::CursorHorizontalAbsolute(col))
             }
+            b'd' => {
+                let row = position_param(&parsed, 0);
+                Some(ParserAction::VerticalPositionAbsolute(row))
+            }
             b'J' => {
                 let mode = mode_param(&parsed)?;
                 Some(ParserAction::ClearDisplay(match mode {
                     0 => DisplayClearMode::Below,
                     1 => DisplayClearMode::Above,
                     2 => DisplayClearMode::All,
+                    3 => DisplayClearMode::Scrollback,
                     _ => return None,
                 }))
             }
@@ -544,7 +604,7 @@ fn position_param(params: &[Option<u16>], idx: usize) -> u16 {
 
 fn mode_param(params: &[Option<u16>]) -> Option<u16> {
     let mode = params.first().copied().flatten().unwrap_or(0);
-    if mode <= 2 { Some(mode) } else { None }
+    if mode <= 3 { Some(mode) } else { None }
 }
 
 const fn is_csi_final_byte(byte: u8) -> bool {
@@ -757,6 +817,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_cursor_next_line() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[3E");
+        assert_eq!(actions, vec![ParserAction::CursorNextLine(3)]);
+    }
+
+    #[test]
+    fn parses_cursor_previous_line() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[2F");
+        assert_eq!(actions, vec![ParserAction::CursorPreviousLine(2)]);
+    }
+
+    #[test]
+    fn parses_vertical_position_absolute() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[5d");
+        assert_eq!(actions, vec![ParserAction::VerticalPositionAbsolute(4)]);
+    }
+
+    #[test]
     fn parses_insert_delete_lines() {
         let mut parser = Parser::default();
         let actions = parser.feed(b"\x1b[3L\x1b[2M");
@@ -870,6 +951,41 @@ mod tests {
     }
 
     #[test]
+    fn dcs_payload_is_silently_absorbed() {
+        let mut parser = Parser::default();
+        // Simulates fish XTGETTCAP: DCS +q696e646e ST
+        let actions = parser.feed(b"\x1bP+q696e646e\x1b\\");
+        // DCS payload should be completely absorbed, no actions emitted
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn dcs_followed_by_normal_text() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1bP+q71756572792d6f732d6e616d65\x1b\\Hello");
+        // DCS absorbed, then "Hello" printed
+        let print_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, ParserAction::Print(_)))
+            .collect();
+        assert_eq!(print_actions.len(), 5);
+    }
+
+    #[test]
+    fn incomplete_dcs_discarded_on_resync() {
+        let mut parser = Parser::default();
+        // Start DCS but don't terminate it
+        let actions = parser.feed(b"\x1bPsome_payload");
+        assert!(actions.is_empty());
+        // Resync should discard the incomplete DCS
+        let resync = parser.resync_after_truncation();
+        assert!(resync.is_empty());
+        // Parser should be back in Ground state
+        let actions = parser.feed(b"A");
+        assert_eq!(actions, vec![ParserAction::Print('A')]);
+    }
+
+    #[test]
     fn sgr_bare_m_means_reset() {
         let mut parser = Parser::default();
         let actions = parser.feed(b"\x1b[m");
@@ -908,6 +1024,39 @@ mod tests {
                 ParserAction::Print('B'),
                 ParserAction::Print('C'),
             ]
+        );
+    }
+
+    #[test]
+    fn parses_reverse_index() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1bM");
+        assert_eq!(actions, vec![ParserAction::ReverseIndex]);
+    }
+
+    #[test]
+    fn parses_next_line() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1bE");
+        assert_eq!(actions, vec![ParserAction::NextLine]);
+    }
+
+    #[test]
+    fn parses_application_keypad_mode() {
+        let mut parser = Parser::default();
+        let enable = parser.feed(b"\x1b=");
+        assert_eq!(enable, vec![ParserAction::ApplicationKeypadMode(true)]);
+        let disable = parser.feed(b"\x1b>");
+        assert_eq!(disable, vec![ParserAction::ApplicationKeypadMode(false)]);
+    }
+
+    #[test]
+    fn parses_clear_scrollback() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[3J");
+        assert_eq!(
+            actions,
+            vec![ParserAction::ClearDisplay(DisplayClearMode::Scrollback)]
         );
     }
 
