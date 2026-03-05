@@ -337,6 +337,8 @@ struct GuiRuntimeApp {
     palette_open: bool,
     redraw_pending: bool,
     last_rendered_cursor_row: Option<u16>,
+    last_viewport_cols: u16,
+    last_viewport_rows: u16,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -410,6 +412,8 @@ impl GuiRuntimeApp {
             palette_open: false,
             redraw_pending: true,
             last_rendered_cursor_row: None,
+            last_viewport_cols: DEFAULT_COLS,
+            last_viewport_rows: DEFAULT_ROWS,
             exit_code: None,
             fatal_error: None,
         })
@@ -696,6 +700,13 @@ impl GuiRuntimeApp {
             .max(1)
             .min(u16::MAX as usize) as u16;
 
+        // Skip PTY resize when terminal dimensions are unchanged to avoid
+        // redundant SIGWINCH delivery during Wayland startup event bursts.
+        if cols == self.last_viewport_cols && rows == self.last_viewport_rows {
+            trace!(cols, rows, "viewport: skipped (dimensions unchanged)");
+            return;
+        }
+
         debug!(
             cols,
             rows,
@@ -705,6 +716,8 @@ impl GuiRuntimeApp {
         );
 
         self.terminal.resize(cols, rows);
+        self.last_viewport_cols = cols;
+        self.last_viewport_rows = rows;
 
         if let Err(error) = self.pty.resize(PtySize {
             cols,
@@ -1600,23 +1613,22 @@ fn draw_glyph_blended(
             let idx = py * width + px;
             let (bg_r, bg_g, bg_b) = u32_to_rgb(buffer[idx]);
 
-            // Alpha blend: result = bg + (fg - bg) * coverage / 255
+            // Alpha blend (expanded form, no subtraction to avoid u32 underflow):
+            // result = bg * (255 - a) / 255 + fg * a / 255
             let a = coverage as u32;
-            let r = bg_r as u32 + ((fg_r as u32).wrapping_sub(bg_r as u32)).wrapping_mul(a) / 255;
-            let g = bg_g as u32 + ((fg_g as u32).wrapping_sub(bg_g as u32)).wrapping_mul(a) / 255;
-            let b = bg_b as u32 + ((fg_b as u32).wrapping_sub(bg_b as u32)).wrapping_mul(a) / 255;
+            let inv_a = 255 - a;
+            let r = (bg_r as u32 * inv_a + fg_r as u32 * a) / 255;
+            let g = (bg_g as u32 * inv_a + fg_g as u32 * a) / 255;
+            let b = (bg_b as u32 * inv_a + fg_b as u32 * a) / 255;
             buffer[idx] = rgb_to_u32(r as u8, g as u8, b as u8);
 
             // Bold via double-strike (1px right shift)
             if bold && px + 1 < width {
                 let bold_idx = py * width + px + 1;
                 let (bbg_r, bbg_g, bbg_b) = u32_to_rgb(buffer[bold_idx]);
-                let br =
-                    bbg_r as u32 + ((fg_r as u32).wrapping_sub(bbg_r as u32)).wrapping_mul(a) / 255;
-                let bg_val =
-                    bbg_g as u32 + ((fg_g as u32).wrapping_sub(bbg_g as u32)).wrapping_mul(a) / 255;
-                let bb =
-                    bbg_b as u32 + ((fg_b as u32).wrapping_sub(bbg_b as u32)).wrapping_mul(a) / 255;
+                let br = (bbg_r as u32 * inv_a + fg_r as u32 * a) / 255;
+                let bg_val = (bbg_g as u32 * inv_a + fg_g as u32 * a) / 255;
+                let bb = (bbg_b as u32 * inv_a + fg_b as u32 * a) / 255;
                 buffer[bold_idx] = rgb_to_u32(br as u8, bg_val as u8, bb as u8);
             }
         }
