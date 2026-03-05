@@ -1,5 +1,6 @@
 use std::io::{self, ErrorKind, Read, Write};
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -319,6 +320,7 @@ struct GuiRuntimeApp {
     diagnostics: DiagnosticsSink,
     ui_runtime: UiRuntime,
     gpu_renderer: GpuRenderer,
+    gpu_cache_dir: Option<PathBuf>,
     started_at: Instant,
     render_attempt_sequence: u64,
     gpu_failure_sequence: u64,
@@ -395,6 +397,7 @@ impl GuiRuntimeApp {
             diagnostics: DiagnosticsSink::default(),
             ui_runtime,
             gpu_renderer: GpuRenderer::default(),
+            gpu_cache_dir: resolve_gpu_cache_dir(),
             started_at: Instant::now(),
             render_attempt_sequence: 0,
             gpu_failure_sequence: 0,
@@ -482,7 +485,10 @@ impl GuiRuntimeApp {
         let gpu_initialized = if self.initial_mode != RenderMode::Cpu {
             let w = window.inner_size().width;
             let h = window.inner_size().height;
-            match self.gpu_renderer.initialize(window.clone(), w, h) {
+            match self
+                .gpu_renderer
+                .initialize(window.clone(), w, h, self.gpu_cache_dir.as_deref())
+            {
                 Ok(()) => {
                     info!("GPU backend initialized successfully");
                     true
@@ -582,6 +588,12 @@ impl GuiRuntimeApp {
             has_fatal_error = self.fatal_error.is_some(),
             "shutdown: beginning teardown"
         );
+
+        // Persist GPU pipeline cache before releasing resources.
+        if let Some(cache_dir) = &self.gpu_cache_dir {
+            self.gpu_renderer.save_pipeline_cache(cache_dir);
+        }
+
         if let Err(error) = self.pty.close() {
             warn!(error = %error, "failed to close PTY during GUI shutdown");
             if self.fatal_error.is_none() {
@@ -1936,6 +1948,21 @@ fn fatal_boundary_reason_token(reason: FatalBoundaryReason) -> &'static str {
     match reason {
         FatalBoundaryReason::BoundaryFatal => "boundary-fatal",
         FatalBoundaryReason::RecoverableBudgetExhausted => "recoverable-budget-exhausted",
+    }
+}
+
+fn resolve_gpu_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches/rldyourterm"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+            Some(PathBuf::from(xdg).join("rldyourterm"))
+        } else {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/rldyourterm"))
+        }
     }
 }
 
