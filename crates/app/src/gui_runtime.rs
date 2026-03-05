@@ -5,14 +5,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use font8x8::{
-    BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, GREEK_FONTS, HIRAGANA_FONTS, LATIN_FONTS, MISC_FONTS,
-    UnicodeFonts,
-};
 use rldyourterm_core::events::CoreEvent;
 use rldyourterm_core::grid::{self, CELL_HEIGHT, CELL_WIDTH};
 use rldyourterm_core::state::TerminalState;
 use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
+use rldyourterm_font::GlyphCache;
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation::api::window::{
@@ -334,6 +331,7 @@ struct GuiRuntimeApp {
     surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
     window_size: PhysicalSize<u32>,
     terminal: TerminalState,
+    glyph_cache: GlyphCache,
     settings: SettingsService,
     modifiers: ModifiersState,
     palette_open: bool,
@@ -406,6 +404,7 @@ impl GuiRuntimeApp {
             surface: None,
             window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
             terminal: TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_SCROLLBACK_CAP),
+            glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
             settings: SettingsService::default(),
             modifiers: ModifiersState::default(),
             palette_open: false,
@@ -1205,6 +1204,7 @@ impl GuiRuntimeApp {
             width as usize,
             height as usize,
             &mut self.terminal,
+            &mut self.glyph_cache,
             self.last_rendered_cursor_row,
         );
         self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
@@ -1425,6 +1425,7 @@ fn render_terminal(
     width: usize,
     height: usize,
     terminal: &mut TerminalState,
+    glyph_cache: &mut GlyphCache,
     prev_cursor_row: Option<u16>,
 ) {
     if width == 0 || height == 0 {
@@ -1482,13 +1483,14 @@ fn render_terminal(
                 }
 
                 if cell.ch != ' ' {
-                    draw_char_colored(
+                    let glyph = glyph_cache.get(cell.ch);
+                    draw_glyph_blended(
                         buffer,
                         width,
                         height,
                         x,
                         base_y,
-                        cell.ch,
+                        glyph,
                         fg,
                         cell.attrs.bold,
                     );
@@ -1560,74 +1562,62 @@ fn draw_cell_bg(buffer: &mut [u32], width: usize, height: usize, x: usize, y: us
     }
 }
 
-/// Fallback glyph for characters without font8x8 coverage (Cyrillic, CJK, emoji, etc.).
-/// Renders as a rectangular outline so the user sees something visible instead of blank.
-const FALLBACK_GLYPH: [u8; 8] = [
-    0b01111110, // .######.
-    0b01000010, // .#....#.
-    0b01000010, // .#....#.
-    0b01000010, // .#....#.
-    0b01000010, // .#....#.
-    0b01000010, // .#....#.
-    0b01000010, // .#....#.
-    0b01111110, // .######.
-];
-
-fn lookup_glyph(ch: char) -> [u8; 8] {
-    BASIC_FONTS
-        .get(ch)
-        .or_else(|| LATIN_FONTS.get(ch))
-        .or_else(|| BLOCK_FONTS.get(ch))
-        .or_else(|| BOX_FONTS.get(ch))
-        .or_else(|| GREEK_FONTS.get(ch))
-        .or_else(|| HIRAGANA_FONTS.get(ch))
-        .or_else(|| MISC_FONTS.get(ch))
-        .unwrap_or(if ch <= ' ' { [0; 8] } else { FALLBACK_GLYPH })
-}
-
 #[allow(clippy::too_many_arguments)]
-fn draw_char_colored(
+fn draw_glyph_blended(
     buffer: &mut [u32],
     width: usize,
     height: usize,
-    x: usize,
-    y: usize,
-    ch: char,
+    cell_x: usize,
+    cell_y: usize,
+    glyph: &rldyourterm_font::GlyphBitmap,
     fg: u32,
     bold: bool,
 ) {
-    let glyph = lookup_glyph(ch);
+    if glyph.glyph_width == 0 || glyph.glyph_height == 0 {
+        return;
+    }
 
-    for (glyph_y, row_bits) in glyph.iter().enumerate() {
-        for glyph_x in 0..8 {
-            if (row_bits >> glyph_x) & 1 == 0 {
+    let (fg_r, fg_g, fg_b) = u32_to_rgb(fg);
+
+    for gy in 0..glyph.glyph_height {
+        for gx in 0..glyph.glyph_width {
+            let coverage = glyph.data[gy * glyph.glyph_width + gx];
+            if coverage == 0 {
                 continue;
             }
 
-            let pixel_x = x + glyph_x;
-            let pixel_y = y + glyph_y * 2;
-            if pixel_x >= width || pixel_y >= height {
+            let px = cell_x as i32 + glyph.x_offset + gx as i32;
+            let py = cell_y as i32 + glyph.y_offset + gy as i32;
+            if px < 0 || py < 0 {
+                continue;
+            }
+            let px = px as usize;
+            let py = py as usize;
+            if px >= width || py >= height {
                 continue;
             }
 
-            let index = pixel_y * width + pixel_x;
-            buffer[index] = fg;
+            let idx = py * width + px;
+            let (bg_r, bg_g, bg_b) = u32_to_rgb(buffer[idx]);
 
-            let pixel_y2 = pixel_y + 1;
-            if pixel_y2 < height {
-                let index2 = pixel_y2 * width + pixel_x;
-                buffer[index2] = fg;
-            }
+            // Alpha blend: result = bg + (fg - bg) * coverage / 255
+            let a = coverage as u32;
+            let r = bg_r as u32 + ((fg_r as u32).wrapping_sub(bg_r as u32)).wrapping_mul(a) / 255;
+            let g = bg_g as u32 + ((fg_g as u32).wrapping_sub(bg_g as u32)).wrapping_mul(a) / 255;
+            let b = bg_b as u32 + ((fg_b as u32).wrapping_sub(bg_b as u32)).wrapping_mul(a) / 255;
+            buffer[idx] = rgb_to_u32(r as u8, g as u8, b as u8);
 
             // Bold via double-strike (1px right shift)
-            if bold {
-                let bold_x = pixel_x + 1;
-                if bold_x < width {
-                    buffer[pixel_y * width + bold_x] = fg;
-                    if pixel_y2 < height {
-                        buffer[pixel_y2 * width + bold_x] = fg;
-                    }
-                }
+            if bold && px + 1 < width {
+                let bold_idx = py * width + px + 1;
+                let (bbg_r, bbg_g, bbg_b) = u32_to_rgb(buffer[bold_idx]);
+                let br =
+                    bbg_r as u32 + ((fg_r as u32).wrapping_sub(bbg_r as u32)).wrapping_mul(a) / 255;
+                let bg_val =
+                    bbg_g as u32 + ((fg_g as u32).wrapping_sub(bbg_g as u32)).wrapping_mul(a) / 255;
+                let bb =
+                    bbg_b as u32 + ((fg_b as u32).wrapping_sub(bbg_b as u32)).wrapping_mul(a) / 255;
+                buffer[bold_idx] = rgb_to_u32(br as u8, bg_val as u8, bb as u8);
             }
         }
     }
