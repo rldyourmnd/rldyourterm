@@ -7,5 +7,4 @@ license.workspace = true
 
 [dependencies]
 rldyourterm-core = { path = "../../core" }
-rldyourterm-services = { path = "../../services" }
 tracing.workspace = true

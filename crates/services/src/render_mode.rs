@@ -1,14 +1,8 @@
 use std::time::Duration;
 
+pub use rldyourterm_core::render_mode::RenderMode;
 pub use rldyourterm_foundation::error::GpuFailureKind;
 use tracing::{info, warn};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderMode {
-    Cpu,
-    Gpu,
-    Auto,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveRenderPath {

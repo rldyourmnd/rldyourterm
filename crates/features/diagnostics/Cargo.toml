@@ -10,5 +10,4 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-rldyourterm-services = { path = "../../services" }
 rldyourterm-foundation = { path = "../../foundation" }

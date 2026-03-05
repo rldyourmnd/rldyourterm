@@ -1,5 +1,5 @@
+use rldyourterm_core::render_mode::RenderMode;
 use rldyourterm_core::{cursor::Cursor, grid::Grid, state::TerminalState};
-use rldyourterm_services::render_mode::RenderMode;
 use tracing::warn;
 
 pub const DEFAULT_SCROLLBACK_CAP: usize = 50_000;
