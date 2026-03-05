@@ -454,6 +454,12 @@ impl GuiRuntimeApp {
                 .create_window(attributes)
                 .context("failed to create GUI window")?,
         );
+        // IME is intentionally disabled for terminal emulators. On Wayland,
+        // enabling IME activates zwp_text_input_v3 alongside wl_keyboard (xkb),
+        // causing every keypress to be delivered twice (KeyboardInput.text + Ime::Commit).
+        // Terminal emulators (Alacritty, foot) rely solely on wl_keyboard for input.
+        window.set_ime_allowed(false);
+
         let window_control = PlatformWindowFactory::from_winit_window(window.clone())
             .init(
                 FoundationWindowConfig {
@@ -819,24 +825,52 @@ impl GuiRuntimeApp {
             return;
         }
 
-        if let Some(bytes) = encode_winit_key_event(&event.logical_key, self.modifiers)
-            && let Err(error) = write_all_and_flush(&mut *self.writer, &bytes)
+        // Determine bytes to send to PTY. Priority:
+        // 1. Alt+text: ESC prefix + text (terminal alt-key convention)
+        // 2. Plain text (no Ctrl/Alt/Super): event.text directly
+        // 3. Named keys + Ctrl combos: encode_winit_key_event for escape sequences
+        let bytes = if self.modifiers.alt_key()
+            && !self.modifiers.control_key()
+            && !self.modifiers.super_key()
         {
-            match self.handle_pty_io_error(
-                SessionBoundary::PtyWrite,
-                error,
-                "failed to write keyboard input to PTY",
-            ) {
-                Ok(PtyBoundaryLoopAction::Continue) => {}
-                Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                    event_loop.exit();
+            event.text.as_ref().filter(|t| !t.is_empty()).map(|text| {
+                let mut b = vec![0x1b];
+                b.extend_from_slice(text.as_bytes());
+                b
+            })
+        } else if !self.modifiers.control_key()
+            && !self.modifiers.alt_key()
+            && !self.modifiers.super_key()
+        {
+            event
+                .text
+                .as_ref()
+                .filter(|t| !t.is_empty())
+                .map(|text| text.as_bytes().to_vec())
+        } else {
+            None
+        }
+        .or_else(|| encode_winit_key_event(&event.logical_key, self.modifiers));
+
+        if let Some(ref bytes) = bytes {
+            trace!(key = ?event.logical_key, len = bytes.len(), "keyboard input to PTY");
+            if let Err(error) = write_all_and_flush(&mut *self.writer, bytes) {
+                match self.handle_pty_io_error(
+                    SessionBoundary::PtyWrite,
+                    error,
+                    "failed to write keyboard input to PTY",
+                ) {
+                    Ok(PtyBoundaryLoopAction::Continue) => {}
+                    Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                        event_loop.exit();
+                    }
+                    Err(policy_error) => {
+                        self.fatal_error = Some(policy_error);
+                        event_loop.exit();
+                    }
                 }
-                Err(policy_error) => {
-                    self.fatal_error = Some(policy_error);
-                    event_loop.exit();
-                }
+                return;
             }
-            return;
         }
 
         if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
@@ -846,6 +880,10 @@ impl GuiRuntimeApp {
     }
 
     fn handle_text_commit(&mut self, text: &str, event_loop: &ActiveEventLoop) {
+        warn!(
+            len = text.len(),
+            "IME commit received unexpectedly (IME should be disabled)"
+        );
         if text.is_empty() {
             return;
         }
@@ -1522,6 +1560,19 @@ fn draw_cell_bg(buffer: &mut [u32], width: usize, height: usize, x: usize, y: us
     }
 }
 
+/// Fallback glyph for characters without font8x8 coverage (Cyrillic, CJK, emoji, etc.).
+/// Renders as a rectangular outline so the user sees something visible instead of blank.
+const FALLBACK_GLYPH: [u8; 8] = [
+    0b01111110, // .######.
+    0b01000010, // .#....#.
+    0b01000010, // .#....#.
+    0b01000010, // .#....#.
+    0b01000010, // .#....#.
+    0b01000010, // .#....#.
+    0b01000010, // .#....#.
+    0b01111110, // .######.
+];
+
 fn lookup_glyph(ch: char) -> [u8; 8] {
     BASIC_FONTS
         .get(ch)
@@ -1531,7 +1582,7 @@ fn lookup_glyph(ch: char) -> [u8; 8] {
         .or_else(|| GREEK_FONTS.get(ch))
         .or_else(|| HIRAGANA_FONTS.get(ch))
         .or_else(|| MISC_FONTS.get(ch))
-        .unwrap_or([0; 8])
+        .unwrap_or(if ch <= ' ' { [0; 8] } else { FALLBACK_GLYPH })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2006,10 +2057,22 @@ fn is_disconnect_error(error: &io::Error) -> bool {
 
 /// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
 fn load_app_icon() -> Option<Icon> {
-    let img = image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png).ok()?;
+    let img = match image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png) {
+        Ok(img) => img,
+        Err(e) => {
+            warn!(error = ?e, "failed to decode embedded LOGO.png");
+            return None;
+        }
+    };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
-    Icon::from_rgba(rgba.into_raw(), width, height).ok()
+    match Icon::from_rgba(rgba.into_raw(), width, height) {
+        Ok(icon) => Some(icon),
+        Err(e) => {
+            warn!(error = ?e, "failed to construct window icon from RGBA data");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
