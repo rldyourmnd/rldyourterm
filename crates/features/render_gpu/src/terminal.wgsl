@@ -90,10 +90,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var fg = unpack_rgb(cell.fg_color);
     var bg = unpack_rgb(cell.bg_color);
 
-    // Invert colors at cursor position
-    let col = in.instance % grid.grid_cols;
-    let row = in.instance / grid.grid_cols;
-    if grid.cursor_visible != 0u && row == grid.cursor_row && col == grid.cursor_col {
+    // Invert colors at cursor position (single comparison instead of two divisions)
+    let cursor_index = grid.cursor_row * grid.grid_cols + grid.cursor_col;
+    if grid.cursor_visible != 0u && in.instance == cursor_index {
         let tmp = fg;
         fg = bg;
         bg = tmp;
