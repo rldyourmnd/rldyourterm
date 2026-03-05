@@ -1280,7 +1280,12 @@ fn ensure_glyph_in_atlas(
         return slot;
     }
     if (*next_slot as usize) >= ATLAS_SLOTS {
-        return 0; // Atlas full - render as blank
+        warn!(
+            ch = ?ch,
+            slots = ATLAS_SLOTS,
+            "glyph atlas full; character rendered as blank"
+        );
+        return 0;
     }
     let cell_buf = rasterize_for_atlas(glyph_cache, ch);
     let slot = *next_slot;
