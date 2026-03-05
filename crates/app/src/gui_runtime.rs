@@ -145,8 +145,10 @@ fn dispatch_gpu_failure_command(
             Ok(GpuFailureHandling::FatalForcedGpu)
         }
         UiCommandOutcome::Noop => Ok(GpuFailureHandling::Ignored),
-        other => Err(anyhow!(
-            "unexpected UI outcome for GPU failure command: {other:?}"
+        outcome @ (UiCommandOutcome::SessionTransition(_)
+        | UiCommandOutcome::CadenceResynced { .. }
+        | UiCommandOutcome::SingleWindowConfirmed { .. }) => Err(anyhow!(
+            "unexpected UI outcome for GPU failure command: {outcome:?}"
         )),
     }
 }
@@ -269,7 +271,7 @@ fn spawn_reader_pump(
     proxy: EventLoopProxy<GuiEvent>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut buffer = [0_u8; 4096];
+        let mut buffer = [0_u8; 65536];
 
         loop {
             match reader.read(&mut buffer) {
@@ -337,6 +339,7 @@ struct GuiRuntimeApp {
     modifiers: ModifiersState,
     palette_open: bool,
     redraw_pending: bool,
+    gpu_init_pending: bool,
     last_rendered_cursor_row: Option<u16>,
     last_viewport_cols: u16,
     last_viewport_rows: u16,
@@ -413,6 +416,7 @@ impl GuiRuntimeApp {
             modifiers: ModifiersState::default(),
             palette_open: false,
             redraw_pending: true,
+            gpu_init_pending: initial_mode != RenderMode::Cpu,
             last_rendered_cursor_row: None,
             last_viewport_cols: DEFAULT_COLS,
             last_viewport_rows: DEFAULT_ROWS,
@@ -479,43 +483,21 @@ impl GuiRuntimeApp {
             )
             .context("failed to initialize foundation window control from winit window")?;
 
-        // Try GPU initialization if not CPU-only mode
-        debug!("bootstrap: attempting GPU initialization");
-        let gpu_initialized = if self.initial_mode != RenderMode::Cpu {
-            let w = window.inner_size().width;
-            let h = window.inner_size().height;
-            match self
-                .gpu_renderer
-                .initialize(window.clone(), w, h, self.gpu_cache_dir.as_deref())
-            {
-                Ok(()) => {
-                    info!("GPU backend initialized successfully");
-                    true
-                }
-                Err(e) => {
-                    warn!(error = ?e, "GPU init failed, will use CPU fallback");
-                    false
-                }
-            }
-        } else {
-            false
-        };
-
-        debug!(gpu_initialized, "bootstrap: GPU init result");
-
-        // Create softbuffer context/surface ONLY if GPU is NOT active.
-        // On Wayland, both wgpu and softbuffer cannot bind to the same wl_surface
-        // simultaneously — softbuffer's wl_shm buffer attachment blocks when a
-        // wgpu Vulkan/GL surface already owns the compositor buffer queue.
-        if !gpu_initialized {
-            let context = SoftbufferContext::new(window.clone())
-                .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
-            let surface = SoftbufferSurface::new(&context, window.clone())
-                .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-            self._context = Some(context);
-            self.surface = Some(surface);
-            debug!("bootstrap: softbuffer context created (CPU path)");
-        }
+        // GPU initialization is deferred to about_to_wait() so the event loop
+        // can process time-sensitive terminal queries (e.g. fish DA1) before the
+        // blocking GPU init (~1-2s). Always start with softbuffer for immediate
+        // CPU rendering; the deferred path will drop it before GPU init (Wayland
+        // surface exclusivity).
+        let context = SoftbufferContext::new(window.clone())
+            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
+        let surface = SoftbufferSurface::new(&context, window.clone())
+            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
+        self._context = Some(context);
+        self.surface = Some(surface);
+        debug!(
+            gpu_deferred = self.gpu_init_pending,
+            "bootstrap: softbuffer context created, GPU init deferred to event loop"
+        );
 
         self.window_size = window.inner_size();
         self.window_id = Some(window.id());
@@ -625,6 +607,38 @@ impl GuiRuntimeApp {
         self.surface = Some(surface);
         info!("lazily initialized softbuffer surface for CPU fallback");
         Ok(())
+    }
+
+    fn try_deferred_gpu_init(&mut self) {
+        self.gpu_init_pending = false;
+
+        if self.initial_mode == RenderMode::Cpu {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let w = window.inner_size().width;
+        let h = window.inner_size().height;
+
+        debug!("deferred GPU init: dropping softbuffer for Wayland surface exclusivity");
+        self.surface = None;
+        self._context = None;
+
+        debug!("deferred GPU init: attempting GPU initialization");
+        match self
+            .gpu_renderer
+            .initialize(window, w, h, self.gpu_cache_dir.as_deref())
+        {
+            Ok(()) => {
+                info!("GPU backend initialized successfully");
+                self.terminal.grid.mark_all_dirty();
+                self.queue_redraw();
+            }
+            Err(e) => {
+                warn!(error = ?e, "deferred GPU init failed, continuing with CPU fallback");
+            }
+        }
     }
 
     fn apply_post_draw_visibility_handshake(&self) {
@@ -1390,6 +1404,10 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gpu_init_pending {
+            self.try_deferred_gpu_init();
+        }
+
         self.request_redraw_if_needed();
 
         trace!(
