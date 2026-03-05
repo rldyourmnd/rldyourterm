@@ -44,6 +44,7 @@ app -> ui -> features -> services -> core
 - `crates/app/src/main.rs` - CLI parsing, shell resolution, runtime dispatch
 - `crates/app/src/gui_runtime.rs` - GUI window path (winit + softbuffer + PTY)
 - `crates/app/src/pty_runtime.rs` - TTY fallback path (crossterm + PTY)
+- `crates/app/src/shared.rs` - Cross-runtime utilities (key encoding, PTY boundary, display tokens)
 
 ## Commands
 
@@ -100,6 +101,21 @@ bash scripts/mvp/run_matrix.sh 5    # extended soak
 - **Modules**: single-file crates (lib.rs per feature crate)
 - **Patterns**: trait-based ports (foundation), platform adapters, controller pattern (services), command/receipt (UI)
 - **No silent fallback**: every transition logged with correlation
+
+## CI/CD
+
+GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on push/PR to `main`/`dev`:
+
+| Job | Purpose |
+|-----|---------|
+| Check | `cargo check --workspace` |
+| Clippy | `cargo clippy --workspace -- -D warnings` |
+| Test | `cargo test --workspace` |
+| Format | `cargo fmt --all -- --check` |
+| MSRV | `cargo check --workspace` with Rust 1.85 |
+| Audit | `cargo-audit` via rustsec/audit-check |
+
+Dependabot: weekly Cargo + GitHub Actions updates (`.github/dependabot.yml`).
 
 ## Quality Gates
 
