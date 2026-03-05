@@ -435,6 +435,14 @@ impl Grid {
         self.dirty_rows = vec![true; new_height as usize];
     }
 
+    pub fn has_dirty_rows(&self) -> bool {
+        self.dirty_rows.iter().any(|&d| d)
+    }
+
+    pub fn dirty_rows(&self) -> &[bool] {
+        &self.dirty_rows
+    }
+
     pub fn take_dirty_rows(&mut self) -> Vec<u16> {
         let mut rows = Vec::new();
         for (idx, dirty) in self.dirty_rows.iter_mut().enumerate() {
@@ -702,5 +710,52 @@ mod tests {
         let cell = Cell::default();
         assert_eq!(cell.ch, ' ');
         assert_eq!(cell.attrs, Attrs::default());
+    }
+
+    #[test]
+    fn new_grid_starts_all_dirty() {
+        let grid = Grid::new(3, 4);
+        assert!(grid.has_dirty_rows());
+        assert_eq!(grid.dirty_rows().len(), 4);
+        assert!(grid.dirty_rows().iter().all(|&d| d));
+    }
+
+    #[test]
+    fn take_dirty_rows_clears_flags() {
+        let mut grid = Grid::new(3, 4);
+        let dirty = grid.take_dirty_rows();
+        assert_eq!(dirty, vec![0, 1, 2, 3]);
+        assert!(!grid.has_dirty_rows());
+    }
+
+    #[test]
+    fn put_char_marks_only_target_row_dirty() {
+        let mut grid = Grid::new(5, 3);
+        grid.take_dirty_rows();
+        assert!(!grid.has_dirty_rows());
+
+        grid.put_char(1, 2, 'X', Attrs::default())
+            .expect("valid put");
+        assert!(grid.has_dirty_rows());
+        assert!(!grid.dirty_rows()[0]);
+        assert!(grid.dirty_rows()[1]);
+        assert!(!grid.dirty_rows()[2]);
+    }
+
+    #[test]
+    fn scroll_up_marks_all_dirty() {
+        let mut grid = Grid::new(3, 3);
+        grid.take_dirty_rows();
+        grid.scroll_up(1);
+        assert!(grid.dirty_rows().iter().all(|&d| d));
+    }
+
+    #[test]
+    fn resize_resets_dirty_to_new_height() {
+        let mut grid = Grid::new(3, 3);
+        grid.take_dirty_rows();
+        grid.resize(5, 6);
+        assert_eq!(grid.dirty_rows().len(), 6);
+        assert!(grid.dirty_rows().iter().all(|&d| d));
     }
 }
