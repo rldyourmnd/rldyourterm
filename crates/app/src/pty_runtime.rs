@@ -2,15 +2,19 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::shared::{
+    PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified, encode_ctrl_letter,
+    fatal_boundary_reason_token, fkey_ss3_modified, is_disconnect_error, on_off_token,
+    render_mode_token, session_boundary_token, tilde_modified, write_all_and_flush,
+    xterm_modifier_param,
+};
 use anyhow::{Context, Result, anyhow};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_services::render_mode::RenderMode;
-use rldyourterm_services::session::{
-    FatalBoundaryReason, SessionBoundary, SessionController, SessionState, SessionTransitionOutcome,
-};
+use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::SINGLE_WINDOW_BASELINE;
 use tracing::{info, warn};
@@ -352,44 +356,6 @@ pub fn run_interactive_pty(
     Ok(exit_code.unwrap_or(0))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PtyBoundaryPolicyDecision {
-    Continue { attempt: u8, remaining_budget: u8 },
-    Fatal { reason: FatalBoundaryReason },
-}
-
-fn classify_pty_boundary_failure(
-    session_policy: &mut SessionController,
-    boundary: SessionBoundary,
-) -> Result<PtyBoundaryPolicyDecision> {
-    let transition = session_policy
-        .handle_boundary_failure(boundary)
-        .map_err(|error| {
-            anyhow!(
-                "failed to apply PTY boundary policy boundary={}: {error}",
-                session_boundary_token(boundary)
-            )
-        })?;
-
-    match transition.outcome {
-        SessionTransitionOutcome::RecoverableBoundary {
-            attempt,
-            remaining_budget,
-            ..
-        } => Ok(PtyBoundaryPolicyDecision::Continue {
-            attempt,
-            remaining_budget,
-        }),
-        SessionTransitionOutcome::FatalBoundary { reason, .. } => {
-            Ok(PtyBoundaryPolicyDecision::Fatal { reason })
-        }
-        other => Err(anyhow!(
-            "unexpected session transition for boundary={} outcome={other:?}",
-            session_boundary_token(boundary)
-        )),
-    }
-}
-
 fn handle_pty_io_failure(
     session_policy: &mut SessionController,
     pty: &dyn PtyIo,
@@ -559,22 +525,6 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
     })
 }
 
-fn write_all_and_flush(writer: &mut dyn Write, bytes: &[u8]) -> io::Result<()> {
-    writer.write_all(bytes)?;
-    writer.flush()
-}
-
-fn is_disconnect_error(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        ErrorKind::BrokenPipe
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::ConnectionReset
-            | ErrorKind::NotConnected
-            | ErrorKind::UnexpectedEof
-    )
-}
-
 fn is_press_like(kind: KeyEventKind) -> bool {
     matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
@@ -687,8 +637,12 @@ fn runtime_palette_dispatch_result(
             ),
             updated_mode: None,
         },
-        _ => RuntimePaletteDispatchResult {
-            message: format!("[palette] command-applied input={command:?}"),
+        SettingsCommand::SetShellTarget(_)
+        | SettingsCommand::SetShellAutoInit(_)
+        | SettingsCommand::SetRenderCadencePolicy(_)
+        | SettingsCommand::SetTheme(_)
+        | SettingsCommand::SetRuntimeProfile(_) => RuntimePaletteDispatchResult {
+            message: format!("[palette] saved (restart required) input={command:?}"),
             updated_mode: None,
         },
     }
@@ -700,37 +654,6 @@ fn runtime_palette_info_line(settings: &SettingsService, active_mode: RenderMode
         render_mode_token(active_mode),
         on_off_token(settings.state().debug_mode),
     )
-}
-
-fn render_mode_token(mode: RenderMode) -> &'static str {
-    match mode {
-        RenderMode::Cpu => "cpu",
-        RenderMode::Gpu => "gpu",
-        RenderMode::Auto => "auto",
-    }
-}
-
-fn on_off_token(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
-fn session_boundary_token(boundary: SessionBoundary) -> &'static str {
-    match boundary {
-        SessionBoundary::StartupSpawn => "startup-spawn",
-        SessionBoundary::PtyRead => "pty-read",
-        SessionBoundary::PtyWrite => "pty-write",
-        SessionBoundary::PtyResize => "pty-resize",
-        SessionBoundary::PtyWait => "pty-wait",
-        SessionBoundary::PtyWriterAcquire => "pty-writer-acquire",
-        SessionBoundary::Stop => "stop",
-    }
-}
-
-fn fatal_boundary_reason_token(reason: FatalBoundaryReason) -> &'static str {
-    match reason {
-        FatalBoundaryReason::BoundaryFatal => "boundary-fatal",
-        FatalBoundaryReason::RecoverableBudgetExhausted => "recoverable-budget-exhausted",
-    }
 }
 
 fn is_local_shutdown_key(key_event: KeyEvent) -> bool {
@@ -789,50 +712,12 @@ fn encode_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
     }
 }
 
-fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
-    1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
-}
-
-fn csi_modified(final_byte: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
-    if has_mod {
-        format!("\x1b[1;{}{}", mod_param, final_byte as char).into_bytes()
-    } else {
-        vec![0x1b, b'[', final_byte]
-    }
-}
-
-fn tilde_modified(n: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
-    if has_mod {
-        format!("\x1b[{n};{mod_param}~").into_bytes()
-    } else {
-        format!("\x1b[{n}~").into_bytes()
-    }
-}
-
-fn fkey_ss3_modified(letter: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
-    if has_mod {
-        format!("\x1b[1;{}{}", mod_param, letter as char).into_bytes()
-    } else {
-        vec![0x1b, b'O', letter]
-    }
-}
-
-fn encode_ctrl_letter(ch: char) -> Option<u8> {
-    let lower = ch.to_ascii_lowercase();
-    if lower.is_ascii_lowercase() {
-        Some((lower as u8) - b'a' + 1)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified,
-        derive_poll_timeouts, dispatch_runtime_palette_command, encode_ctrl_letter,
-        encode_key_event, ensure_single_window, fkey_ss3_modified, frame_budget_millis,
-        is_runtime_palette_shortcut, tilde_modified, xterm_modifier_param,
+        PtyBoundaryPolicyDecision, classify_pty_boundary_failure, derive_poll_timeouts,
+        dispatch_runtime_palette_command, encode_key_event, ensure_single_window,
+        frame_budget_millis, is_runtime_palette_shortcut,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
@@ -889,15 +774,6 @@ mod tests {
             encode_key_event(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
             Some(b"\x1b[3~".to_vec())
         );
-    }
-
-    #[test]
-    fn encodes_ctrl_letters_case_insensitive() {
-        assert_eq!(encode_ctrl_letter('a'), Some(0x01));
-        assert_eq!(encode_ctrl_letter('c'), Some(0x03));
-        assert_eq!(encode_ctrl_letter('z'), Some(0x1a));
-        assert_eq!(encode_ctrl_letter('Q'), Some(0x11));
-        assert_eq!(encode_ctrl_letter('1'), None);
     }
 
     #[test]
@@ -1024,25 +900,6 @@ mod tests {
                 reason: FatalBoundaryReason::RecoverableBudgetExhausted,
             }
         );
-    }
-
-    #[test]
-    fn xterm_modifier_param_combinations() {
-        assert_eq!(xterm_modifier_param(false, false, false), 1);
-        assert_eq!(xterm_modifier_param(true, false, false), 2);
-        assert_eq!(xterm_modifier_param(false, true, false), 3);
-        assert_eq!(xterm_modifier_param(false, false, true), 5);
-        assert_eq!(xterm_modifier_param(true, true, true), 8);
-    }
-
-    #[test]
-    fn csi_tilde_fkey_helpers() {
-        assert_eq!(csi_modified(b'A', 1, false), b"\x1b[A");
-        assert_eq!(csi_modified(b'C', 5, true), b"\x1b[1;5C");
-        assert_eq!(tilde_modified(3, 1, false), b"\x1b[3~");
-        assert_eq!(tilde_modified(5, 5, true), b"\x1b[5;5~");
-        assert_eq!(fkey_ss3_modified(b'P', 1, false), b"\x1bOP");
-        assert_eq!(fkey_ss3_modified(b'P', 5, true), b"\x1b[1;5P");
     }
 
     #[test]

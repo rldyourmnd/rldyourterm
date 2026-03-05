@@ -795,25 +795,7 @@ fn command_token(command: UiRuntimeCommand) -> String {
     }
 }
 
-fn boundary_token(boundary: SessionBoundary) -> &'static str {
-    match boundary {
-        SessionBoundary::StartupSpawn => "startup-spawn",
-        SessionBoundary::PtyRead => "pty-read",
-        SessionBoundary::PtyWrite => "pty-write",
-        SessionBoundary::PtyResize => "pty-resize",
-        SessionBoundary::PtyWait => "pty-wait",
-        SessionBoundary::PtyWriterAcquire => "pty-writer-acquire",
-        SessionBoundary::Stop => "stop",
-    }
-}
-
-fn render_mode_token(mode: RenderMode) -> &'static str {
-    match mode {
-        RenderMode::Cpu => "cpu",
-        RenderMode::Gpu => "gpu",
-        RenderMode::Auto => "auto",
-    }
-}
+use shared::{render_mode_token, session_boundary_token as boundary_token};
 
 fn gpu_failure_kind_token(kind: GpuFailureKind) -> &'static str {
     match kind {
@@ -889,3 +871,4 @@ mod tests {
 
 mod gui_runtime;
 mod pty_runtime;
+mod shared;

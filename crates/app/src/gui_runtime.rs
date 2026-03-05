@@ -22,9 +22,7 @@ use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_foundation_platform::window::PlatformWindowFactory;
 use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
-use rldyourterm_services::session::{
-    FatalBoundaryReason, SessionBoundary, SessionController, SessionState, SessionTransitionOutcome,
-};
+use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
@@ -101,11 +99,12 @@ enum MonitorAffectingWindowEvent {
     ScaleFactorChanged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PtyBoundaryPolicyDecision {
-    Continue { attempt: u8, remaining_budget: u8 },
-    Fatal { reason: FatalBoundaryReason },
-}
+use crate::shared::{
+    PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified, encode_ctrl_letter,
+    fatal_boundary_reason_token, fkey_ss3_modified, is_disconnect_error, on_off_token,
+    render_mode_token, session_boundary_token, tilde_modified, write_all_and_flush,
+    xterm_modifier_param,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PtyBoundaryLoopAction {
@@ -1251,38 +1250,6 @@ impl GuiRuntimeApp {
     }
 }
 
-fn classify_pty_boundary_failure(
-    session_policy: &mut SessionController,
-    boundary: SessionBoundary,
-) -> Result<PtyBoundaryPolicyDecision> {
-    let transition = session_policy
-        .handle_boundary_failure(boundary)
-        .map_err(|error| {
-            anyhow!(
-                "failed to apply PTY boundary policy boundary={}: {error}",
-                session_boundary_token(boundary)
-            )
-        })?;
-
-    match transition.outcome {
-        SessionTransitionOutcome::RecoverableBoundary {
-            attempt,
-            remaining_budget,
-            ..
-        } => Ok(PtyBoundaryPolicyDecision::Continue {
-            attempt,
-            remaining_budget,
-        }),
-        SessionTransitionOutcome::FatalBoundary { reason, .. } => {
-            Ok(PtyBoundaryPolicyDecision::Fatal { reason })
-        }
-        other => Err(anyhow!(
-            "unexpected session transition for boundary={} outcome={other:?}",
-            session_boundary_token(boundary),
-        )),
-    }
-}
-
 impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         debug!(
@@ -1835,7 +1802,13 @@ fn runtime_palette_status_line(
             render_mode_token(mode),
             active_render_path_token(active_render_path),
         ),
-        _ => format!("[palette] command-applied input={command:?}"),
+        SettingsCommand::SetShellTarget(_)
+        | SettingsCommand::SetShellAutoInit(_)
+        | SettingsCommand::SetRenderCadencePolicy(_)
+        | SettingsCommand::SetTheme(_)
+        | SettingsCommand::SetRuntimeProfile(_) => {
+            format!("[palette] saved (restart required) input={command:?}")
+        }
     }
 }
 
@@ -1848,23 +1821,11 @@ fn runtime_palette_info_line(ui_runtime: &UiRuntime, settings: &SettingsService)
     )
 }
 
-fn render_mode_token(mode: RenderMode) -> &'static str {
-    match mode {
-        RenderMode::Cpu => "cpu",
-        RenderMode::Gpu => "gpu",
-        RenderMode::Auto => "auto",
-    }
-}
-
 fn active_render_path_token(path: ActiveRenderPath) -> &'static str {
     match path {
         ActiveRenderPath::Cpu => "cpu",
         ActiveRenderPath::Gpu => "gpu",
     }
-}
-
-fn on_off_token(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
 }
 
 fn sample_monitor_refresh_rate_millihz(window_control: Option<&dyn WindowControl>) -> Option<u32> {
@@ -1942,25 +1903,6 @@ fn emit_gpu_auto_fallback_observability(
     (event, notice)
 }
 
-fn session_boundary_token(boundary: SessionBoundary) -> &'static str {
-    match boundary {
-        SessionBoundary::StartupSpawn => "startup-spawn",
-        SessionBoundary::PtyRead => "pty-read",
-        SessionBoundary::PtyWrite => "pty-write",
-        SessionBoundary::PtyResize => "pty-resize",
-        SessionBoundary::PtyWait => "pty-wait",
-        SessionBoundary::PtyWriterAcquire => "pty-writer-acquire",
-        SessionBoundary::Stop => "stop",
-    }
-}
-
-fn fatal_boundary_reason_token(reason: FatalBoundaryReason) -> &'static str {
-    match reason {
-        FatalBoundaryReason::BoundaryFatal => "boundary-fatal",
-        FatalBoundaryReason::RecoverableBudgetExhausted => "recoverable-budget-exhausted",
-    }
-}
-
 fn resolve_gpu_cache_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -2036,34 +1978,6 @@ fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8
     }
 }
 
-fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
-    1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
-}
-
-fn csi_modified(final_byte: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
-    if has_mod {
-        format!("\x1b[1;{}{}", mod_param, final_byte as char).into_bytes()
-    } else {
-        vec![0x1b, b'[', final_byte]
-    }
-}
-
-fn tilde_modified(n: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
-    if has_mod {
-        format!("\x1b[{n};{mod_param}~").into_bytes()
-    } else {
-        format!("\x1b[{n}~").into_bytes()
-    }
-}
-
-fn fkey_ss3_modified(letter: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
-    if has_mod {
-        format!("\x1b[1;{}{}", mod_param, letter as char).into_bytes()
-    } else {
-        vec![0x1b, b'O', letter]
-    }
-}
-
 fn is_paste_shortcut(key: &Key, modifiers: ModifiersState) -> bool {
     let is_v = match key.as_ref() {
         Key::Character(text) => text.eq_ignore_ascii_case("v"),
@@ -2106,31 +2020,6 @@ fn cap_paste_text(text: &str) -> &str {
     }
 }
 
-fn encode_ctrl_letter(ch: char) -> Option<u8> {
-    let lower = ch.to_ascii_lowercase();
-    if lower.is_ascii_lowercase() {
-        Some((lower as u8) - b'a' + 1)
-    } else {
-        None
-    }
-}
-
-fn write_all_and_flush(writer: &mut dyn Write, bytes: &[u8]) -> io::Result<()> {
-    writer.write_all(bytes)?;
-    writer.flush()
-}
-
-fn is_disconnect_error(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        ErrorKind::BrokenPipe
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::ConnectionReset
-            | ErrorKind::NotConnected
-            | ErrorKind::UnexpectedEof
-    )
-}
-
 /// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
 fn load_app_icon() -> Option<Icon> {
     let img = match image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png) {
@@ -2157,11 +2046,10 @@ mod tests {
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
         MonitorAffectingWindowEvent, PtyBoundaryPolicyDecision,
         cadence_resync_command_for_monitor_event, cap_paste_text, classify_pty_boundary_failure,
-        csi_modified, dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-        emit_gpu_auto_fallback_observability, encode_ctrl_letter, encode_winit_key_event,
-        fkey_ss3_modified, grid, is_runtime_palette_shortcut_key, read_clipboard_text_for_paste,
-        resolve_cell_colors, sample_monitor_refresh_rate_millihz, tilde_modified,
-        xterm_modifier_param,
+        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+        emit_gpu_auto_fallback_observability, encode_winit_key_event, grid,
+        is_runtime_palette_shortcut_key, read_clipboard_text_for_paste, resolve_cell_colors,
+        sample_monitor_refresh_rate_millihz,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2305,14 +2193,6 @@ mod tests {
         let capped = cap_paste_text(&payload);
         assert_eq!(capped.len(), CLIPBOARD_PASTE_CAP_BYTES - 1);
         assert_eq!(capped.chars().last(), Some('a'));
-    }
-
-    #[test]
-    fn ctrl_letter_encoding_matches_ascii_control_range() {
-        assert_eq!(encode_ctrl_letter('a'), Some(0x01));
-        assert_eq!(encode_ctrl_letter('c'), Some(0x03));
-        assert_eq!(encode_ctrl_letter('z'), Some(0x1a));
-        assert_eq!(encode_ctrl_letter('1'), None);
     }
 
     #[test]
@@ -2617,37 +2497,6 @@ mod tests {
         };
         let (fg, _bg) = resolve_cell_colors(&attrs);
         assert_eq!(fg, super::rgb_to_u32(100, 50, 25));
-    }
-
-    #[test]
-    fn xterm_modifier_param_combinations() {
-        assert_eq!(xterm_modifier_param(false, false, false), 1);
-        assert_eq!(xterm_modifier_param(true, false, false), 2);
-        assert_eq!(xterm_modifier_param(false, true, false), 3);
-        assert_eq!(xterm_modifier_param(false, false, true), 5);
-        assert_eq!(xterm_modifier_param(true, false, true), 6);
-        assert_eq!(xterm_modifier_param(true, true, true), 8);
-    }
-
-    #[test]
-    fn csi_modified_plain_and_with_modifier() {
-        assert_eq!(csi_modified(b'A', 1, false), b"\x1b[A");
-        assert_eq!(csi_modified(b'C', 5, true), b"\x1b[1;5C");
-        assert_eq!(csi_modified(b'D', 2, true), b"\x1b[1;2D");
-    }
-
-    #[test]
-    fn tilde_modified_plain_and_with_modifier() {
-        assert_eq!(tilde_modified(3, 1, false), b"\x1b[3~");
-        assert_eq!(tilde_modified(5, 5, true), b"\x1b[5;5~");
-        assert_eq!(tilde_modified(15, 3, true), b"\x1b[15;3~");
-    }
-
-    #[test]
-    fn fkey_ss3_plain_and_with_modifier() {
-        assert_eq!(fkey_ss3_modified(b'P', 1, false), b"\x1bOP");
-        assert_eq!(fkey_ss3_modified(b'P', 5, true), b"\x1b[1;5P");
-        assert_eq!(fkey_ss3_modified(b'S', 2, true), b"\x1b[1;2S");
     }
 
     #[test]
