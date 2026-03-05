@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    name: Plan Release
+    runs-on: ubuntu-latest
+    outputs:
+      releases: ${{ steps.plan.outputs.releases }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install cargo-dist
+        uses: cargo-bins/cargo-binstall@main
+        with:
+          bins: cargo-dist
+      - id: plan
+        run: cargo dist plan --output-format=json > dist-plan.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-plan
+          path: dist-plan.json
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2.7.3
+      - name: Install system dependencies (Linux)
+        if: matrix.os == 'ubuntu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p rldyourterm-app
+      - name: Package
+        run: |
+          mkdir -p release
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../release/rldyourterm-${{ matrix.target }}.tar.gz rldyourterm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rldyourterm-${{ matrix.target }}
+          path: release/
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: rldyourterm-*
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

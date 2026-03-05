@@ -1,5 +1,11 @@
 # rldyourterm
 
+[![CI](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml/badge.svg)](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/rldyourmnd/rldyourterm/branch/main/graph/badge.svg)](https://codecov.io/gh/rldyourmnd/rldyourterm)
+[![Security](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml/badge.svg?branch=main&event=audit)](https://github.com/rldyourmnd/rldyourterm/security/overview)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
+
 Crash-intolerant AI terminal runtime with v1.0 priorities locked as:
 1. stability,
 2. AI CLI compatibility (`Claude Code`, `Codex`, `Gemini CLI`),

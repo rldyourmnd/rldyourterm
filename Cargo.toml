@@ -21,6 +21,12 @@ edition = "2024"
 rust-version = "1.92"
 license = "MIT"
 authors = ["rldyourmnd"]
+repository = "https://github.com/rldyourmnd/rldyourterm"
+homepage = "https://github.com/rldyourmnd/rldyourterm"
+description = "Crash-intolerant AI terminal runtime optimized for Claude Code, Codex, and Gemini CLI"
+readme = "README.md"
+keywords = ["terminal", "emulator", "ai", "cli", "wgpu"]
+categories = ["command-line-interface", "gui"]
 
 [workspace.dependencies]
 anyhow = "1.0"
