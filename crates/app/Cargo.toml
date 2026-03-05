@@ -13,7 +13,7 @@ tracing-subscriber.workspace = true
 crossterm.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
-font8x8.workspace = true
+rldyourterm-font = { path = "../features/font" }
 rldyourterm-ui = { path = "../ui" }
 rldyourterm-foundation = { path = "../foundation" }
 rldyourterm-foundation-platform = { path = "../foundation-platform" }
