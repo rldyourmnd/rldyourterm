@@ -471,6 +471,15 @@ impl Grid {
         rows
     }
 
+    /// Clear all dirty flags and reset scroll count without allocating.
+    /// Use when the renderer has already consumed `dirty_rows()` by reference.
+    pub fn clear_dirty_rows(&mut self) {
+        for dirty in &mut self.dirty_rows {
+            *dirty = false;
+        }
+        self.scroll_count = 0;
+    }
+
     pub fn mark_all_dirty(&mut self) {
         for dirty in &mut self.dirty_rows {
             *dirty = true;
@@ -784,6 +793,17 @@ mod tests {
         grid.scroll_up(3);
         assert_eq!(grid.scroll_count(), 3);
         grid.take_dirty_rows();
+        assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn clear_dirty_rows_resets_flags_without_alloc() {
+        let mut grid = Grid::new(10, 5);
+        grid.put_char(0, 0, 'A', Attrs::default())
+            .expect("put row 0 col 0");
+        assert!(grid.has_dirty_rows());
+        grid.clear_dirty_rows();
+        assert!(!grid.has_dirty_rows());
         assert_eq!(grid.scroll_count(), 0);
     }
 
