@@ -1,0 +1,72 @@
+# Auto-label PRs based on file paths
+# https://github.com/actions/labeler
+
+core:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/core/**/*'
+  - head-branch: ['main', 'dev']
+
+services:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/services/**/*'
+  - head-branch: ['main', 'dev']
+
+foundation:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/foundation*/**/*'
+  - head-branch: ['main', 'dev']
+
+ui:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/ui/**/*'
+  - head-branch: ['main', 'dev']
+
+app:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/app/**/*'
+  - head-branch: ['main', 'dev']
+
+features/render:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/features/render_*/**/*'
+  - head-branch: ['main', 'dev']
+
+features/font:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/features/font/**/*'
+  - head-branch: ['main', 'dev']
+
+features/settings:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/features/settings/**/*'
+  - head-branch: ['main', 'dev']
+
+features/diagnostics:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/features/diagnostics/**/*'
+  - head-branch: ['main', 'dev']
+
+features/shell:
+  - changed-files:
+      - any-glob-to-any-file: 'crates/features/shell_integration/**/*'
+  - head-branch: ['main', 'dev']
+
+ci-cd:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**/*'
+      - any-glob-to-any-file: 'deny.toml'
+  - head-branch: ['main', 'dev']
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: '*.md'
+      - any-glob-to-any-file: 'docs/**/*'
+      - any-glob-to-any-file: 'planning/**/*.md'
+  - head-branch: ['main', 'dev']
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: 'Cargo.toml'
+      - any-glob-to-any-file: 'Cargo.lock'
+      - any-glob-to-any-file: '**/Cargo.toml'
+  - head-branch: ['main', 'dev']

@@ -1,0 +1,58 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+template: |
+  ## What's Changed
+  
+  $CHANGES
+  
+  **Full Changelog**: https://github.com/rldyourmnd/rldyourterm/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+categories:
+  - title: 'Breaking Changes'
+    labels:
+      - 'breaking change'
+  - title: 'New Features'
+    labels:
+      - 'enhancement'
+      - 'feature'
+  - title: 'Bug Fixes'
+    labels:
+      - 'bug'
+      - 'fix'
+  - title: 'Performance'
+    labels:
+      - 'performance'
+  - title: 'Refactoring'
+    labels:
+      - 'refactor'
+  - title: 'Documentation'
+    labels:
+      - 'documentation'
+  - title: 'Dependencies'
+    labels:
+      - 'dependencies'
+  - title: 'Maintenance'
+    labels:
+      - 'chore'
+      - 'area: ci-cd'
+
+version-resolver:
+  major:
+    labels:
+      - 'breaking change'
+  minor:
+    labels:
+      - 'enhancement'
+      - 'feature'
+  patch:
+    labels:
+      - 'bug'
+      - 'fix'
+      - 'performance'
+      - 'refactor'
+      - 'documentation'
+      - 'dependencies'
+      - 'chore'
+
+exclude-labels:
+  - 'skip-changelog'
