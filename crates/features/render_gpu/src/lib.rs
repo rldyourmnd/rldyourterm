@@ -375,6 +375,32 @@ const SELECTION_NONE: u32 = u32::MAX;
 const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const INITIAL_CELL_BUFFER_CAPACITY: usize = 120 * 32;
 
+/// Pack atlas slot index and text attribute flags into a single u32.
+/// Lower 16 bits = atlas slot, upper bits = bold/italic/underline/strikethrough/dim/inverse.
+#[inline]
+fn pack_cell_flags(slot: u16, attrs: &grid::Attrs) -> u32 {
+    let mut flags = slot as u32;
+    if attrs.bold {
+        flags |= ATTR_BOLD;
+    }
+    if attrs.italic {
+        flags |= ATTR_ITALIC;
+    }
+    if attrs.underline {
+        flags |= ATTR_UNDERLINE;
+    }
+    if attrs.strikethrough {
+        flags |= ATTR_STRIKETHROUGH;
+    }
+    if attrs.dim {
+        flags |= ATTR_DIM;
+    }
+    if attrs.inverse {
+        flags |= ATTR_INVERSE;
+    }
+    flags
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct GridUniforms {
@@ -464,28 +490,8 @@ impl GpuBackend {
                         )
                     };
 
-                    let mut flags = slot as u32;
-                    if attrs.bold {
-                        flags |= ATTR_BOLD;
-                    }
-                    if attrs.italic {
-                        flags |= ATTR_ITALIC;
-                    }
-                    if attrs.underline {
-                        flags |= ATTR_UNDERLINE;
-                    }
-                    if attrs.strikethrough {
-                        flags |= ATTR_STRIKETHROUGH;
-                    }
-                    if attrs.dim {
-                        flags |= ATTR_DIM;
-                    }
-                    if attrs.inverse {
-                        flags |= ATTR_INVERSE;
-                    }
-
                     self.cell_instances[row_offset + col] = CellInstance {
-                        atlas_and_flags: flags,
+                        atlas_and_flags: pack_cell_flags(slot, attrs),
                         fg_color: fg,
                         bg_color: bg,
                         _pad: 0,
@@ -981,31 +987,26 @@ impl GpuRenderer {
         let instance_size = std::mem::size_of::<CellInstance>();
         let row_byte_size = grid_cols * instance_size;
 
-        // Scroll-aware upload: if scroll happened, use GPU DMA to shift existing data
-        // in back buffer, then upload only the new rows.
+        // Scroll DMA parameters (used later in the unified encoder).
+        // When set, the render encoder will include a copy_buffer_to_buffer before the pass.
+        let mut scroll_dma: Option<(u64, u64)> = None; // (src_offset, copy_size)
+
+        // Scroll-aware upload: use GPU DMA to shift existing data in back buffer,
+        // then upload only the new rows. CPU shadow is updated first to preserve old data.
         if scroll_count > 0 && scroll_count < grid_rows {
-            // GPU DMA: copy shifted rows from front buffer to back buffer
-            let src_offset = (scroll_count * row_byte_size) as u64;
             let copy_rows = grid_rows - scroll_count;
-            let copy_size = (copy_rows * row_byte_size) as u64;
-
-            let mut encoder =
-                backend
-                    .device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("scroll-dma"),
-                    });
-            encoder.copy_buffer_to_buffer(
-                &backend.cell_buffer,
-                src_offset,
-                &backend.cell_buffer_back,
-                0,
-                copy_size,
-            );
-            backend.queue.submit(Some(encoder.finish()));
-
-            // CPU: prepare and update only the NEW rows at the bottom
             let first_new_row = grid_rows - scroll_count;
+
+            // CPU shadow: shift OLD data BEFORE writing new rows (must read old data first)
+            for row in 0..copy_rows {
+                let src_start = (row + scroll_count) * grid_cols;
+                let dst_start = row * grid_cols;
+                backend
+                    .cell_instances
+                    .copy_within(src_start..src_start + grid_cols, dst_start);
+            }
+
+            // Prepare NEW rows at the bottom
             for row in first_new_row..grid_rows {
                 let row_offset = row * grid_cols;
                 if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
@@ -1025,27 +1026,8 @@ impl GpuRenderer {
                                 &backend.queue,
                             )
                         };
-                        let mut flags = slot as u32;
-                        if attrs.bold {
-                            flags |= ATTR_BOLD;
-                        }
-                        if attrs.italic {
-                            flags |= ATTR_ITALIC;
-                        }
-                        if attrs.underline {
-                            flags |= ATTR_UNDERLINE;
-                        }
-                        if attrs.strikethrough {
-                            flags |= ATTR_STRIKETHROUGH;
-                        }
-                        if attrs.dim {
-                            flags |= ATTR_DIM;
-                        }
-                        if attrs.inverse {
-                            flags |= ATTR_INVERSE;
-                        }
                         backend.cell_instances[row_offset + col] = CellInstance {
-                            atlas_and_flags: flags,
+                            atlas_and_flags: pack_cell_flags(slot, attrs),
                             fg_color: fg,
                             bg_color: bg,
                             _pad: 0,
@@ -1054,7 +1036,7 @@ impl GpuRenderer {
                 }
             }
 
-            // Upload new rows to back buffer
+            // Stage new rows to back buffer via write_buffer (batched with next submit)
             let upload_offset = (first_new_row * row_byte_size) as u64;
             let instance_start = first_new_row * grid_cols;
             let instance_end = grid_rows * grid_cols;
@@ -1064,16 +1046,12 @@ impl GpuRenderer {
                 bytemuck::cast_slice(&backend.cell_instances[instance_start..instance_end]),
             );
 
-            // Also update the CPU shadow for the shifted rows (for future partial updates)
-            for row in 0..copy_rows {
-                let src_start = (row + scroll_count) * grid_cols;
-                let dst_start = row * grid_cols;
-                backend
-                    .cell_instances
-                    .copy_within(src_start..src_start + grid_cols, dst_start);
-            }
+            // Record DMA parameters for the unified encoder
+            let src_offset = (scroll_count * row_byte_size) as u64;
+            let copy_size = (copy_rows * row_byte_size) as u64;
+            scroll_dma = Some((src_offset, copy_size));
 
-            // Swap front/back buffers
+            // Swap front/back buffers so render pass reads from the assembled back buffer
             std::mem::swap(&mut backend.cell_buffer, &mut backend.cell_buffer_back);
             std::mem::swap(
                 &mut backend.cell_bind_group,
@@ -1165,6 +1143,20 @@ impl GpuRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("terminal-encoder"),
             });
+
+        // Scroll DMA: copy shifted rows in the same encoder before the render pass.
+        // After the buffer swap above, cell_buffer_back holds the OLD front buffer (source)
+        // and cell_buffer holds the NEW front buffer (destination with staged new rows).
+        // write_buffer staging + this copy write to non-overlapping regions of cell_buffer.
+        if let Some((src_offset, copy_size)) = scroll_dma {
+            encoder.copy_buffer_to_buffer(
+                &backend.cell_buffer_back,
+                src_offset,
+                &backend.cell_buffer,
+                0,
+                copy_size,
+            );
+        }
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
