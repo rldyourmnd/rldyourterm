@@ -1974,7 +1974,6 @@ name = "rldyourterm-diagnostics"
 version = "0.1.0"
 dependencies = [
  "rldyourterm-foundation",
- "rldyourterm-services",
  "serde",
  "serde_json",
  "tracing",
@@ -2013,7 +2012,6 @@ name = "rldyourterm-render-cpu"
 version = "0.1.0"
 dependencies = [
  "rldyourterm-core",
- "rldyourterm-services",
  "tracing",
 ]
 
@@ -2045,7 +2043,7 @@ dependencies = [
 name = "rldyourterm-settings"
 version = "0.1.0"
 dependencies = [
- "rldyourterm-services",
+ "rldyourterm-core",
  "serde",
  "tracing",
 ]
@@ -2054,7 +2052,6 @@ dependencies = [
 name = "rldyourterm-shell-integration"
 version = "0.1.0"
 dependencies = [
- "rldyourterm-services",
  "tracing",
 ]
 

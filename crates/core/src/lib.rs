@@ -3,5 +3,6 @@ pub mod error;
 pub mod events;
 pub mod grid;
 pub mod parser;
+pub mod render_mode;
 pub mod scrollback;
 pub mod state;
