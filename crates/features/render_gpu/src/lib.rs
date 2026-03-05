@@ -405,10 +405,77 @@ struct GpuBackend {
     cell_bind_group: wgpu::BindGroup,
     cell_buffer: wgpu::Buffer,
     cell_buffer_capacity: usize,
+    cell_instances: Vec<CellInstance>,
     glyph_cache: GlyphCache,
     char_to_slot: HashMap<char, u16>,
     next_atlas_slot: u16,
     surface_state: SurfaceRuntimeState,
+}
+
+impl GpuBackend {
+    /// Updates `cell_instances` in-place for rows marked dirty. Clean rows are
+    /// skipped entirely, preserving previous frame data in CPU vec and GPU buffer.
+    fn prepare_dirty_rows(&mut self, terminal: &TerminalState, dirty_rows: &[bool]) {
+        let cols = terminal.grid.width() as usize;
+        let rows = terminal.grid.height() as usize;
+
+        for row in 0..rows {
+            if row >= dirty_rows.len() || !dirty_rows[row] {
+                continue;
+            }
+
+            let row_offset = row * cols;
+            if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
+                for (col, cell) in row_cells.iter().take(cols).enumerate() {
+                    let attrs = &cell.attrs;
+                    let mut fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
+                    let mut bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
+
+                    if attrs.dim {
+                        let r = (fg >> 16) & 0xFF;
+                        let g = (fg >> 8) & 0xFF;
+                        let b = fg & 0xFF;
+                        fg = ((r / 2) << 16) | ((g / 2) << 8) | (b / 2);
+                    }
+
+                    if attrs.inverse {
+                        std::mem::swap(&mut fg, &mut bg);
+                    }
+
+                    let slot = if cell.ch == ' ' {
+                        0
+                    } else {
+                        ensure_glyph_in_atlas(
+                            cell.ch,
+                            &mut self.glyph_cache,
+                            &mut self.char_to_slot,
+                            &mut self.next_atlas_slot,
+                            &self.atlas_texture,
+                            &self.queue,
+                        )
+                    };
+
+                    self.cell_instances[row_offset + col] = CellInstance {
+                        atlas_and_flags: slot as u32,
+                        fg_color: fg,
+                        bg_color: bg,
+                        _pad: 0,
+                    };
+                }
+            } else {
+                let default_fg = grid::color_to_u32(Color::Default, DEFAULT_FG);
+                let default_bg = grid::color_to_u32(Color::Default, DEFAULT_BG);
+                for col in 0..cols {
+                    self.cell_instances[row_offset + col] = CellInstance {
+                        atlas_and_flags: 0,
+                        fg_color: default_fg,
+                        bg_color: default_bg,
+                        _pad: 0,
+                    };
+                }
+            }
+        }
+    }
 }
 
 pub struct GpuRenderer {
@@ -745,6 +812,15 @@ impl GpuRenderer {
             cell_bind_group,
             cell_buffer,
             cell_buffer_capacity: initial_capacity,
+            cell_instances: vec![
+                CellInstance {
+                    atlas_and_flags: 0,
+                    fg_color: 0,
+                    bg_color: 0,
+                    _pad: 0
+                };
+                initial_capacity
+            ],
             glyph_cache,
             char_to_slot,
             next_atlas_slot,
@@ -771,7 +847,15 @@ impl GpuRenderer {
     }
 
     /// Renders the terminal state to the GPU surface.
-    pub fn render_frame(&mut self, terminal: &TerminalState) -> Result<(), GpuRenderError> {
+    ///
+    /// `dirty_rows` indicates which grid rows changed since last render.
+    /// Only dirty rows are re-prepared on the CPU and uploaded to the GPU buffer.
+    /// The GPU buffer retains previous frame data for clean rows.
+    pub fn render_frame(
+        &mut self,
+        terminal: &TerminalState,
+        dirty_rows: &[bool],
+    ) -> Result<(), GpuRenderError> {
         let backend = self
             .backend
             .as_mut()
@@ -785,17 +869,7 @@ impl GpuRenderer {
             return Ok(());
         }
 
-        // Prepare cell instance data, dynamically adding missing glyphs to atlas
-        let cells = prepare_cell_data(
-            terminal,
-            &mut backend.glyph_cache,
-            &mut backend.char_to_slot,
-            &mut backend.next_atlas_slot,
-            &backend.atlas_texture,
-            &backend.queue,
-        );
-
-        // Grow cell buffer if needed
+        // Grow cell buffer and CPU-side instance cache if needed
         let next_capacity = next_cell_buffer_capacity(backend.cell_buffer_capacity, cell_count);
         if next_capacity != backend.cell_buffer_capacity {
             backend.cell_buffer = backend.device.create_buffer(&wgpu::BufferDescriptor {
@@ -810,12 +884,31 @@ impl GpuRenderer {
                 &backend.cell_buffer,
             );
             backend.cell_buffer_capacity = next_capacity;
+            backend.cell_instances.resize(
+                next_capacity,
+                CellInstance {
+                    atlas_and_flags: 0,
+                    fg_color: 0,
+                    bg_color: 0,
+                    _pad: 0,
+                },
+            );
         }
 
-        // Upload cell data
-        backend
-            .queue
-            .write_buffer(&backend.cell_buffer, 0, bytemuck::cast_slice(&cells));
+        // Prepare cell instance data ONLY for dirty rows (in-place update)
+        backend.prepare_dirty_rows(terminal, dirty_rows);
+
+        // Upload only dirty row ranges to GPU (coalesced into contiguous spans)
+        let instance_size = std::mem::size_of::<CellInstance>();
+        let row_byte_size = grid_cols * instance_size;
+        upload_dirty_ranges(
+            &backend.queue,
+            &backend.cell_buffer,
+            &backend.cell_instances,
+            dirty_rows,
+            grid_cols,
+            row_byte_size,
+        );
 
         // Update grid uniforms
         let uniforms = GridUniforms {
@@ -1174,70 +1267,43 @@ fn ensure_glyph_in_atlas(
     slot
 }
 
-fn prepare_cell_data(
-    terminal: &TerminalState,
-    glyph_cache: &mut GlyphCache,
-    char_to_slot: &mut HashMap<char, u16>,
-    next_slot: &mut u16,
-    atlas_texture: &wgpu::Texture,
+/// Uploads only dirty row ranges to the GPU buffer. Coalesces adjacent dirty rows
+/// into contiguous spans to minimize the number of `write_buffer` calls.
+fn upload_dirty_ranges(
     queue: &wgpu::Queue,
-) -> Vec<CellInstance> {
-    let cols = terminal.grid.width() as usize;
-    let rows = terminal.grid.height() as usize;
-    let mut cells = Vec::with_capacity(cols * rows);
+    cell_buffer: &wgpu::Buffer,
+    cell_instances: &[CellInstance],
+    dirty_rows: &[bool],
+    grid_cols: usize,
+    row_byte_size: usize,
+) {
+    let mut range_start: Option<usize> = None;
 
-    for row in 0..rows {
-        if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
-            for cell in row_cells.iter().take(cols) {
-                let attrs = &cell.attrs;
-                let mut fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
-                let mut bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
+    let flush = |queue: &wgpu::Queue, s: usize, end: usize| {
+        let byte_offset = (s * row_byte_size) as u64;
+        let instance_start = s * grid_cols;
+        let instance_end = end * grid_cols;
+        queue.write_buffer(
+            cell_buffer,
+            byte_offset,
+            bytemuck::cast_slice(&cell_instances[instance_start..instance_end]),
+        );
+    };
 
-                if attrs.dim {
-                    let r = (fg >> 16) & 0xFF;
-                    let g = (fg >> 8) & 0xFF;
-                    let b = fg & 0xFF;
-                    fg = ((r / 2) << 16) | ((g / 2) << 8) | (b / 2);
-                }
-
-                if attrs.inverse {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-
-                let slot = if cell.ch == ' ' {
-                    0
-                } else {
-                    ensure_glyph_in_atlas(
-                        cell.ch,
-                        glyph_cache,
-                        char_to_slot,
-                        next_slot,
-                        atlas_texture,
-                        queue,
-                    )
-                };
-
-                cells.push(CellInstance {
-                    atlas_and_flags: slot as u32,
-                    fg_color: fg,
-                    bg_color: bg,
-                    _pad: 0,
-                });
+    for (row, &dirty) in dirty_rows.iter().enumerate() {
+        match (dirty, range_start) {
+            (true, None) => range_start = Some(row),
+            (false, Some(s)) => {
+                flush(queue, s, row);
+                range_start = None;
             }
-        } else {
-            // Row read failed - fill with blank cells
-            for _ in 0..cols {
-                cells.push(CellInstance {
-                    atlas_and_flags: 0,
-                    fg_color: grid::color_to_u32(Color::Default, DEFAULT_FG),
-                    bg_color: grid::color_to_u32(Color::Default, DEFAULT_BG),
-                    _pad: 0,
-                });
-            }
+            _ => {}
         }
     }
 
-    cells
+    if let Some(s) = range_start {
+        flush(queue, s, dirty_rows.len());
+    }
 }
 
 #[cfg(test)]
@@ -1518,8 +1584,9 @@ mod tests {
     fn render_frame_returns_backend_unavailable_when_uninitialized() {
         let mut renderer = GpuRenderer::default();
         let terminal = TerminalState::new(80, 24, 100);
+        let dirty = vec![true; 24];
         assert_eq!(
-            renderer.render_frame(&terminal),
+            renderer.render_frame(&terminal, &dirty),
             Err(GpuRenderError::BackendUnavailable)
         );
     }

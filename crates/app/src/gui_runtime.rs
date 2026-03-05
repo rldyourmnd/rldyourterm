@@ -1107,8 +1107,10 @@ impl GuiRuntimeApp {
         if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
             && self.gpu_renderer.is_initialized()
         {
-            match self.gpu_renderer.render_frame(&self.terminal) {
+            let dirty_rows = self.terminal.grid.dirty_rows();
+            match self.gpu_renderer.render_frame(&self.terminal, dirty_rows) {
                 Ok(()) => {
+                    self.terminal.grid.take_dirty_rows();
                     let _ = self
                         .ui_runtime
                         .handle_command(UiRuntimeCommand::GpuFramePresented)
