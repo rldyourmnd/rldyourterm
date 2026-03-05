@@ -301,6 +301,10 @@ impl Grid {
             }
         }
 
+        // Region scroll invalidates the DMA scroll optimization (which assumes
+        // a uniform full-screen shift). Reset scroll_count so GPU renderer
+        // falls back to the standard dirty-row upload path.
+        self.scroll_count = 0;
         self.mark_all_dirty();
         removed
     }
@@ -337,6 +341,7 @@ impl Grid {
             }
         }
 
+        self.scroll_count = 0;
         self.mark_all_dirty();
     }
 
@@ -797,6 +802,24 @@ mod tests {
         grid.scroll_up(2);
         assert_eq!(grid.scroll_count(), 2);
         grid.resize(10, 8);
+        assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn scroll_up_region_resets_scroll_count() {
+        let mut grid = Grid::new(10, 5);
+        grid.scroll_up(2);
+        assert_eq!(grid.scroll_count(), 2);
+        grid.scroll_up_region(1, 1, 3);
+        assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn scroll_down_region_resets_scroll_count() {
+        let mut grid = Grid::new(10, 5);
+        grid.scroll_up(2);
+        assert_eq!(grid.scroll_count(), 2);
+        grid.scroll_down_region(1, 1, 3);
         assert_eq!(grid.scroll_count(), 0);
     }
 

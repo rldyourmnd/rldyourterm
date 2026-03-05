@@ -74,14 +74,21 @@ fn vs_main(
     let col = instance_index % grid.grid_cols;
     let row = instance_index / grid.grid_cols;
 
-    let px = (f32(col) + corner.x) * grid.cell_width;
+    let cell = cells[instance_index];
+
+    var px = (f32(col) + corner.x) * grid.cell_width;
     let py = (f32(row) + corner.y) * grid.cell_height;
+
+    // Italic: screen-space shear — shift top vertices rightward (SGR 3).
+    // Applied here to avoid atlas UV bleeding from adjacent glyph slots.
+    if (cell.atlas_and_flags & ITALIC_BIT) != 0u {
+        px = px + (1.0 - corner.y) * 0.15 * grid.cell_width;
+    }
 
     let ndc_x = (px / grid.viewport_width) * 2.0 - 1.0;
     let ndc_y = 1.0 - (py / grid.viewport_height) * 2.0;
 
     // Atlas UV from lower 16 bits of atlas_and_flags
-    let cell = cells[instance_index];
     let atlas_index = cell.atlas_and_flags & ATLAS_MASK;
     let glyph_col = atlas_index % grid.atlas_cols;
     let glyph_row = atlas_index / grid.atlas_cols;
@@ -143,14 +150,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         bg = tmp;
     }
 
-    // Compute atlas UV with italic skew
-    var uv = in.uv;
-    if (flags & ITALIC_BIT) != 0u {
-        let skew = (1.0 - in.cell_pos.y) * 0.15;
-        uv.x = uv.x + skew / f32(grid.atlas_cols);
-    }
-
     // Glyph coverage from R8Unorm atlas
+    let uv = in.uv;
     var glyph_alpha = textureSample(atlas_tex, atlas_samp, uv).r;
 
     // Bold: double-strike — sample 1px to the right and merge (SGR 1)
