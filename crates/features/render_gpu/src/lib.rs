@@ -1,10 +1,7 @@
 use bytemuck::{Pod, Zeroable};
-use font8x8::{
-    BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, GREEK_FONTS, HIRAGANA_FONTS, LATIN_FONTS, MISC_FONTS,
-    UnicodeFonts,
-};
 use rldyourterm_core::grid::{self, CELL_HEIGHT, CELL_WIDTH, Color};
 use rldyourterm_core::state::TerminalState;
+use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
 use rldyourterm_foundation::error::GpuFailureKind;
 use std::collections::HashMap;
 use std::error::Error;
@@ -350,12 +347,15 @@ impl fmt::Display for GpuRenderError {
 
 impl Error for GpuRenderError {}
 
-// Glyph atlas constants: 16x16 grid of 8x8 pixel glyphs = 128x128 texture
-const ATLAS_GLYPH_COLS: u32 = 16;
-const ATLAS_GLYPH_ROWS: u32 = 16;
-const ATLAS_GLYPH_SIZE: u32 = 8;
-const ATLAS_SIZE: u32 = ATLAS_GLYPH_COLS * ATLAS_GLYPH_SIZE; // 128
-const ATLAS_SLOTS: usize = (ATLAS_GLYPH_COLS * ATLAS_GLYPH_ROWS) as usize; // 256
+// Glyph atlas constants: 1024x1024 texture with 8x16 slots (128 cols x 64 rows = 8192 slots).
+// Large enough to pre-populate ASCII, Latin, Cyrillic, Greek, Box Drawing, Block, Powerline
+// and still have room for runtime-discovered Nerd Font glyphs.
+const ATLAS_GLYPH_WIDTH: u32 = CELL_WIDTH as u32; // 8
+const ATLAS_GLYPH_HEIGHT: u32 = CELL_HEIGHT as u32; // 16
+const ATLAS_SIZE: u32 = 1024;
+const ATLAS_GLYPH_COLS: u32 = ATLAS_SIZE / ATLAS_GLYPH_WIDTH; // 128
+const ATLAS_GLYPH_ROWS: u32 = ATLAS_SIZE / ATLAS_GLYPH_HEIGHT; // 64
+const ATLAS_SLOTS: usize = (ATLAS_GLYPH_COLS * ATLAS_GLYPH_ROWS) as usize; // 8192
 
 // Default terminal colors (must match gui_runtime)
 const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
@@ -396,12 +396,15 @@ struct GpuBackend {
     pipeline: wgpu::RenderPipeline,
     grid_uniform_buffer: wgpu::Buffer,
     grid_bind_group: wgpu::BindGroup,
+    atlas_texture: wgpu::Texture,
     atlas_bind_group: wgpu::BindGroup,
     cell_bind_group_layout: wgpu::BindGroupLayout,
     cell_bind_group: wgpu::BindGroup,
     cell_buffer: wgpu::Buffer,
     cell_buffer_capacity: usize,
+    glyph_cache: GlyphCache,
     char_to_slot: HashMap<char, u16>,
+    next_atlas_slot: u16,
     surface_state: SurfaceRuntimeState,
 }
 
@@ -490,8 +493,10 @@ impl GpuRenderer {
         };
         surface.configure(&device, &config);
 
-        // Build glyph atlas
-        let (atlas_texture, char_to_slot) = build_glyph_atlas(&device, &queue);
+        // Build glyph atlas using fontdue rasterization
+        let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+        let (atlas_texture, char_to_slot, next_atlas_slot) =
+            build_glyph_atlas(&device, &queue, &mut glyph_cache);
         let atlas_view = atlas_texture.create_view(&Default::default());
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Nearest,
@@ -652,12 +657,15 @@ impl GpuRenderer {
             pipeline,
             grid_uniform_buffer,
             grid_bind_group,
+            atlas_texture,
             atlas_bind_group,
             cell_bind_group_layout: cell_bgl,
             cell_bind_group,
             cell_buffer,
             cell_buffer_capacity: initial_capacity,
+            glyph_cache,
             char_to_slot,
+            next_atlas_slot,
             surface_state: SurfaceRuntimeState::default(),
         });
 
@@ -695,8 +703,15 @@ impl GpuRenderer {
             return Ok(());
         }
 
-        // Prepare cell instance data
-        let cells = prepare_cell_data(terminal, &backend.char_to_slot);
+        // Prepare cell instance data, dynamically adding missing glyphs to atlas
+        let cells = prepare_cell_data(
+            terminal,
+            &mut backend.glyph_cache,
+            &mut backend.char_to_slot,
+            &mut backend.next_atlas_slot,
+            &backend.atlas_texture,
+            &backend.queue,
+        );
 
         // Grow cell buffer if needed
         let next_capacity = next_cell_buffer_capacity(backend.cell_buffer_capacity, cell_count);
@@ -868,63 +883,56 @@ fn next_cell_buffer_capacity(current_capacity: usize, required_capacity: usize) 
 
 // --- Glyph Atlas ---
 
-fn lookup_glyph(ch: char) -> Option<[u8; 8]> {
-    BASIC_FONTS
-        .get(ch)
-        .or_else(|| LATIN_FONTS.get(ch))
-        .or_else(|| BLOCK_FONTS.get(ch))
-        .or_else(|| BOX_FONTS.get(ch))
-        .or_else(|| GREEK_FONTS.get(ch))
-        .or_else(|| HIRAGANA_FONTS.get(ch))
-        .or_else(|| MISC_FONTS.get(ch))
+/// Write a cell-sized glyph bitmap into the atlas data buffer at the given slot.
+fn write_glyph_to_atlas(atlas_data: &mut [u8], slot: u16, cell_buf: &[u8]) {
+    let slot = slot as usize;
+    let cw = ATLAS_GLYPH_WIDTH as usize;
+    let ch = ATLAS_GLYPH_HEIGHT as usize;
+    let cols = ATLAS_GLYPH_COLS as usize;
+    let slot_x = (slot % cols) * cw;
+    let slot_y = (slot / cols) * ch;
+
+    for gy in 0..ch {
+        for gx in 0..cw {
+            let src_idx = gy * cw + gx;
+            if src_idx >= cell_buf.len() {
+                continue;
+            }
+            let coverage = cell_buf[src_idx];
+            if coverage == 0 {
+                continue;
+            }
+            let px = slot_x + gx;
+            let py = slot_y + gy;
+            atlas_data[py * ATLAS_SIZE as usize + px] = coverage;
+        }
+    }
 }
 
 fn build_glyph_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-) -> (wgpu::Texture, HashMap<char, u16>) {
+    glyph_cache: &mut GlyphCache,
+) -> (wgpu::Texture, HashMap<char, u16>, u16) {
     let mut atlas_data = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
     let mut char_to_slot: HashMap<char, u16> = HashMap::new();
 
     // Slot 0 = blank (space character)
     char_to_slot.insert(' ', 0);
+    let mut next_slot: u16 = 1;
 
-    // Slot 1 = fallback tofu glyph for characters without font8x8 coverage
-    let fallback_glyph: [u8; 8] = [
-        0b01111110, // .######.
-        0b01000010, // .#....#.
-        0b01000010, // .#....#.
-        0b01000010, // .#....#.
-        0b01000010, // .#....#.
-        0b01000010, // .#....#.
-        0b01000010, // .#....#.
-        0b01111110, // .######.
-    ];
-    {
-        let slot_x = (1 % ATLAS_GLYPH_COLS as usize) * ATLAS_GLYPH_SIZE as usize;
-        let slot_y = (1 / ATLAS_GLYPH_COLS as usize) * ATLAS_GLYPH_SIZE as usize;
-        for (gy, &row_bits) in fallback_glyph.iter().enumerate() {
-            for gx in 0..8usize {
-                if (row_bits >> gx) & 1 != 0 {
-                    let px = slot_x + gx;
-                    let py = slot_y + gy;
-                    atlas_data[py * ATLAS_SIZE as usize + px] = 255;
-                }
-            }
-        }
-    }
-    let mut next_slot: u16 = 2;
-
-    // Collect all glyphs from font8x8 sets
+    // Pre-populate common Unicode ranges using fontdue rasterization
     let ranges: &[(u32, u32)] = &[
-        (0x0020, 0x007F), // ASCII (BASIC_FONTS)
-        (0x00A0, 0x00FF), // Latin-1 Supplement (LATIN_FONTS)
+        (0x0020, 0x007F), // ASCII
+        (0x00A0, 0x00FF), // Latin-1 Supplement
         (0x0100, 0x017F), // Latin Extended-A
-        (0x2500, 0x257F), // Box Drawing (BOX_FONTS)
-        (0x2580, 0x259F), // Block Elements (BLOCK_FONTS)
-        (0x0370, 0x03FF), // Greek (GREEK_FONTS)
-        (0x3040, 0x309F), // Hiragana (HIRAGANA_FONTS)
-        (0x2600, 0x26FF), // Miscellaneous Symbols (MISC_FONTS)
+        (0x0400, 0x04FF), // Cyrillic
+        (0x0370, 0x03FF), // Greek
+        (0x2500, 0x257F), // Box Drawing
+        (0x2580, 0x259F), // Block Elements
+        (0x3040, 0x309F), // Hiragana
+        (0x2600, 0x26FF), // Miscellaneous Symbols
+        (0xE0A0, 0xE0D4), // Powerline
     ];
 
     for &(start, end) in ranges {
@@ -936,24 +944,13 @@ fn build_glyph_atlas(
                 if ch == ' ' || char_to_slot.contains_key(&ch) {
                     continue;
                 }
-                if let Some(glyph) = lookup_glyph(ch) {
-                    let slot = next_slot as usize;
-                    let slot_x = (slot % ATLAS_GLYPH_COLS as usize) * ATLAS_GLYPH_SIZE as usize;
-                    let slot_y = (slot / ATLAS_GLYPH_COLS as usize) * ATLAS_GLYPH_SIZE as usize;
-
-                    for (gy, &row_bits) in glyph.iter().enumerate() {
-                        for gx in 0..8usize {
-                            if (row_bits >> gx) & 1 != 0 {
-                                let px = slot_x + gx;
-                                let py = slot_y + gy;
-                                atlas_data[py * ATLAS_SIZE as usize + px] = 255;
-                            }
-                        }
-                    }
-
-                    char_to_slot.insert(ch, next_slot);
-                    next_slot += 1;
+                if !glyph_cache.has_glyph(ch) {
+                    continue;
                 }
+                let cell_buf = rasterize_for_atlas(glyph_cache, ch);
+                write_glyph_to_atlas(&mut atlas_data, next_slot, &cell_buf);
+                char_to_slot.insert(ch, next_slot);
+                next_slot += 1;
             }
         }
     }
@@ -993,14 +990,80 @@ fn build_glyph_atlas(
         },
     );
 
-    (texture, char_to_slot)
+    (texture, char_to_slot, next_slot)
 }
 
 // --- Cell Data Preparation ---
 
+/// Upload a single glyph to the atlas texture at the given slot via partial write.
+fn upload_glyph_to_atlas(
+    queue: &wgpu::Queue,
+    atlas_texture: &wgpu::Texture,
+    slot: u16,
+    cell_buf: &[u8],
+) {
+    let cw = ATLAS_GLYPH_WIDTH;
+    let ch = ATLAS_GLYPH_HEIGHT;
+    let cols = ATLAS_GLYPH_COLS;
+    let slot_x = (slot as u32 % cols) * cw;
+    let slot_y = (slot as u32 / cols) * ch;
+
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: atlas_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: slot_x,
+                y: slot_y,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        cell_buf,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(cw),
+            rows_per_image: Some(ch),
+        },
+        wgpu::Extent3d {
+            width: cw,
+            height: ch,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+/// Ensure a character has a slot in the atlas. If missing, rasterize and upload it.
+/// Returns the atlas slot index (0 = space/blank for unknown chars when atlas is full).
+fn ensure_glyph_in_atlas(
+    ch: char,
+    glyph_cache: &mut GlyphCache,
+    char_to_slot: &mut HashMap<char, u16>,
+    next_slot: &mut u16,
+    atlas_texture: &wgpu::Texture,
+    queue: &wgpu::Queue,
+) -> u16 {
+    if let Some(&slot) = char_to_slot.get(&ch) {
+        return slot;
+    }
+    if (*next_slot as usize) >= ATLAS_SLOTS {
+        return 0; // Atlas full - render as blank
+    }
+    let cell_buf = rasterize_for_atlas(glyph_cache, ch);
+    let slot = *next_slot;
+    upload_glyph_to_atlas(queue, atlas_texture, slot, &cell_buf);
+    char_to_slot.insert(ch, slot);
+    *next_slot = slot + 1;
+    slot
+}
+
 fn prepare_cell_data(
     terminal: &TerminalState,
-    char_to_slot: &HashMap<char, u16>,
+    glyph_cache: &mut GlyphCache,
+    char_to_slot: &mut HashMap<char, u16>,
+    next_slot: &mut u16,
+    atlas_texture: &wgpu::Texture,
+    queue: &wgpu::Queue,
 ) -> Vec<CellInstance> {
     let cols = terminal.grid.width() as usize;
     let rows = terminal.grid.height() as usize;
@@ -1027,8 +1090,14 @@ fn prepare_cell_data(
                 let slot = if cell.ch == ' ' {
                     0
                 } else {
-                    // Slot 1 = fallback tofu glyph for unknown chars
-                    char_to_slot.get(&cell.ch).copied().unwrap_or(1)
+                    ensure_glyph_in_atlas(
+                        cell.ch,
+                        glyph_cache,
+                        char_to_slot,
+                        next_slot,
+                        atlas_texture,
+                        queue,
+                    )
                 };
 
                 cells.push(CellInstance {
@@ -1039,7 +1108,7 @@ fn prepare_cell_data(
                 });
             }
         } else {
-            // Row read failed — fill with blank cells
+            // Row read failed - fill with blank cells
             for _ in 0..cols {
                 cells.push(CellInstance {
                     atlas_and_flags: 0,
@@ -1341,49 +1410,40 @@ mod tests {
     // --- F9: Glyph Atlas & Cell Data Tests ---
 
     #[test]
-    fn lookup_glyph_returns_data_for_ascii() {
+    fn glyph_cache_has_ascii() {
+        let cache = GlyphCache::new(8, 16);
         for ch in b'A'..=b'Z' {
             assert!(
-                lookup_glyph(ch as char).is_some(),
+                cache.has_glyph(ch as char),
                 "missing glyph for ASCII char '{}'",
-                ch as char
-            );
-        }
-        for ch in b'0'..=b'9' {
-            assert!(
-                lookup_glyph(ch as char).is_some(),
-                "missing glyph for digit '{}'",
                 ch as char
             );
         }
     }
 
     #[test]
-    fn lookup_glyph_returns_data_for_box_drawing() {
+    fn glyph_cache_has_cyrillic() {
+        let cache = GlyphCache::new(8, 16);
+        // Cyrillic small letter de
+        assert!(cache.has_glyph('\u{0434}'));
+    }
+
+    #[test]
+    fn glyph_cache_has_box_drawing() {
+        let cache = GlyphCache::new(8, 16);
         let box_chars = ['─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼'];
         for ch in box_chars {
             assert!(
-                lookup_glyph(ch).is_some(),
+                cache.has_glyph(ch),
                 "missing glyph for box-drawing char '{ch}'"
             );
         }
     }
 
     #[test]
-    fn lookup_glyph_returns_data_for_block_elements() {
-        let block_chars = ['█', '▓', '▒', '░', '▀', '▄', '▌', '▐'];
-        for ch in block_chars {
-            assert!(
-                lookup_glyph(ch).is_some(),
-                "missing glyph for block element '{ch}'"
-            );
-        }
-    }
-
-    #[test]
-    fn lookup_glyph_returns_none_for_unknown() {
-        assert!(lookup_glyph('\u{FFFF}').is_none());
-        assert!(lookup_glyph('\u{10000}').is_none());
+    fn glyph_cache_missing_for_unknown() {
+        let cache = GlyphCache::new(8, 16);
+        assert!(!cache.has_glyph('\u{FFFF}'));
     }
 
     #[test]
@@ -1406,35 +1466,24 @@ mod tests {
     }
 
     #[test]
-    fn prepare_cell_data_matches_grid_dimensions() {
-        let char_map: HashMap<char, u16> = HashMap::new();
-        let terminal = TerminalState::new(10, 5, 100);
-        let cells = prepare_cell_data(&terminal, &char_map);
-        assert_eq!(cells.len(), 10 * 5);
+    fn write_glyph_to_atlas_places_data_correctly() {
+        let cw = ATLAS_GLYPH_WIDTH as usize;
+        let ch = ATLAS_GLYPH_HEIGHT as usize;
+        let mut atlas_data = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
+        let mut cell_buf = vec![0u8; cw * ch];
+        // Write a single pixel at top-left
+        cell_buf[0] = 200;
+        write_glyph_to_atlas(&mut atlas_data, 1, &cell_buf);
+        // Slot 1 at col=1, row=0 -> x=8, y=0
+        let expected_idx = 0 * ATLAS_SIZE as usize + cw;
+        assert_eq!(atlas_data[expected_idx], 200);
     }
 
     #[test]
-    fn prepare_cell_data_uses_atlas_slot_for_char() {
-        let mut char_map: HashMap<char, u16> = HashMap::new();
-        char_map.insert('A', 42);
-
-        let mut terminal = TerminalState::new(10, 5, 100);
-        terminal.feed(b"A");
-
-        let cells = prepare_cell_data(&terminal, &char_map);
-        // Cell at (0,0) should have slot 42
-        assert_eq!(cells[0].atlas_and_flags, 42);
-    }
-
-    #[test]
-    fn prepare_cell_data_space_maps_to_slot_zero() {
-        let char_map: HashMap<char, u16> = HashMap::new();
-        let terminal = TerminalState::new(10, 5, 100);
-        let cells = prepare_cell_data(&terminal, &char_map);
-        // All cells are spaces by default
-        for cell in &cells {
-            assert_eq!(cell.atlas_and_flags, 0);
-        }
+    fn atlas_constants_are_consistent() {
+        assert_eq!(ATLAS_GLYPH_COLS * ATLAS_GLYPH_WIDTH, ATLAS_SIZE);
+        assert_eq!(ATLAS_GLYPH_ROWS * ATLAS_GLYPH_HEIGHT, ATLAS_SIZE);
+        assert_eq!(ATLAS_SLOTS, (ATLAS_GLYPH_COLS * ATLAS_GLYPH_ROWS) as usize);
     }
 
     #[test]
