@@ -955,19 +955,18 @@ impl GuiRuntimeApp {
         error: io::Error,
         error_context: &'static str,
     ) -> Result<PtyBoundaryLoopAction> {
-        if is_disconnect_error(&error) {
-            if let Some(code) = self
+        if is_disconnect_error(&error)
+            && let Some(code) = self
                 .pty
                 .try_wait()
                 .context("failed to poll PTY after disconnecting GUI I/O failure")?
-            {
-                self.exit_code = Some(code);
-                info!(
-                    boundary = session_boundary_token(boundary),
-                    code, "PTY child already exited after disconnecting GUI I/O failure"
-                );
-                return Ok(PtyBoundaryLoopAction::ExitLoop);
-            }
+        {
+            self.exit_code = Some(code);
+            info!(
+                boundary = session_boundary_token(boundary),
+                code, "PTY child already exited after disconnecting GUI I/O failure"
+            );
+            return Ok(PtyBoundaryLoopAction::ExitLoop);
         }
 
         let detail = format!("{error_context}: {error}");
@@ -1467,10 +1466,12 @@ fn render_terminal(
     }
 
     // Include previous cursor row to erase old cursor overlay
-    if let Some(prev) = prev_cursor_row {
-        if prev != cursor_row && (prev as usize) < visible_rows && !dirty.contains(&prev) {
-            dirty.push(prev);
-        }
+    if let Some(prev) = prev_cursor_row
+        && prev != cursor_row
+        && (prev as usize) < visible_rows
+        && !dirty.contains(&prev)
+    {
+        dirty.push(prev);
     }
 
     if dirty.is_empty() {

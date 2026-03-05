@@ -340,10 +340,10 @@ pub fn run_interactive_pty(
         }
     }
 
-    if let Err(error) = pty.close().context("failed to close PTY session") {
-        if fatal_error.is_none() {
-            fatal_error = Some(error);
-        }
+    if let Err(error) = pty.close().context("failed to close PTY session")
+        && fatal_error.is_none()
+    {
+        fatal_error = Some(error);
     }
 
     if let Err(join_error) = read_pump.join() {
@@ -363,17 +363,16 @@ fn handle_pty_io_failure(
     error: io::Error,
     error_context: &'static str,
 ) -> Result<Option<i32>> {
-    if is_disconnect_error(&error) {
-        if let Some(code) = pty
+    if is_disconnect_error(&error)
+        && let Some(code) = pty
             .try_wait()
             .context("failed to poll PTY after disconnecting I/O failure")?
-        {
-            info!(
-                boundary = session_boundary_token(boundary),
-                code, "PTY child already exited after disconnecting I/O failure"
-            );
-            return Ok(Some(code));
-        }
+    {
+        info!(
+            boundary = session_boundary_token(boundary),
+            code, "PTY child already exited after disconnecting I/O failure"
+        );
+        return Ok(Some(code));
     }
 
     let detail = format!("{error_context}: {error}");
