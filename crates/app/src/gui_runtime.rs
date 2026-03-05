@@ -544,7 +544,7 @@ impl GuiRuntimeApp {
     fn dispatch_terminal_responses(&mut self, events: &[CoreEvent]) {
         for event in events {
             if let CoreEvent::TerminalResponse { data } = event {
-                debug!(bytes = data.len(), "sending terminal response to PTY");
+                trace!(bytes = data.len(), "sending terminal response to PTY");
                 if let Err(error) = write_all_and_flush(&mut *self.writer, data) {
                     warn!(%error, "failed to write terminal response to PTY");
                 }
@@ -1085,7 +1085,7 @@ impl GuiRuntimeApp {
         self.render_attempt_sequence = self.render_attempt_sequence.saturating_add(1);
         let render_attempt_sequence = self.render_attempt_sequence;
 
-        debug!(
+        trace!(
             render_path = ?self.ui_runtime.active_render_path(),
             gpu_initialized = self.gpu_renderer.is_initialized(),
             render_attempt_sequence,
@@ -1101,7 +1101,7 @@ impl GuiRuntimeApp {
                         .ui_runtime
                         .handle_command(UiRuntimeCommand::GpuFramePresented)
                         .context("failed to dispatch UiRuntimeCommand::GpuFramePresented")?;
-                    debug!("draw_frame: presented (GPU)");
+                    trace!("draw_frame: presented (GPU)");
                     return Ok(());
                 }
                 Err(error) => {
@@ -1224,7 +1224,7 @@ impl GuiRuntimeApp {
         buffer
             .present()
             .map_err(|error| anyhow!("failed to present GUI frame: {error}"))?;
-        debug!("draw_frame: presented (CPU)");
+        trace!("draw_frame: presented (CPU)");
         Ok(())
     }
 }
@@ -1951,33 +1951,42 @@ fn is_local_shutdown_key(event: &WinitKeyEvent, modifiers: ModifiersState) -> bo
 }
 
 fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+    let mod_param = xterm_modifier_param(
+        modifiers.shift_key(),
+        modifiers.alt_key(),
+        modifiers.control_key(),
+    );
+    let has_mod = mod_param > 1;
+
     match key.as_ref() {
         Key::Named(NamedKey::Enter) => Some(vec![b'\r']),
+        Key::Named(NamedKey::Tab) if modifiers.shift_key() => Some(b"\x1b[Z".to_vec()),
         Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
+        Key::Named(NamedKey::Backspace) if modifiers.alt_key() => Some(b"\x1b\x7f".to_vec()),
         Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
-        Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
-        Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
-        Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
-        Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
-        Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),
-        Key::Named(NamedKey::End) => Some(b"\x1b[F".to_vec()),
-        Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
-        Key::Named(NamedKey::Insert) => Some(b"\x1b[2~".to_vec()),
-        Key::Named(NamedKey::PageUp) => Some(b"\x1b[5~".to_vec()),
-        Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
-        Key::Named(NamedKey::F1) => Some(b"\x1bOP".to_vec()),
-        Key::Named(NamedKey::F2) => Some(b"\x1bOQ".to_vec()),
-        Key::Named(NamedKey::F3) => Some(b"\x1bOR".to_vec()),
-        Key::Named(NamedKey::F4) => Some(b"\x1bOS".to_vec()),
-        Key::Named(NamedKey::F5) => Some(b"\x1b[15~".to_vec()),
-        Key::Named(NamedKey::F6) => Some(b"\x1b[17~".to_vec()),
-        Key::Named(NamedKey::F7) => Some(b"\x1b[18~".to_vec()),
-        Key::Named(NamedKey::F8) => Some(b"\x1b[19~".to_vec()),
-        Key::Named(NamedKey::F9) => Some(b"\x1b[20~".to_vec()),
-        Key::Named(NamedKey::F10) => Some(b"\x1b[21~".to_vec()),
-        Key::Named(NamedKey::F11) => Some(b"\x1b[23~".to_vec()),
-        Key::Named(NamedKey::F12) => Some(b"\x1b[24~".to_vec()),
+        Key::Named(NamedKey::ArrowUp) => Some(csi_modified(b'A', mod_param, has_mod)),
+        Key::Named(NamedKey::ArrowDown) => Some(csi_modified(b'B', mod_param, has_mod)),
+        Key::Named(NamedKey::ArrowRight) => Some(csi_modified(b'C', mod_param, has_mod)),
+        Key::Named(NamedKey::ArrowLeft) => Some(csi_modified(b'D', mod_param, has_mod)),
+        Key::Named(NamedKey::Home) => Some(csi_modified(b'H', mod_param, has_mod)),
+        Key::Named(NamedKey::End) => Some(csi_modified(b'F', mod_param, has_mod)),
+        Key::Named(NamedKey::Delete) => Some(tilde_modified(3, mod_param, has_mod)),
+        Key::Named(NamedKey::Insert) => Some(tilde_modified(2, mod_param, has_mod)),
+        Key::Named(NamedKey::PageUp) => Some(tilde_modified(5, mod_param, has_mod)),
+        Key::Named(NamedKey::PageDown) => Some(tilde_modified(6, mod_param, has_mod)),
+        Key::Named(NamedKey::F1) => Some(fkey_ss3_modified(b'P', mod_param, has_mod)),
+        Key::Named(NamedKey::F2) => Some(fkey_ss3_modified(b'Q', mod_param, has_mod)),
+        Key::Named(NamedKey::F3) => Some(fkey_ss3_modified(b'R', mod_param, has_mod)),
+        Key::Named(NamedKey::F4) => Some(fkey_ss3_modified(b'S', mod_param, has_mod)),
+        Key::Named(NamedKey::F5) => Some(tilde_modified(15, mod_param, has_mod)),
+        Key::Named(NamedKey::F6) => Some(tilde_modified(17, mod_param, has_mod)),
+        Key::Named(NamedKey::F7) => Some(tilde_modified(18, mod_param, has_mod)),
+        Key::Named(NamedKey::F8) => Some(tilde_modified(19, mod_param, has_mod)),
+        Key::Named(NamedKey::F9) => Some(tilde_modified(20, mod_param, has_mod)),
+        Key::Named(NamedKey::F10) => Some(tilde_modified(21, mod_param, has_mod)),
+        Key::Named(NamedKey::F11) => Some(tilde_modified(23, mod_param, has_mod)),
+        Key::Named(NamedKey::F12) => Some(tilde_modified(24, mod_param, has_mod)),
         Key::Character(text) if modifiers.control_key() => {
             let mut chars = text.chars();
             let ch = chars.next()?;
@@ -1987,6 +1996,34 @@ fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8
             encode_ctrl_letter(ch).map(|code| vec![code])
         }
         _ => None,
+    }
+}
+
+fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
+    1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
+}
+
+fn csi_modified(final_byte: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[1;{}{}", mod_param, final_byte as char).into_bytes()
+    } else {
+        vec![0x1b, b'[', final_byte]
+    }
+}
+
+fn tilde_modified(n: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[{n};{mod_param}~").into_bytes()
+    } else {
+        format!("\x1b[{n}~").into_bytes()
+    }
+}
+
+fn fkey_ss3_modified(letter: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[1;{}{}", mod_param, letter as char).into_bytes()
+    } else {
+        vec![0x1b, b'O', letter]
     }
 }
 
@@ -2083,10 +2120,11 @@ mod tests {
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
         MonitorAffectingWindowEvent, PtyBoundaryPolicyDecision,
         cadence_resync_command_for_monitor_event, cap_paste_text, classify_pty_boundary_failure,
-        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-        emit_gpu_auto_fallback_observability, encode_ctrl_letter, encode_winit_key_event, grid,
-        is_runtime_palette_shortcut_key, read_clipboard_text_for_paste, resolve_cell_colors,
-        sample_monitor_refresh_rate_millihz,
+        csi_modified, dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+        emit_gpu_auto_fallback_observability, encode_ctrl_letter, encode_winit_key_event,
+        fkey_ss3_modified, grid, is_runtime_palette_shortcut_key, read_clipboard_text_for_paste,
+        resolve_cell_colors, sample_monitor_refresh_rate_millihz, tilde_modified,
+        xterm_modifier_param,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2545,7 +2583,38 @@ mod tests {
     }
 
     #[test]
-    fn encode_f_keys() {
+    fn xterm_modifier_param_combinations() {
+        assert_eq!(xterm_modifier_param(false, false, false), 1);
+        assert_eq!(xterm_modifier_param(true, false, false), 2);
+        assert_eq!(xterm_modifier_param(false, true, false), 3);
+        assert_eq!(xterm_modifier_param(false, false, true), 5);
+        assert_eq!(xterm_modifier_param(true, false, true), 6);
+        assert_eq!(xterm_modifier_param(true, true, true), 8);
+    }
+
+    #[test]
+    fn csi_modified_plain_and_with_modifier() {
+        assert_eq!(csi_modified(b'A', 1, false), b"\x1b[A");
+        assert_eq!(csi_modified(b'C', 5, true), b"\x1b[1;5C");
+        assert_eq!(csi_modified(b'D', 2, true), b"\x1b[1;2D");
+    }
+
+    #[test]
+    fn tilde_modified_plain_and_with_modifier() {
+        assert_eq!(tilde_modified(3, 1, false), b"\x1b[3~");
+        assert_eq!(tilde_modified(5, 5, true), b"\x1b[5;5~");
+        assert_eq!(tilde_modified(15, 3, true), b"\x1b[15;3~");
+    }
+
+    #[test]
+    fn fkey_ss3_plain_and_with_modifier() {
+        assert_eq!(fkey_ss3_modified(b'P', 1, false), b"\x1bOP");
+        assert_eq!(fkey_ss3_modified(b'P', 5, true), b"\x1b[1;5P");
+        assert_eq!(fkey_ss3_modified(b'S', 2, true), b"\x1b[1;2S");
+    }
+
+    #[test]
+    fn encode_named_keys_without_modifiers() {
         use winit::keyboard::NamedKey;
 
         let mods = ModifiersState::empty();
@@ -2565,6 +2634,94 @@ mod tests {
         assert_eq!(
             encode_winit_key_event(&Key::Named(NamedKey::Insert), mods),
             Some(b"\x1b[2~".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowUp), mods),
+            Some(b"\x1b[A".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encode_ctrl_arrow_produces_modified_csi() {
+        use winit::keyboard::NamedKey;
+
+        let ctrl = ModifiersState::CONTROL;
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowLeft), ctrl),
+            Some(b"\x1b[1;5D".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowRight), ctrl),
+            Some(b"\x1b[1;5C".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowUp), ctrl),
+            Some(b"\x1b[1;5A".to_vec()),
+        );
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowDown), ctrl),
+            Some(b"\x1b[1;5B".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encode_shift_arrow_produces_modified_csi() {
+        use winit::keyboard::NamedKey;
+
+        let shift = ModifiersState::SHIFT;
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowUp), shift),
+            Some(b"\x1b[1;2A".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encode_alt_arrow_produces_modified_csi() {
+        use winit::keyboard::NamedKey;
+
+        let alt = ModifiersState::ALT;
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::ArrowLeft), alt),
+            Some(b"\x1b[1;3D".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encode_ctrl_shift_f1_produces_modified_csi() {
+        use winit::keyboard::NamedKey;
+
+        let ctrl_shift = ModifiersState::CONTROL | ModifiersState::SHIFT;
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::F1), ctrl_shift),
+            Some(b"\x1b[1;6P".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encode_shift_tab_produces_reverse_tab() {
+        use winit::keyboard::NamedKey;
+
+        let shift = ModifiersState::SHIFT;
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::Tab), shift),
+            Some(b"\x1b[Z".to_vec()),
+        );
+    }
+
+    #[test]
+    fn encode_alt_backspace_produces_esc_del() {
+        use winit::keyboard::NamedKey;
+
+        let alt = ModifiersState::ALT;
+
+        assert_eq!(
+            encode_winit_key_event(&Key::Named(NamedKey::Backspace), alt),
+            Some(b"\x1b\x7f".to_vec()),
         );
     }
 }
