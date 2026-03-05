@@ -131,7 +131,9 @@ impl RenderPacingController {
         trigger: CadenceResyncTrigger,
         force_schedule_invalidation: bool,
     ) -> CadenceResync {
-        let next = refresh_rate_millihz.and_then(RenderCadence::checked_from_monitor);
+        let next = refresh_rate_millihz
+            .and_then(RenderCadence::checked_from_monitor)
+            .or(self.cadence);
         let previous = self.cadence;
         let changed = previous != next;
         let schedule_invalidated = changed || force_schedule_invalidation;
@@ -230,15 +232,20 @@ mod tests {
     }
 
     #[test]
-    fn controller_handles_missing_monitor_timing_without_crash() {
+    fn controller_preserves_cadence_when_monitor_timing_unavailable() {
         let mut controller = RenderPacingController::new(Some(60_000));
 
         let resync = controller.resync_from_monitor(None);
-        assert!(resync.changed);
-        assert!(resync.schedule_invalidated);
-        assert_eq!(resync.generation, 1);
+        assert!(!resync.changed);
+        assert!(!resync.schedule_invalidated);
+        assert_eq!(resync.generation, 0);
         assert_eq!(resync.trigger, CadenceResyncTrigger::MonitorTimingSample);
-        assert_eq!(controller.cadence(), None);
+        assert_eq!(
+            controller.cadence(),
+            Some(RenderCadence {
+                refresh_rate_millihz: 60_000,
+            })
+        );
     }
 
     #[test]
@@ -296,14 +303,14 @@ mod tests {
     }
 
     #[test]
-    fn monitor_transfer_to_missing_timing_invalidates_schedule_and_clears_cadence() {
+    fn monitor_transfer_to_missing_timing_preserves_cadence_and_invalidates_schedule() {
         let mut controller = RenderPacingController::new(Some(144_000));
         let schedule = controller
             .schedule_next_frame(Instant::now())
             .expect("expected schedule with known cadence");
 
         let resync = controller.resync_after_monitor_transfer(None);
-        assert!(resync.changed);
+        assert!(!resync.changed);
         assert!(resync.schedule_invalidated);
         assert_eq!(resync.generation, 1);
         assert_eq!(
@@ -312,10 +319,20 @@ mod tests {
                 refresh_rate_millihz: 144_000,
             })
         );
-        assert_eq!(resync.current, None);
-        assert_eq!(controller.cadence(), None);
+        assert_eq!(
+            resync.current,
+            Some(RenderCadence {
+                refresh_rate_millihz: 144_000,
+            })
+        );
+        assert_eq!(
+            controller.cadence(),
+            Some(RenderCadence {
+                refresh_rate_millihz: 144_000,
+            })
+        );
         assert!(controller.is_schedule_stale(schedule.generation));
-        assert_eq!(controller.schedule_next_frame(Instant::now()), None);
+        assert!(controller.schedule_next_frame(Instant::now()).is_some());
     }
 
     #[test]
