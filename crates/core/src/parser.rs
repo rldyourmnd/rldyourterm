@@ -41,6 +41,37 @@ impl Default for SgrParams {
     }
 }
 
+const MAX_CSI_PARAMS: usize = 32;
+
+/// Stack-allocated CSI parameter array. ECMA-48 limits CSI to 16 parameters.
+#[derive(Debug, Clone, Copy)]
+struct CsiParams {
+    params: [Option<u16>; MAX_CSI_PARAMS],
+    len: u8,
+}
+
+impl CsiParams {
+    fn get(&self, idx: usize) -> Option<Option<u16>> {
+        if idx < self.len as usize {
+            Some(self.params[idx])
+        } else {
+            None
+        }
+    }
+
+    fn first(&self) -> Option<Option<u16>> {
+        self.get(0)
+    }
+
+    fn as_slice(&self) -> &[Option<u16>] {
+        &self.params[..self.len as usize]
+    }
+
+    fn len(&self) -> usize {
+        self.len as usize
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParserAction {
     Print(char),
@@ -350,9 +381,25 @@ impl Parser {
     }
 
     fn complete_csi(&mut self, actions: &mut Vec<ParserAction>) {
-        let action = self.parse_csi_action().unwrap_or_else(|| {
-            ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
-        });
+        let (&final_byte, params_raw) = match self.csi_buffer.split_last() {
+            Some(pair) => pair,
+            None => {
+                self.reset_state_to_ground();
+                return;
+            }
+        };
+
+        if let Some((&b'?', rest)) = params_raw.split_first() {
+            self.dispatch_private_csi(rest, final_byte, actions);
+            self.reset_state_to_ground();
+            return;
+        }
+
+        let action = self
+            .parse_standard_csi_action(params_raw, final_byte)
+            .unwrap_or_else(|| {
+                ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
+            });
         actions.push(action);
         self.reset_state_to_ground();
     }
@@ -374,14 +421,7 @@ impl Parser {
         self.osc_buffer.clear();
     }
 
-    fn parse_csi_action(&self) -> Option<ParserAction> {
-        let (&final_byte, params_raw) = self.csi_buffer.split_last()?;
-
-        // Check for private mode prefix '?'
-        if let Some((&b'?', rest)) = params_raw.split_first() {
-            return self.parse_private_csi_action(rest, final_byte);
-        }
-
+    fn parse_standard_csi_action(&self, params_raw: &[u8], final_byte: u8) -> Option<ParserAction> {
         let parsed = parse_params(params_raw).ok()?;
 
         match final_byte {
@@ -424,7 +464,7 @@ impl Parser {
                 }))
             }
             b'm' => Some(ParserAction::SetGraphicsRendition(SgrParams::from_slice(
-                &parsed,
+                parsed.as_slice(),
             ))),
             b's' => Some(ParserAction::CursorSavePosition),
             b'u' => Some(ParserAction::CursorRestorePosition),
@@ -445,7 +485,7 @@ impl Parser {
                 Some(ParserAction::SetScrollRegion { top, bottom })
             }
             b'c' => {
-                let param = parsed.first().copied().flatten().unwrap_or(0);
+                let param = parsed.first().and_then(|p| p).unwrap_or(0);
                 if param == 0 {
                     Some(ParserAction::SendPrimaryDA)
                 } else {
@@ -453,7 +493,7 @@ impl Parser {
                 }
             }
             b'n' => {
-                let param = parsed.first().copied().flatten()?;
+                let param = parsed.first().and_then(|p| p)?;
                 match param {
                     5 => Some(ParserAction::SendDeviceOk),
                     6 => Some(ParserAction::SendDeviceStatusReport),
@@ -464,10 +504,33 @@ impl Parser {
         }
     }
 
-    fn parse_private_csi_action(&self, params_raw: &[u8], final_byte: u8) -> Option<ParserAction> {
-        let parsed = parse_params(params_raw).ok()?;
-        let mode = parsed.first().copied().flatten()?;
+    fn dispatch_private_csi(
+        &self,
+        params_raw: &[u8],
+        final_byte: u8,
+        actions: &mut Vec<ParserAction>,
+    ) {
+        let parsed = match parse_params(params_raw) {
+            Ok(p) => p,
+            Err(()) => return,
+        };
+        let mut dispatched = false;
+        for i in 0..parsed.len() {
+            if let Some(Some(mode)) = parsed.get(i)
+                && let Some(action) = self.private_mode_action(mode, final_byte)
+            {
+                actions.push(action);
+                dispatched = true;
+            }
+        }
+        if !dispatched {
+            actions.push(ParserAction::UnsupportedSequence(
+                self.csi_sequence_string(&self.csi_buffer),
+            ));
+        }
+    }
 
+    fn private_mode_action(&self, mode: u16, final_byte: u8) -> Option<ParserAction> {
         match (mode, final_byte) {
             (1, b'h') => Some(ParserAction::ApplicationCursorKeys(true)),
             (1, b'l') => Some(ParserAction::ApplicationCursorKeys(false)),
@@ -574,14 +637,13 @@ fn parse_osc(raw: &str) -> Option<ParserAction> {
     }
 }
 
-fn parse_params(input: &[u8]) -> Result<Vec<Option<u16>>, ()> {
+fn parse_params(input: &[u8]) -> Result<CsiParams, ()> {
+    let mut params = [None; MAX_CSI_PARAMS];
+    let mut count: u8 = 0;
     if input.is_empty() {
-        return Ok(Vec::new());
+        return Ok(CsiParams { params, len: 0 });
     }
-
-    let mut out = Vec::new();
     let mut current: Option<u32> = None;
-
     for &byte in input {
         match byte {
             b'0'..=b'9' => {
@@ -593,33 +655,39 @@ fn parse_params(input: &[u8]) -> Result<Vec<Option<u16>>, ()> {
                 current = Some(next.min(u16::MAX as u32));
             }
             b';' => {
-                out.push(current.map(|value| value as u16));
+                if count as usize >= MAX_CSI_PARAMS {
+                    return Err(());
+                }
+                params[count as usize] = current.map(|v| v as u16);
+                count += 1;
                 current = None;
             }
             _ => return Err(()),
         }
     }
-
-    out.push(current.map(|value| value as u16));
-    Ok(out)
+    if count as usize >= MAX_CSI_PARAMS {
+        return Err(());
+    }
+    params[count as usize] = current.map(|v| v as u16);
+    count += 1;
+    Ok(CsiParams { params, len: count })
 }
 
-fn step_param(params: &[Option<u16>]) -> u16 {
-    params.first().copied().flatten().unwrap_or(1).max(1)
+fn step_param(parsed: &CsiParams) -> u16 {
+    parsed.first().and_then(|p| p).unwrap_or(1).max(1)
 }
 
-fn position_param(params: &[Option<u16>], idx: usize) -> u16 {
-    params
+fn position_param(parsed: &CsiParams, idx: usize) -> u16 {
+    parsed
         .get(idx)
-        .copied()
-        .flatten()
+        .and_then(|p| p)
         .unwrap_or(1)
         .max(1)
         .saturating_sub(1)
 }
 
-fn mode_param(params: &[Option<u16>]) -> Option<u16> {
-    let mode = params.first().copied().flatten().unwrap_or(0);
+fn mode_param(parsed: &CsiParams) -> Option<u16> {
+    let mode = parsed.first()?.unwrap_or(0);
     if mode <= 3 { Some(mode) } else { None }
 }
 
@@ -1306,5 +1374,23 @@ mod tests {
             actions,
             vec![ParserAction::CursorPosition { row: 0, col: 0 }]
         );
+    }
+
+    #[test]
+    fn multi_param_private_csi_dispatches_all_modes() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?1;25h");
+        assert!(actions.contains(&ParserAction::ApplicationCursorKeys(true)));
+        assert!(actions.contains(&ParserAction::SetCursorVisible(true)));
+    }
+
+    #[test]
+    fn multi_param_private_csi_reset() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[?1;25;2004l");
+        assert_eq!(actions.len(), 3);
+        assert!(actions.contains(&ParserAction::ApplicationCursorKeys(false)));
+        assert!(actions.contains(&ParserAction::SetCursorVisible(false)));
+        assert!(actions.contains(&ParserAction::BracketedPasteMode(false)));
     }
 }
