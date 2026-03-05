@@ -129,11 +129,15 @@ fn main() -> Result<()> {
 }
 
 fn init_tracing(level: LogLevelArg) {
-    let (default_filter, show_target, show_thread) = match level {
-        LogLevelArg::Standard => ("info", false, false),
-        LogLevelArg::Debug => ("debug", true, true),
-        LogLevelArg::Trace => ("trace", true, true),
+    let default_filter = match level {
+        LogLevelArg::Standard => "warn,rldyourterm=info".to_owned(),
+        LogLevelArg::Debug => {
+            "warn,rldyourterm=debug,wgpu_hal::gles::egl=off,sctk_adwaita=off".to_owned()
+        }
+        LogLevelArg::Trace => "trace".to_owned(),
     };
+    let show_target = level != LogLevelArg::Standard;
+    let show_thread = level != LogLevelArg::Standard;
     let show_loc = level != LogLevelArg::Standard;
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
