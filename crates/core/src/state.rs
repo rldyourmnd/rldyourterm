@@ -133,6 +133,11 @@ impl TerminalState {
     fn apply_action_into(&mut self, action: ParserAction, events: &mut Vec<CoreEvent>) {
         match action {
             ParserAction::Print(ch) => self.apply_print(ch, events),
+            ParserAction::PrintText(ref text) => {
+                for ch in text.chars() {
+                    self.apply_print(ch, events);
+                }
+            }
             ParserAction::LineFeed => self.apply_line_feed(events),
             ParserAction::CarriageReturn => self.apply_carriage_return(events),
             ParserAction::Bell => events.push(CoreEvent::Bell),
@@ -277,16 +282,8 @@ impl TerminalState {
         self.cursor.row = row;
         self.cursor.col = col;
 
-        if self.grid.put_char(row, col, ch, self.pen).is_ok() {
-            events.push(CoreEvent::CellUpdated {
-                row,
-                col,
-                ch,
-                attrs: self.pen,
-            });
-        }
+        let _ = self.grid.put_char(row, col, ch, self.pen);
 
-        let from = self.cursor;
         if col + 1 >= width {
             if self.auto_wrap {
                 // Deferred wrap: stay at last column, set pending flag.
@@ -297,13 +294,6 @@ impl TerminalState {
         } else {
             self.cursor.col = col + 1;
         }
-
-        if from != self.cursor {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
     }
 
     fn apply_line_feed(&mut self, events: &mut Vec<CoreEvent>) {
@@ -312,7 +302,6 @@ impl TerminalState {
         }
 
         self.cursor.wrap_pending = false;
-        let from = self.cursor;
         let bottom = self.scroll_bottom();
 
         if self.cursor.row == bottom {
@@ -320,32 +309,18 @@ impl TerminalState {
         } else if self.cursor.row + 1 < self.grid.height() {
             self.cursor.row += 1;
         }
-
-        if from != self.cursor {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
     }
 
-    fn apply_carriage_return(&mut self, events: &mut Vec<CoreEvent>) {
-        let from = self.cursor;
-        if self.cursor.carriage_return() {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
+    fn apply_carriage_return(&mut self, _events: &mut Vec<CoreEvent>) {
+        self.cursor.carriage_return();
     }
 
-    fn apply_reverse_index(&mut self, events: &mut Vec<CoreEvent>) {
+    fn apply_reverse_index(&mut self, _events: &mut Vec<CoreEvent>) {
         if self.grid.is_empty() {
             return;
         }
 
         self.cursor.wrap_pending = false;
-        let from = self.cursor;
         let top = self.scroll_top();
 
         if self.cursor.row == top {
@@ -353,80 +328,44 @@ impl TerminalState {
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
-
-        if from != self.cursor {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
     }
 
-    fn apply_backspace(&mut self, events: &mut Vec<CoreEvent>) {
+    fn apply_backspace(&mut self, _events: &mut Vec<CoreEvent>) {
         self.cursor.wrap_pending = false;
-        let from = self.cursor;
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
         }
     }
 
-    fn apply_tab(&mut self, events: &mut Vec<CoreEvent>) {
+    fn apply_tab(&mut self, _events: &mut Vec<CoreEvent>) {
         if self.grid.is_empty() {
             return;
         }
         self.cursor.wrap_pending = false;
-        let from = self.cursor;
         let next_tab = (self.cursor.col / 8).saturating_add(1).saturating_mul(8);
         self.cursor.col = next_tab.min(self.grid.width().saturating_sub(1));
-        if from != self.cursor {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
     }
 
     fn apply_cursor_relative(
         &mut self,
         row_delta: i32,
         col_delta: i32,
-        events: &mut Vec<CoreEvent>,
+        _events: &mut Vec<CoreEvent>,
     ) {
         if self.grid.is_empty() {
             return;
         }
-
-        let from = self.cursor;
-        if self
-            .cursor
-            .move_relative(row_delta, col_delta, self.grid.width(), self.grid.height())
-        {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
+        self.cursor
+            .move_relative(row_delta, col_delta, self.grid.width(), self.grid.height());
     }
 
-    fn apply_cursor_position(&mut self, row: u16, col: u16, events: &mut Vec<CoreEvent>) {
+    fn apply_cursor_position(&mut self, row: u16, col: u16, _events: &mut Vec<CoreEvent>) {
         if self.grid.is_empty() {
             return;
         }
 
-        let from = self.cursor;
-        if self
-            .cursor
-            .move_to(row, col, self.grid.width(), self.grid.height())
-        {
-            events.push(CoreEvent::CursorMoved {
-                from,
-                to: self.cursor,
-            });
-        }
+        self.cursor
+            .move_to(row, col, self.grid.width(), self.grid.height());
     }
 
     fn apply_clear_display(&mut self, mode: DisplayClearMode, events: &mut Vec<CoreEvent>) {
@@ -538,20 +477,13 @@ impl TerminalState {
         self.saved_cursor = Some((self.cursor, self.pen));
     }
 
-    fn apply_cursor_restore(&mut self, events: &mut Vec<CoreEvent>) {
+    fn apply_cursor_restore(&mut self, _events: &mut Vec<CoreEvent>) {
         if let Some((saved_cursor, saved_pen)) = self.saved_cursor {
-            let from = self.cursor;
             self.cursor = saved_cursor;
             self.pen = saved_pen;
             if !self.grid.is_empty() {
                 self.cursor.row = self.cursor.row.min(self.grid.height().saturating_sub(1));
                 self.cursor.col = self.cursor.col.min(self.grid.width().saturating_sub(1));
-            }
-            if from != self.cursor {
-                events.push(CoreEvent::CursorMoved {
-                    from,
-                    to: self.cursor,
-                });
             }
         }
     }
@@ -871,14 +803,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, CoreEvent::UnsupportedSequenceIgnored { .. }))
         );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, CoreEvent::CellUpdated { ch: 'Z', .. }))
-                .count(),
-            1
-        );
-        assert!(events.len() <= 8);
+        assert_eq!(state.grid.get_char(0, 0).expect("cell"), 'Z');
         assert_eq!(state.grid.row_string(0).expect("row 0"), "Z       ");
     }
 
@@ -904,14 +829,16 @@ mod tests {
                 .any(|event| matches!(event, CoreEvent::UnsupportedSequenceIgnored { .. }))
         );
 
-        let second_events = state.feed(b"A");
+        let _second_events = state.feed(b"A");
+        // Parser resynced: 'A' appears in the grid (exact position depends on scroll state)
+        let row0 = state.grid.row_string(0).expect("row 0");
+        let row1 = state.grid.row_string(1).expect("row 1");
         assert!(
-            second_events
-                .iter()
-                .any(|event| matches!(event, CoreEvent::CellUpdated { ch: 'A', .. }))
+            row0.contains('A') || row1.contains('A'),
+            "expected 'A' somewhere in grid after resync, got row0={row0:?}, row1={row1:?}"
         );
         assert!(
-            !second_events
+            !_second_events
                 .iter()
                 .any(|event| matches!(event, CoreEvent::UnsupportedSequenceIgnored { .. }))
         );
