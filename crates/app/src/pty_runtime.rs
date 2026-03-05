@@ -739,23 +739,81 @@ fn is_local_shutdown_key(key_event: KeyEvent) -> bool {
 }
 
 fn encode_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
+    let mods = key_event.modifiers;
+    let mod_param = xterm_modifier_param(
+        mods.contains(KeyModifiers::SHIFT),
+        mods.contains(KeyModifiers::ALT),
+        mods.contains(KeyModifiers::CONTROL),
+    );
+    let has_mod = mod_param > 1;
+
     match key_event.code {
         KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Backspace if mods.contains(KeyModifiers::ALT) => Some(b"\x1b\x7f".to_vec()),
         KeyCode::Backspace => Some(vec![0x7f]),
+        KeyCode::BackTab => Some(b"\x1b[Z".to_vec()),
         KeyCode::Tab => Some(vec![b'\t']),
         KeyCode::Esc => Some(vec![0x1b]),
-        KeyCode::Up => Some(b"\x1b[A".to_vec()),
-        KeyCode::Down => Some(b"\x1b[B".to_vec()),
-        KeyCode::Right => Some(b"\x1b[C".to_vec()),
-        KeyCode::Left => Some(b"\x1b[D".to_vec()),
-        KeyCode::Home => Some(b"\x1b[H".to_vec()),
-        KeyCode::End => Some(b"\x1b[F".to_vec()),
-        KeyCode::Delete => Some(b"\x1b[3~".to_vec()),
-        KeyCode::Char(ch) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Up => Some(csi_modified(b'A', mod_param, has_mod)),
+        KeyCode::Down => Some(csi_modified(b'B', mod_param, has_mod)),
+        KeyCode::Right => Some(csi_modified(b'C', mod_param, has_mod)),
+        KeyCode::Left => Some(csi_modified(b'D', mod_param, has_mod)),
+        KeyCode::Home => Some(csi_modified(b'H', mod_param, has_mod)),
+        KeyCode::End => Some(csi_modified(b'F', mod_param, has_mod)),
+        KeyCode::Delete => Some(tilde_modified(3, mod_param, has_mod)),
+        KeyCode::Insert => Some(tilde_modified(2, mod_param, has_mod)),
+        KeyCode::PageUp => Some(tilde_modified(5, mod_param, has_mod)),
+        KeyCode::PageDown => Some(tilde_modified(6, mod_param, has_mod)),
+        KeyCode::F(1) => Some(fkey_ss3_modified(b'P', mod_param, has_mod)),
+        KeyCode::F(2) => Some(fkey_ss3_modified(b'Q', mod_param, has_mod)),
+        KeyCode::F(3) => Some(fkey_ss3_modified(b'R', mod_param, has_mod)),
+        KeyCode::F(4) => Some(fkey_ss3_modified(b'S', mod_param, has_mod)),
+        KeyCode::F(5) => Some(tilde_modified(15, mod_param, has_mod)),
+        KeyCode::F(6) => Some(tilde_modified(17, mod_param, has_mod)),
+        KeyCode::F(7) => Some(tilde_modified(18, mod_param, has_mod)),
+        KeyCode::F(8) => Some(tilde_modified(19, mod_param, has_mod)),
+        KeyCode::F(9) => Some(tilde_modified(20, mod_param, has_mod)),
+        KeyCode::F(10) => Some(tilde_modified(21, mod_param, has_mod)),
+        KeyCode::F(11) => Some(tilde_modified(23, mod_param, has_mod)),
+        KeyCode::F(12) => Some(tilde_modified(24, mod_param, has_mod)),
+        KeyCode::Char(ch) if mods.contains(KeyModifiers::CONTROL) => {
             encode_ctrl_letter(ch).map(|code| vec![code])
+        }
+        KeyCode::Char(ch) if mods.contains(KeyModifiers::ALT) => {
+            let mut b = vec![0x1b];
+            b.extend_from_slice(ch.to_string().as_bytes());
+            Some(b)
         }
         KeyCode::Char(ch) => Some(ch.to_string().into_bytes()),
         _ => None,
+    }
+}
+
+fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
+    1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
+}
+
+fn csi_modified(final_byte: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[1;{}{}", mod_param, final_byte as char).into_bytes()
+    } else {
+        vec![0x1b, b'[', final_byte]
+    }
+}
+
+fn tilde_modified(n: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[{n};{mod_param}~").into_bytes()
+    } else {
+        format!("\x1b[{n}~").into_bytes()
+    }
+}
+
+fn fkey_ss3_modified(letter: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[1;{}{}", mod_param, letter as char).into_bytes()
+    } else {
+        vec![0x1b, b'O', letter]
     }
 }
 
@@ -771,9 +829,10 @@ fn encode_ctrl_letter(ch: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PtyBoundaryPolicyDecision, classify_pty_boundary_failure, derive_poll_timeouts,
-        dispatch_runtime_palette_command, encode_ctrl_letter, encode_key_event,
-        ensure_single_window, frame_budget_millis, is_runtime_palette_shortcut,
+        PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified,
+        derive_poll_timeouts, dispatch_runtime_palette_command, encode_ctrl_letter,
+        encode_key_event, ensure_single_window, fkey_ss3_modified, frame_budget_millis,
+        is_runtime_palette_shortcut, tilde_modified, xterm_modifier_param,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
@@ -964,6 +1023,97 @@ mod tests {
             PtyBoundaryPolicyDecision::Fatal {
                 reason: FatalBoundaryReason::RecoverableBudgetExhausted,
             }
+        );
+    }
+
+    #[test]
+    fn xterm_modifier_param_combinations() {
+        assert_eq!(xterm_modifier_param(false, false, false), 1);
+        assert_eq!(xterm_modifier_param(true, false, false), 2);
+        assert_eq!(xterm_modifier_param(false, true, false), 3);
+        assert_eq!(xterm_modifier_param(false, false, true), 5);
+        assert_eq!(xterm_modifier_param(true, true, true), 8);
+    }
+
+    #[test]
+    fn csi_tilde_fkey_helpers() {
+        assert_eq!(csi_modified(b'A', 1, false), b"\x1b[A");
+        assert_eq!(csi_modified(b'C', 5, true), b"\x1b[1;5C");
+        assert_eq!(tilde_modified(3, 1, false), b"\x1b[3~");
+        assert_eq!(tilde_modified(5, 5, true), b"\x1b[5;5~");
+        assert_eq!(fkey_ss3_modified(b'P', 1, false), b"\x1bOP");
+        assert_eq!(fkey_ss3_modified(b'P', 5, true), b"\x1b[1;5P");
+    }
+
+    #[test]
+    fn encodes_ctrl_arrow_keys() {
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
+            Some(b"\x1b[1;5D".to_vec())
+        );
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
+            Some(b"\x1b[1;5C".to_vec())
+        );
+    }
+
+    #[test]
+    fn encodes_shift_arrow_keys() {
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)),
+            Some(b"\x1b[1;2A".to_vec())
+        );
+    }
+
+    #[test]
+    fn encodes_alt_arrow_keys() {
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
+            Some(b"\x1b[1;3D".to_vec())
+        );
+    }
+
+    #[test]
+    fn encodes_f_keys_and_nav_keys() {
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
+            Some(b"\x1b[15~".to_vec())
+        );
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)),
+            Some(b"\x1b[2~".to_vec())
+        );
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+            Some(b"\x1b[5~".to_vec())
+        );
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+            Some(b"\x1b[6~".to_vec())
+        );
+    }
+
+    #[test]
+    fn encodes_backtab_and_alt_backspace() {
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            Some(b"\x1b[Z".to_vec())
+        );
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT)),
+            Some(b"\x1b\x7f".to_vec())
+        );
+    }
+
+    #[test]
+    fn encodes_alt_char_with_esc_prefix() {
+        assert_eq!(
+            encode_key_event(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
+            Some(b"\x1bf".to_vec())
         );
     }
 }
