@@ -63,13 +63,13 @@ jobs:
       - run: cargo fmt --all -- --check
 
   msrv:
-    name: MSRV (1.85)
+    name: MSRV (1.92)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.92"
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
         run: |

@@ -93,7 +93,7 @@ bash scripts/mvp/run_matrix.sh 5    # extended soak
 
 ## Code Conventions
 
-- **Rust edition 2024**, minimum rust-version 1.85
+- **Rust edition 2024**, minimum rust-version 1.92
 - **Naming**: snake_case functions/variables, PascalCase types/enums
 - **Errors**: thiserror for typed domain errors, anyhow at application boundaries
 - **Error enums**: one per layer (CoreError, FoundationError, ServiceError, UiRuntimeError)
@@ -112,7 +112,7 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on push/PR to `main`/`
 | Clippy | `cargo clippy --workspace -- -D warnings` |
 | Test | `cargo test --workspace` |
 | Format | `cargo fmt --all -- --check` |
-| MSRV | `cargo check --workspace` with Rust 1.85 |
+| MSRV | `cargo check --workspace` with Rust 1.92 |
 | Audit | `cargo-audit` via rustsec/audit-check |
 
 Dependabot: weekly Cargo + GitHub Actions updates (`.github/dependabot.yml`).
