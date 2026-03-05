@@ -78,6 +78,9 @@ impl TerminalState {
 
         if let Some(alt) = self.alternate_screen.as_mut() {
             alt.grid.resize(new_width, new_height);
+            alt.cursor.row = alt.cursor.row.min(new_height.saturating_sub(1));
+            alt.cursor.col = alt.cursor.col.min(new_width.saturating_sub(1));
+            alt.cursor.wrap_pending = false;
         }
     }
 
@@ -583,6 +586,10 @@ impl TerminalState {
             self.scrollback = saved.scrollback;
             self.saved_cursor = saved.saved_cursor;
             self.scroll_region = saved.scroll_region;
+            if !self.grid.is_empty() {
+                self.cursor.row = self.cursor.row.min(self.grid.height().saturating_sub(1));
+                self.cursor.col = self.cursor.col.min(self.grid.width().saturating_sub(1));
+            }
         }
     }
 
@@ -1803,5 +1810,39 @@ mod tests {
         let _ = state.feed(b"\x1b[1;2;3;4;5;7;9;31;32;33;34;35;36;37;38;39;40mX");
         // Parser should not crash. Bold (1) should apply from first param.
         assert!(state.pen.bold);
+    }
+
+    #[test]
+    fn alt_screen_resize_clamps_saved_cursor() {
+        // Regression: resize while in alt screen must clamp the saved
+        // main-screen cursor. Otherwise, leaving alt screen restores
+        // a cursor that is out-of-bounds for the (resized) main grid.
+        let mut state = TerminalState::new(120, 30, 100);
+        // Move cursor to near the bottom-right of the original grid
+        state.cursor.row = 29;
+        state.cursor.col = 119;
+        // Enter alt screen (saves cursor at row=29, col=119)
+        state.feed(b"\x1b[?1049h");
+        assert!(state.alternate_screen.is_some());
+        // Shrink the grid while in alt screen
+        state.resize(80, 24);
+        // Leave alt screen - cursor must be clamped to 80x24 bounds
+        state.feed(b"\x1b[?1049l");
+        assert!(state.alternate_screen.is_none());
+        assert!(
+            state.cursor.row < 24,
+            "cursor row {} out of bounds",
+            state.cursor.row
+        );
+        assert!(
+            state.cursor.col < 80,
+            "cursor col {} out of bounds",
+            state.cursor.col
+        );
+        // Grid should have correct dimensions (restored main grid was resized)
+        assert_eq!(state.grid.width(), 80);
+        assert_eq!(state.grid.height(), 24);
+        // Further operations must not panic
+        state.feed(b"safe");
     }
 }
