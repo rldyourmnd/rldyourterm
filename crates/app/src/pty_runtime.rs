@@ -1,4 +1,4 @@
-use std::io::{self, BufWriter, ErrorKind, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -29,6 +29,7 @@ const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READ_PUMP_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const READ_PUMP_FLUSH_MAX_BYTES: usize = 16 * 1024;
+const READ_PUMP_SIGNAL_STDOUT_DISCONNECTED: &str = "stdout-disconnected";
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
@@ -120,6 +121,8 @@ pub fn run_interactive_pty(
     runtime_config: TtyRuntimeConfig,
 ) -> Result<i32> {
     ensure_single_window(runtime_config.window_count)?;
+    ensure_tty_stdio_is_terminal()?;
+    let _raw_mode_guard = RawModeGuard::new()?;
 
     let mut poll_controller = EventPollController::from_config(runtime_config);
     let (poll_timeout_min_ms, poll_timeout_max_ms) = poll_controller.bounds_millis();
@@ -149,8 +152,6 @@ pub fn run_interactive_pty(
         .context("failed to spawn interactive PTY")?;
     let reader = pty.take_reader().context("failed to acquire PTY reader")?;
     let mut writer = pty.take_writer().context("failed to acquire PTY writer")?;
-
-    let _raw_mode_guard = RawModeGuard::new()?;
     let (read_pump, read_pump_failures) = spawn_read_pump(reader);
     let mut session_policy = SessionController::new();
     session_policy
@@ -180,6 +181,21 @@ pub fn run_interactive_pty(
 
         match read_pump_failures.try_recv() {
             Ok(detail) => {
+                if detail == READ_PUMP_SIGNAL_STDOUT_DISCONNECTED {
+                    info!(
+                        "TTY stdout consumer disconnected; closing PTY session without fatal escalation"
+                    );
+                    if let Err(error) = pty
+                        .close()
+                        .context("failed to close PTY after stdout disconnect")
+                    {
+                        fatal_error = Some(error);
+                    } else {
+                        requested_local_exit = true;
+                        exit_code.get_or_insert(0);
+                    }
+                    break;
+                }
                 fatal_error = Some(anyhow!(
                     "fatal PTY read pump failure boundary={} detail={detail}",
                     session_boundary_token(SessionBoundary::PtyRead),
@@ -196,10 +212,14 @@ pub fn run_interactive_pty(
                         exit_code = Some(code);
                     }
                     Ok(None) => {
-                        fatal_error = Some(anyhow!(
-                            "PTY read pump terminated unexpectedly while child is running boundary={}",
-                            session_boundary_token(SessionBoundary::PtyRead),
-                        ));
+                        if requested_local_exit {
+                            exit_code.get_or_insert(0);
+                        } else {
+                            fatal_error = Some(anyhow!(
+                                "PTY read pump terminated unexpectedly while child is running boundary={}",
+                                session_boundary_token(SessionBoundary::PtyRead),
+                            ));
+                        }
                     }
                     Err(error) => fatal_error = Some(error),
                 }
@@ -214,13 +234,16 @@ pub fn run_interactive_pty(
                 continue;
             }
             Err(error) if is_disconnect_error(&error) => {
-                match pty
-                    .try_wait()
-                    .context("failed to poll PTY after terminal event poll disconnect")
-                {
-                    Ok(Some(code)) => exit_code = Some(code),
-                    Ok(None) => {}
-                    Err(wait_error) => fatal_error = Some(wait_error),
+                match handle_terminal_event_disconnect(
+                    &*pty,
+                    &mut exit_code,
+                    &mut requested_local_exit,
+                    "terminal event poll disconnect",
+                ) {
+                    Ok(()) => {}
+                    Err(wait_error) => {
+                        fatal_error = Some(wait_error);
+                    }
                 }
                 break;
             }
@@ -241,13 +264,16 @@ pub fn run_interactive_pty(
                 continue;
             }
             Err(error) if is_disconnect_error(&error) => {
-                match pty
-                    .try_wait()
-                    .context("failed to poll PTY after terminal event read disconnect")
-                {
-                    Ok(Some(code)) => exit_code = Some(code),
-                    Ok(None) => {}
-                    Err(wait_error) => fatal_error = Some(wait_error),
+                match handle_terminal_event_disconnect(
+                    &*pty,
+                    &mut exit_code,
+                    &mut requested_local_exit,
+                    "terminal event read disconnect",
+                ) {
+                    Ok(()) => {}
+                    Err(wait_error) => {
+                        fatal_error = Some(wait_error);
+                    }
                 }
                 break;
             }
@@ -410,6 +436,54 @@ pub fn run_interactive_pty(
     Ok(exit_code.unwrap_or(0))
 }
 
+fn ensure_tty_stdio_is_terminal() -> Result<()> {
+    let stdin_is_terminal = io::stdin().is_terminal();
+    let stdout_is_terminal = io::stdout().is_terminal();
+    if stdin_is_terminal && stdout_is_terminal {
+        return Ok(());
+    }
+
+    Err(anyhow!(tty_stdio_requirement_message(
+        stdin_is_terminal,
+        stdout_is_terminal
+    )))
+}
+
+fn tty_stdio_requirement_message(stdin_is_terminal: bool, stdout_is_terminal: bool) -> String {
+    format!(
+        "TTY interactive runtime requires terminal stdin/stdout (stdin_is_terminal={} stdout_is_terminal={})",
+        stdin_is_terminal, stdout_is_terminal,
+    )
+}
+
+fn handle_terminal_event_disconnect(
+    pty: &dyn PtyIo,
+    exit_code: &mut Option<i32>,
+    requested_local_exit: &mut bool,
+    context: &'static str,
+) -> Result<()> {
+    match pty
+        .try_wait()
+        .context(format!("failed to poll PTY after {context}"))?
+    {
+        Some(code) => {
+            *exit_code = Some(code);
+            Ok(())
+        }
+        None => {
+            warn!(
+                disconnect_context = context,
+                "terminal input stream disconnected while PTY child is still running; closing PTY"
+            );
+            pty.close()
+                .context(format!("failed to close PTY after {context}"))?;
+            *requested_local_exit = true;
+            exit_code.get_or_insert(0);
+            Ok(())
+        }
+    }
+}
+
 fn handle_pty_io_failure(
     session_policy: &mut SessionController,
     pty: &dyn PtyIo,
@@ -552,6 +626,13 @@ fn current_pty_size() -> PtySize {
     }
 }
 
+fn is_stdout_disconnect_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::BrokenPipe | ErrorKind::NotConnected
+    )
+}
+
 fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> (JoinHandle<()>, Receiver<String>) {
     let (failure_tx, failure_rx) = mpsc::channel::<String>();
     let handle = thread::spawn(move || {
@@ -565,7 +646,12 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> (JoinHandle<()>, Receive
                 Ok(0) => break,
                 Ok(read_bytes) => {
                     let chunk = &buffer[..read_bytes];
-                    if stdout.write_all(chunk).is_err() {
+                    if let Err(error) = stdout.write_all(chunk) {
+                        if is_stdout_disconnect_error(&error) {
+                            let _ =
+                                failure_tx.send(READ_PUMP_SIGNAL_STDOUT_DISCONNECTED.to_owned());
+                            break;
+                        }
                         let _ = failure_tx.send("failed to write PTY chunk to stdout".to_owned());
                         break;
                     }
@@ -573,7 +659,12 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> (JoinHandle<()>, Receive
 
                     let should_flush =
                         should_flush_read_pump(chunk, buffered_bytes, last_flush.elapsed());
-                    if should_flush && stdout.flush().is_err() {
+                    if should_flush && let Err(error) = stdout.flush() {
+                        if is_stdout_disconnect_error(&error) {
+                            let _ =
+                                failure_tx.send(READ_PUMP_SIGNAL_STDOUT_DISCONNECTED.to_owned());
+                            break;
+                        }
                         let _ = failure_tx.send("failed to flush PTY chunk to stdout".to_owned());
                         break;
                     }
@@ -832,14 +923,14 @@ mod tests {
         JoinThreadOutcome, PtyBoundaryPolicyDecision, READ_PUMP_FLUSH_INTERVAL,
         READ_PUMP_FLUSH_MAX_BYTES, classify_pty_boundary_failure, derive_poll_timeouts,
         dispatch_runtime_palette_command, encode_key_event, ensure_single_window,
-        frame_budget_millis, is_runtime_palette_shortcut, join_thread_with_timeout,
-        should_flush_read_pump,
+        frame_budget_millis, is_runtime_palette_shortcut, is_stdout_disconnect_error,
+        join_thread_with_timeout, should_flush_read_pump, tty_stdio_requirement_message,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
-    use std::{thread, time::Duration};
+    use std::{io, thread, time::Duration};
 
     #[test]
     fn encodes_basic_control_keys() {
@@ -1165,5 +1256,28 @@ mod tests {
                 .checked_sub(Duration::from_millis(1))
                 .expect("flush interval is non-zero"),
         ));
+    }
+
+    #[test]
+    fn stdout_disconnect_classifier_recognizes_pipe_close_errors() {
+        assert!(is_stdout_disconnect_error(&io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "broken pipe"
+        )));
+        assert!(is_stdout_disconnect_error(&io::Error::new(
+            io::ErrorKind::NotConnected,
+            "not connected"
+        )));
+        assert!(!is_stdout_disconnect_error(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "permission denied"
+        )));
+    }
+
+    #[test]
+    fn tty_stdio_requirement_message_reports_both_stream_flags() {
+        let detail = tty_stdio_requirement_message(false, true);
+        assert!(detail.contains("stdin_is_terminal=false"));
+        assert!(detail.contains("stdout_is_terminal=true"));
     }
 }
