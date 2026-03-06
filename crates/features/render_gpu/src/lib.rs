@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
-use rldyourterm_foundation::error::GpuFailureKind;
 use rldyourterm_services::TerminalState;
 use rldyourterm_services::grid::{self, CELL_HEIGHT, CELL_WIDTH, Color};
+use rldyourterm_services::render_mode::GpuFailureKind;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -573,7 +573,8 @@ impl GpuRenderer {
             .map_err(|_| GpuRenderError::BackendUnavailable)?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
+            // Prioritize low-latency interactive throughput for AI CLI workloads.
+            power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
@@ -600,7 +601,9 @@ impl GpuRenderer {
             required_features,
             required_limits: wgpu::Limits::downlevel_defaults(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: Default::default(),
+            // Prefer faster memory allocation strategy; we intentionally trade RAM
+            // footprint for responsiveness in the primary GPU runtime path.
+            memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
         }))
         .map_err(|_| GpuRenderError::DeviceLost)?;
@@ -628,7 +631,8 @@ impl GpuRenderer {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // Hint one frame in flight to minimize input-to-present latency.
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &config);
 
@@ -814,8 +818,8 @@ impl GpuRenderer {
             ],
         });
 
-        // Cell instance buffer (initial capacity for 120x32 terminal)
-        let initial_capacity = INITIAL_CELL_BUFFER_CAPACITY;
+        // Pre-size instance buffers to the initial viewport to avoid first-frame realloc spikes.
+        let initial_capacity = initial_cell_buffer_capacity(config.width, config.height);
         let cell_buf_size = (initial_capacity * std::mem::size_of::<CellInstance>()) as u64;
         let cell_buf_usage = wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
@@ -893,6 +897,11 @@ impl GpuRenderer {
         }
         if let Some(backend) = self.backend.as_mut() {
             let max_dim = backend.device.limits().max_texture_dimension_2d;
+            let clamped_width = width.min(max_dim.max(1));
+            let clamped_height = height.min(max_dim.max(1));
+            if backend.config.width == clamped_width && backend.config.height == clamped_height {
+                return;
+            }
             let _ = update_surface_extent(&mut backend.config, width, height, max_dim);
             backend.surface.configure(&backend.device, &backend.config);
             // Reconfigure resets the surface — clear stale failure counters.
@@ -998,13 +1007,9 @@ impl GpuRenderer {
             let first_new_row = grid_rows - scroll_count;
 
             // CPU shadow: shift OLD data BEFORE writing new rows (must read old data first)
-            for row in 0..copy_rows {
-                let src_start = (row + scroll_count) * grid_cols;
-                let dst_start = row * grid_cols;
-                backend
-                    .cell_instances
-                    .copy_within(src_start..src_start + grid_cols, dst_start);
-            }
+            let src_start = scroll_count * grid_cols;
+            let src_end = grid_rows * grid_cols;
+            backend.cell_instances.copy_within(src_start..src_end, 0);
 
             // Prepare NEW rows at the bottom
             for row in first_new_row..grid_rows {
@@ -1270,6 +1275,13 @@ fn next_cell_buffer_capacity(current_capacity: usize, required_capacity: usize) 
     }
 
     capacity
+}
+
+fn initial_cell_buffer_capacity(width: u32, height: u32) -> usize {
+    let cols = ((width as usize) / CELL_WIDTH).max(1);
+    let rows = ((height as usize) / CELL_HEIGHT).max(1);
+    let required = cols.saturating_mul(rows);
+    next_cell_buffer_capacity(INITIAL_CELL_BUFFER_CAPACITY, required)
 }
 
 // --- Glyph Atlas ---
@@ -1763,6 +1775,21 @@ mod tests {
     }
 
     #[test]
+    fn initial_capacity_scales_with_viewport() {
+        assert_eq!(
+            initial_cell_buffer_capacity(0, 0),
+            INITIAL_CELL_BUFFER_CAPACITY
+        );
+        assert_eq!(
+            initial_cell_buffer_capacity(3840, 2160),
+            next_cell_buffer_capacity(
+                INITIAL_CELL_BUFFER_CAPACITY,
+                (3840usize / CELL_WIDTH) * (2160usize / CELL_HEIGHT),
+            )
+        );
+    }
+
+    #[test]
     fn render_frame_returns_backend_unavailable_when_uninitialized() {
         let mut renderer = GpuRenderer::default();
         let terminal = TerminalState::new(80, 24, 100);
@@ -1841,7 +1868,7 @@ mod tests {
         cell_buf[0] = 200;
         write_glyph_to_atlas(&mut atlas_data, 1, &cell_buf);
         // Slot 1 at col=1, row=0 -> x=8, y=0
-        let expected_idx = 0 * ATLAS_SIZE as usize + cw;
+        let expected_idx = cw;
         assert_eq!(atlas_data[expected_idx], 200);
     }
 
