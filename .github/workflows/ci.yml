@@ -18,8 +18,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: read-all
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,7 +40,7 @@ jobs:
       - name: Install system dependencies (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo check --workspace
 
   test:
@@ -60,7 +59,7 @@ jobs:
         if: matrix.os == 'ubuntu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo test --workspace
 
   # ==================== Code Coverage ====================
@@ -74,16 +73,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ env.CODECOV_TOKEN != '' }}
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2.8.2
+        if: ${{ env.CODECOV_TOKEN != '' }}
       - name: Install system dependencies
+        if: ${{ env.CODECOV_TOKEN != '' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
+        if: ${{ env.CODECOV_TOKEN != '' }}
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
       - name: Upload to codecov
         if: ${{ env.CODECOV_TOKEN != '' }}
@@ -94,7 +98,7 @@ jobs:
           token: ${{ env.CODECOV_TOKEN }}
       - name: Skip codecov upload when token is unavailable
         if: ${{ env.CODECOV_TOKEN == '' }}
-        run: echo "CODECOV_TOKEN is not configured; skipping coverage upload."
+        run: echo "CODECOV_TOKEN is not configured; skipping coverage generation and upload."
 
   # ==================== Lint & Format ====================
 
@@ -111,7 +115,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo clippy --workspace -- -D warnings
 
   fmt:
@@ -140,7 +144,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo check --workspace
 
   # ==================== Security ====================
