@@ -1,6 +1,6 @@
 use std::io::{self, ErrorKind, Read, Write};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::shared::{
     PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified, encode_ctrl_letter,
@@ -24,6 +24,8 @@ const MIN_EVENT_POLL_TIMEOUT_MILLIS: u64 = 1;
 const MAX_EVENT_POLL_TIMEOUT_MILLIS: u64 = 200;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
+const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
@@ -39,6 +41,13 @@ enum RuntimePaletteAction {
 struct RuntimePaletteDispatchResult {
     message: String,
     updated_mode: Option<RenderMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinThreadOutcome {
+    Joined,
+    Panicked,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -346,8 +355,20 @@ pub fn run_interactive_pty(
         fatal_error = Some(error);
     }
 
-    if let Err(join_error) = read_pump.join() {
-        warn!(?join_error, "pty read pump terminated unexpectedly");
+    match join_thread_with_timeout(
+        read_pump,
+        SHUTDOWN_JOIN_TIMEOUT,
+        SHUTDOWN_JOIN_POLL_INTERVAL,
+        "read_pump",
+    ) {
+        JoinThreadOutcome::Joined => {}
+        JoinThreadOutcome::Panicked => {}
+        JoinThreadOutcome::TimedOut => {
+            warn!(
+                timeout_ms = SHUTDOWN_JOIN_TIMEOUT.as_millis(),
+                "PTY read pump join timed out; detaching thread to avoid shutdown hang"
+            );
+        }
     }
 
     if let Some(error) = fatal_error {
@@ -522,6 +543,43 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
             }
         }
     })
+}
+
+fn join_thread_with_timeout(
+    handle: JoinHandle<()>,
+    timeout: Duration,
+    poll_interval: Duration,
+    thread_label: &'static str,
+) -> JoinThreadOutcome {
+    let poll_interval = poll_interval.max(Duration::from_millis(1));
+    let deadline = Instant::now() + timeout;
+    while !handle.is_finished() && Instant::now() < deadline {
+        thread::sleep(poll_interval);
+    }
+
+    if handle.is_finished() {
+        return match handle.join() {
+            Ok(()) => JoinThreadOutcome::Joined,
+            Err(join_error) => {
+                warn!(?join_error, thread_label, "TTY shutdown thread join failed");
+                JoinThreadOutcome::Panicked
+            }
+        };
+    }
+
+    // One final immediate check reduces false timeout logs in the race window
+    // where the worker finishes right after the bounded polling loop exits.
+    if handle.is_finished() {
+        return match handle.join() {
+            Ok(()) => JoinThreadOutcome::Joined,
+            Err(join_error) => {
+                warn!(?join_error, thread_label, "TTY shutdown thread join failed");
+                JoinThreadOutcome::Panicked
+            }
+        };
+    }
+
+    JoinThreadOutcome::TimedOut
 }
 
 fn is_press_like(kind: KeyEventKind) -> bool {
@@ -714,14 +772,16 @@ fn encode_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PtyBoundaryPolicyDecision, classify_pty_boundary_failure, derive_poll_timeouts,
-        dispatch_runtime_palette_command, encode_key_event, ensure_single_window,
-        frame_budget_millis, is_runtime_palette_shortcut,
+        JoinThreadOutcome, PtyBoundaryPolicyDecision, classify_pty_boundary_failure,
+        derive_poll_timeouts, dispatch_runtime_palette_command, encode_key_event,
+        ensure_single_window, frame_budget_millis, is_runtime_palette_shortcut,
+        join_thread_with_timeout,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
+    use std::{thread, time::Duration};
 
     #[test]
     fn encodes_basic_control_keys() {
@@ -971,5 +1031,42 @@ mod tests {
             encode_key_event(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
             Some(b"\x1bf".to_vec())
         );
+    }
+
+    #[test]
+    fn join_thread_with_timeout_returns_joined_for_finished_thread() {
+        let handle = thread::spawn(|| {});
+        let outcome = join_thread_with_timeout(
+            handle,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            "test_joined",
+        );
+        assert_eq!(outcome, JoinThreadOutcome::Joined);
+    }
+
+    #[test]
+    fn join_thread_with_timeout_returns_timed_out_for_busy_thread() {
+        let handle = thread::spawn(|| thread::sleep(Duration::from_millis(50)));
+        let outcome = join_thread_with_timeout(
+            handle,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            "test_timeout",
+        );
+        assert_eq!(outcome, JoinThreadOutcome::TimedOut);
+        thread::sleep(Duration::from_millis(60));
+    }
+
+    #[test]
+    fn join_thread_with_timeout_detects_panicking_thread() {
+        let handle = thread::spawn(|| panic!("panic for test"));
+        let outcome = join_thread_with_timeout(
+            handle,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            "test_panic",
+        );
+        assert_eq!(outcome, JoinThreadOutcome::Panicked);
     }
 }
