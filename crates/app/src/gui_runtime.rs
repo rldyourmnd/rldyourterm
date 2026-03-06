@@ -195,6 +195,7 @@ pub fn run_interactive_gui_pty(
     );
     let wait_pump = spawn_wait_pump(Arc::clone(&pty), proxy.clone());
     let bootstrap = GuiRuntimeBootstrap {
+        event_proxy: proxy.clone(),
         initial_mode,
         refresh_rate_millihz,
         window_count,
@@ -202,7 +203,6 @@ pub fn run_interactive_gui_pty(
     };
 
     let mut app = GuiRuntimeApp::new(
-        proxy.clone(),
         pty,
         writer,
         output_rx,
@@ -387,6 +387,7 @@ struct GuiRuntimeApp {
 }
 
 struct GuiRuntimeBootstrap {
+    event_proxy: EventLoopProxy<GuiEvent>,
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
     window_count: u8,
@@ -402,7 +403,6 @@ impl FoundationWindowEventSink for NoopFoundationWindowEventSink {
 
 impl GuiRuntimeApp {
     fn new(
-        event_proxy: EventLoopProxy<GuiEvent>,
         pty: Arc<dyn PtyIo>,
         writer: Box<dyn Write + Send>,
         output_rx: Receiver<Vec<u8>>,
@@ -412,6 +412,7 @@ impl GuiRuntimeApp {
         bootstrap: GuiRuntimeBootstrap,
     ) -> Result<Self> {
         let GuiRuntimeBootstrap {
+            event_proxy,
             initial_mode,
             refresh_rate_millihz,
             window_count,
