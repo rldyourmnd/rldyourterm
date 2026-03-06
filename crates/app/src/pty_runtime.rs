@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, Read, Write};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,8 @@ const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const READ_PUMP_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
+const READ_PUMP_FLUSH_MAX_BYTES: usize = 16 * 1024;
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
@@ -521,18 +523,29 @@ fn current_pty_size() -> PtySize {
 
 fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut stdout = io::stdout();
+        let mut stdout = BufWriter::with_capacity(READ_PUMP_FLUSH_MAX_BYTES * 2, io::stdout());
         let mut buffer = [0_u8; 65536];
+        let mut buffered_bytes = 0usize;
+        let mut last_flush = Instant::now();
 
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read_bytes) => {
-                    if stdout.write_all(&buffer[..read_bytes]).is_err() {
+                    let chunk = &buffer[..read_bytes];
+                    if stdout.write_all(chunk).is_err() {
                         break;
                     }
-                    if stdout.flush().is_err() {
+                    buffered_bytes = buffered_bytes.saturating_add(read_bytes);
+
+                    let should_flush =
+                        should_flush_read_pump(chunk, buffered_bytes, last_flush.elapsed());
+                    if should_flush && stdout.flush().is_err() {
                         break;
+                    }
+                    if should_flush {
+                        buffered_bytes = 0;
+                        last_flush = Instant::now();
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
@@ -542,6 +555,8 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
                 }
             }
         }
+
+        let _ = stdout.flush();
     })
 }
 
@@ -580,6 +595,13 @@ fn join_thread_with_timeout(
     }
 
     JoinThreadOutcome::TimedOut
+}
+
+fn should_flush_read_pump(chunk: &[u8], buffered_bytes: usize, elapsed: Duration) -> bool {
+    chunk.contains(&b'\n')
+        || chunk.contains(&b'\r')
+        || buffered_bytes >= READ_PUMP_FLUSH_MAX_BYTES
+        || elapsed >= READ_PUMP_FLUSH_INTERVAL
 }
 
 fn is_press_like(kind: KeyEventKind) -> bool {
@@ -772,10 +794,11 @@ fn encode_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        JoinThreadOutcome, PtyBoundaryPolicyDecision, classify_pty_boundary_failure,
-        derive_poll_timeouts, dispatch_runtime_palette_command, encode_key_event,
-        ensure_single_window, frame_budget_millis, is_runtime_palette_shortcut,
-        join_thread_with_timeout,
+        JoinThreadOutcome, PtyBoundaryPolicyDecision, READ_PUMP_FLUSH_INTERVAL,
+        READ_PUMP_FLUSH_MAX_BYTES, classify_pty_boundary_failure, derive_poll_timeouts,
+        dispatch_runtime_palette_command, encode_key_event, ensure_single_window,
+        frame_budget_millis, is_runtime_palette_shortcut, join_thread_with_timeout,
+        should_flush_read_pump,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use rldyourterm_services::render_mode::RenderMode;
@@ -1068,5 +1091,44 @@ mod tests {
             "test_panic",
         );
         assert_eq!(outcome, JoinThreadOutcome::Panicked);
+    }
+
+    #[test]
+    fn read_pump_flushes_on_line_terminator() {
+        assert!(should_flush_read_pump(
+            b"prompt line\n",
+            1,
+            Duration::from_millis(0)
+        ));
+        assert!(should_flush_read_pump(
+            b"\rprogress update",
+            1,
+            Duration::from_millis(0)
+        ));
+    }
+
+    #[test]
+    fn read_pump_flushes_on_buffer_or_latency_budget() {
+        assert!(should_flush_read_pump(
+            b"chunk",
+            READ_PUMP_FLUSH_MAX_BYTES,
+            Duration::from_millis(0)
+        ));
+        assert!(should_flush_read_pump(
+            b"chunk",
+            1,
+            READ_PUMP_FLUSH_INTERVAL
+        ));
+    }
+
+    #[test]
+    fn read_pump_keeps_short_chunks_buffered_between_budget_limits() {
+        assert!(!should_flush_read_pump(
+            b"chunk",
+            READ_PUMP_FLUSH_MAX_BYTES - 1,
+            READ_PUMP_FLUSH_INTERVAL
+                .checked_sub(Duration::from_millis(1))
+                .expect("flush interval is non-zero"),
+        ));
     }
 }
