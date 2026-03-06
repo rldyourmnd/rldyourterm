@@ -12,17 +12,17 @@ fail() {
   errors=$((errors + 1))
 }
 
-warn() {
-  printf '[WARN] %s\n' "$1"
+info() {
+  printf '[INFO] %s\n' "$1"
 }
 
 RG_AVAILABLE=0
 if [[ "${VALIDATE_PLANNING_FORCE_GREP:-0}" == "1" ]]; then
-  warn "forcing grep fallback for planning validation checks"
+  info "forcing grep fallback for planning validation checks"
 elif command -v rg >/dev/null 2>&1; then
   RG_AVAILABLE=1
 else
-  warn "ripgrep (rg) is not available; falling back to grep-compatible checks"
+  info "ripgrep (rg) is not available; falling back to grep-compatible checks"
 fi
 
 search_pattern() {
