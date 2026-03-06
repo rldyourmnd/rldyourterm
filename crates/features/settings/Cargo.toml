@@ -7,5 +7,5 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
-rldyourterm-services = { path = "../../services" }
+rldyourterm-services.workspace = true
 tracing.workspace = true

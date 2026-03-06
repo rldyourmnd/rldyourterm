@@ -7,9 +7,8 @@ license.workspace = true
 
 [dependencies]
 wgpu.workspace = true
-rldyourterm-services = { path = "../../services" }
-rldyourterm-foundation = { path = "../../foundation" }
-rldyourterm-font = { path = "../font" }
+rldyourterm-services.workspace = true
+rldyourterm-font.workspace = true
 tracing.workspace = true
 bytemuck.workspace = true
 pollster.workspace = true

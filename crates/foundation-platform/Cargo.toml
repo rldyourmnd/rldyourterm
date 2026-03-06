@@ -10,4 +10,4 @@ portable-pty.workspace = true
 winit.workspace = true
 arboard.workspace = true
 tracing.workspace = true
-rldyourterm-foundation = { path = "../foundation" }
+rldyourterm-foundation.workspace = true
