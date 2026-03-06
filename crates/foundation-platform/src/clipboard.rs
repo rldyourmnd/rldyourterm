@@ -60,11 +60,24 @@ impl PlatformClipboard {
             return text.to_owned();
         }
 
-        let mut end = MAX_FALLBACK_CLIPBOARD_BYTES;
+        text[..Self::truncate_to_char_boundary(text, MAX_FALLBACK_CLIPBOARD_BYTES)].to_owned()
+    }
+
+    fn truncate_to_char_boundary(text: &str, max_bytes: usize) -> usize {
+        let mut end = max_bytes.min(text.len());
         while end > 0 && !text.is_char_boundary(end) {
             end -= 1;
         }
-        text[..end].to_owned()
+        end
+    }
+
+    fn cap_text_in_place(text: &mut String, max_bytes: usize) -> bool {
+        if text.len() <= max_bytes {
+            return false;
+        }
+        let end = Self::truncate_to_char_boundary(text, max_bytes);
+        text.truncate(end);
+        true
     }
 
     fn new_with_backend_factory(backend_factory: BackendFactory) -> Self {
@@ -262,8 +275,14 @@ impl ClipboardAdapter for PlatformClipboard {
 
         if let Some(backend) = state.backend.as_mut() {
             match backend.get_text() {
-                Ok(text) => {
-                    state.fallback_text = Some(Self::cap_fallback_text(&text));
+                Ok(mut text) => {
+                    if Self::cap_text_in_place(&mut text, MAX_FALLBACK_CLIPBOARD_BYTES) {
+                        tracing::warn!(
+                            cap_bytes = MAX_FALLBACK_CLIPBOARD_BYTES,
+                            "clipboard payload exceeded cap; truncating before runtime handoff"
+                        );
+                    }
+                    state.fallback_text = Some(text.clone());
                     Self::update_health(
                         &mut state,
                         ClipboardHealth::Available,
@@ -419,5 +438,30 @@ mod tests {
             .expect("fallback text should exist");
         assert_eq!(stored.len(), MAX_FALLBACK_CLIPBOARD_BYTES - 1);
         assert_eq!(stored.chars().last(), Some('a'));
+    }
+
+    #[test]
+    fn truncate_to_char_boundary_handles_mid_multibyte_boundary() {
+        let text = "ab🚀";
+        let boundary = PlatformClipboard::truncate_to_char_boundary(text, 4);
+        assert_eq!(boundary, 2);
+    }
+
+    #[test]
+    fn cap_text_in_place_truncates_utf8_safely() {
+        let mut text = "a".repeat(MAX_FALLBACK_CLIPBOARD_BYTES - 1);
+        text.push('🚀');
+        let changed = PlatformClipboard::cap_text_in_place(&mut text, MAX_FALLBACK_CLIPBOARD_BYTES);
+        assert!(changed);
+        assert_eq!(text.len(), MAX_FALLBACK_CLIPBOARD_BYTES - 1);
+        assert_eq!(text.chars().last(), Some('a'));
+    }
+
+    #[test]
+    fn cap_text_in_place_is_noop_for_small_payload() {
+        let mut text = "hello".to_string();
+        let changed = PlatformClipboard::cap_text_in_place(&mut text, MAX_FALLBACK_CLIPBOARD_BYTES);
+        assert!(!changed);
+        assert_eq!(text, "hello");
     }
 }
