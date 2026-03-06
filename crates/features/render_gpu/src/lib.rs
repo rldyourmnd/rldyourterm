@@ -454,6 +454,7 @@ struct GpuBackend {
     glyph_cache: GlyphCache,
     char_to_slot: HashMap<char, u16>,
     next_atlas_slot: u16,
+    atlas_full_warned: bool,
     surface_state: SurfaceRuntimeState,
     underutilized_frame_streak: u16,
 }
@@ -516,6 +517,13 @@ impl GpuBackend {
         }
     }
 
+    fn destroy_resources(&self) {
+        self.grid_uniform_buffer.destroy();
+        self.cell_buffer.destroy();
+        self.cell_buffer_back.destroy();
+        self.atlas_texture.destroy();
+    }
+
     /// Updates `cell_instances` in-place for rows marked dirty. Clean rows are
     /// skipped entirely, preserving previous frame data in CPU vec and GPU buffer.
     ///
@@ -549,6 +557,7 @@ impl GpuBackend {
                         &mut self.glyph_cache,
                         &mut self.char_to_slot,
                         &mut self.next_atlas_slot,
+                        &mut self.atlas_full_warned,
                         &self.atlas_texture,
                         &self.queue,
                     )
@@ -612,6 +621,20 @@ impl GpuRenderer {
 
     pub fn is_initialized(&self) -> bool {
         self.backend.is_some()
+    }
+
+    /// Releases all GPU-side resources held by the renderer backend.
+    ///
+    /// Used when runtime deterministically falls back to CPU to promptly return
+    /// VRAM/system allocations instead of keeping an idle GPU backend alive.
+    pub fn release_backend(&mut self) {
+        if let Some(backend) = self.backend.take() {
+            backend.destroy_resources();
+            info!("GPU backend released");
+        }
+        self.last_cursor_row = u32::MAX;
+        self.last_cursor_col = u32::MAX;
+        self.last_cursor_visible = u32::MAX;
     }
 
     /// Initializes the GPU backend with wgpu device, surface, pipeline, and glyph atlas.
@@ -946,6 +969,7 @@ impl GpuRenderer {
             glyph_cache,
             char_to_slot,
             next_atlas_slot,
+            atlas_full_warned: false,
             surface_state: SurfaceRuntimeState::default(),
             underutilized_frame_streak: 0,
         });
@@ -1501,6 +1525,7 @@ fn ensure_glyph_in_atlas(
     glyph_cache: &mut GlyphCache,
     char_to_slot: &mut HashMap<char, u16>,
     next_slot: &mut u16,
+    atlas_full_warned: &mut bool,
     atlas_texture: &wgpu::Texture,
     queue: &wgpu::Queue,
 ) -> u16 {
@@ -1508,11 +1533,14 @@ fn ensure_glyph_in_atlas(
         return slot;
     }
     if (*next_slot as usize) >= ATLAS_SLOTS {
-        warn!(
-            ch = ?ch,
-            slots = ATLAS_SLOTS,
-            "glyph atlas full; character rendered as blank"
-        );
+        if !*atlas_full_warned {
+            warn!(
+                ch = ?ch,
+                slots = ATLAS_SLOTS,
+                "glyph atlas full; character rendered as blank"
+            );
+            *atlas_full_warned = true;
+        }
         return 0;
     }
     let cell_buf = rasterize_for_atlas(glyph_cache, ch);
