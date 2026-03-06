@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+*'
+      - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install cargo-dist
-        uses: cargo-bins/cargo-binstall@main
+        uses: cargo-bins/cargo-binstall@v1.17.6
         with:
           bins: cargo-dist
       - id: plan
@@ -58,7 +59,7 @@ jobs:
         run: |
           mkdir -p release
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../release/rldyourterm-${{ matrix.target }}.tar.gz rldyourterm
+          tar -czvf ../../../release/rldyourterm-${{ matrix.target }}.tar.gz rldyourterm-app
       - uses: actions/upload-artifact@v4
         with:
           name: rldyourterm-${{ matrix.target }}
