@@ -47,6 +47,7 @@ const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
+const DEFERRED_GPU_INIT_RETRY_BUDGET: u8 = 3;
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -325,7 +326,6 @@ struct GuiRuntimeApp {
     started_at: Instant,
     render_attempt_sequence: u64,
     gpu_failure_sequence: u64,
-    initial_mode: RenderMode,
 
     window: Option<Arc<Window>>,
     window_control: Option<Box<dyn WindowControl>>,
@@ -340,6 +340,7 @@ struct GuiRuntimeApp {
     palette_open: bool,
     redraw_pending: bool,
     gpu_init_pending: bool,
+    deferred_gpu_init_failures: u8,
     last_rendered_cursor_row: Option<u16>,
     last_viewport_cols: u16,
     last_viewport_rows: u16,
@@ -403,7 +404,6 @@ impl GuiRuntimeApp {
             started_at: Instant::now(),
             render_attempt_sequence: 0,
             gpu_failure_sequence: 0,
-            initial_mode,
             window: None,
             window_control: None,
             window_id: None,
@@ -417,6 +417,7 @@ impl GuiRuntimeApp {
             palette_open: false,
             redraw_pending: true,
             gpu_init_pending: initial_mode != RenderMode::Cpu,
+            deferred_gpu_init_failures: 0,
             last_rendered_cursor_row: None,
             last_viewport_cols: DEFAULT_COLS,
             last_viewport_rows: DEFAULT_ROWS,
@@ -563,6 +564,7 @@ impl GuiRuntimeApp {
         // 5. Drop the window itself (final Arc<Window> reference)
         self.window_id = None;
         self.window = None;
+        self.sync_deferred_gpu_init_state();
         debug!("window resources released");
     }
 
@@ -612,10 +614,9 @@ impl GuiRuntimeApp {
         Ok(())
     }
 
-    fn try_deferred_gpu_init(&mut self) {
-        self.gpu_init_pending = false;
-
-        if self.initial_mode == RenderMode::Cpu {
+    fn try_deferred_gpu_init(&mut self, event_loop: &ActiveEventLoop) {
+        if self.ui_runtime.render_mode() == RenderMode::Cpu {
+            self.gpu_init_pending = false;
             return;
         }
         let Some(window) = self.window.clone() else {
@@ -628,18 +629,99 @@ impl GuiRuntimeApp {
         self.surface = None;
         self._context = None;
 
+        let attempt = self.deferred_gpu_init_failures.saturating_add(1);
         debug!("deferred GPU init: attempting GPU initialization");
         match self
             .gpu_renderer
             .initialize(window, w, h, self.gpu_cache_dir.as_deref())
         {
             Ok(()) => {
+                self.gpu_init_pending = false;
+                self.deferred_gpu_init_failures = 0;
                 info!("GPU backend initialized successfully");
                 self.terminal.grid.mark_all_dirty();
                 self.queue_redraw();
             }
             Err(e) => {
-                warn!(error = ?e, "deferred GPU init failed, continuing with CPU fallback");
+                self.deferred_gpu_init_failures = attempt;
+                self.gpu_failure_sequence = self.gpu_failure_sequence.saturating_add(1);
+                let gpu_failure_sequence = self.gpu_failure_sequence;
+                let remaining = DEFERRED_GPU_INIT_RETRY_BUDGET.saturating_sub(attempt);
+                warn!(
+                    error = ?e,
+                    attempt,
+                    retry_budget = DEFERRED_GPU_INIT_RETRY_BUDGET,
+                    retries_remaining = remaining,
+                    mode = ?self.ui_runtime.render_mode(),
+                    active_path = ?self.ui_runtime.active_render_path(),
+                    "deferred GPU init failed"
+                );
+
+                if attempt < DEFERRED_GPU_INIT_RETRY_BUDGET {
+                    self.gpu_init_pending = true;
+                    self.queue_redraw();
+                    return;
+                }
+
+                self.gpu_init_pending = false;
+                let observed_at_millis = self
+                    .started_at
+                    .elapsed()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
+                let failure_kind = GpuFailureKind::DeviceLost;
+
+                match dispatch_gpu_failure_command(
+                    &mut self.ui_runtime,
+                    failure_kind,
+                    observed_at_millis,
+                ) {
+                    Ok(GpuFailureHandling::FallbackToCpu {
+                        transition_sequence,
+                    }) => {
+                        self.terminal.grid.mark_all_dirty();
+                        let (diagnostics_event, fallback_notice) =
+                            emit_gpu_auto_fallback_observability(
+                                &self.diagnostics,
+                                transition_sequence,
+                                gpu_failure_sequence,
+                                self.render_attempt_sequence,
+                                failure_kind,
+                                observed_at_millis,
+                            );
+                        warn!(
+                            transition_sequence,
+                            diagnostics_event_id = %diagnostics_event.event_id,
+                            diagnostics_correlation = ?diagnostics_event.correlation_id,
+                            "deferred GPU init exhausted retry budget; applying deterministic CPU fallback"
+                        );
+                        self.emit_runtime_notice(&fallback_notice);
+                        self.queue_redraw();
+
+                        if self.session_policy.state() == SessionState::Degraded
+                            && let Err(error) = self.session_policy.mark_running()
+                        {
+                            warn!(%error, "session mark_running after deferred GPU fallback failed");
+                        }
+                    }
+                    Ok(GpuFailureHandling::RetryScheduled { .. } | GpuFailureHandling::Ignored) => {
+                        self.queue_redraw();
+                    }
+                    Ok(GpuFailureHandling::FatalForcedGpu) => {
+                        let message = format!(
+                            "forced GPU mode initialization failed after {} attempts: {:?}",
+                            attempt, e
+                        );
+                        self.diagnostics
+                            .emit_kind(EventKind::SessionError, message.clone());
+                        self.fatal_error = Some(anyhow!(message));
+                        event_loop.exit();
+                    }
+                    Err(dispatch_error) => {
+                        self.fatal_error = Some(dispatch_error);
+                        event_loop.exit();
+                    }
+                }
             }
         }
     }
@@ -655,6 +737,15 @@ impl GuiRuntimeApp {
 
     fn queue_redraw(&mut self) {
         self.redraw_pending = true;
+    }
+
+    fn sync_deferred_gpu_init_state(&mut self) {
+        let target_mode = self.ui_runtime.render_mode();
+        self.gpu_init_pending =
+            target_mode != RenderMode::Cpu && !self.gpu_renderer.is_initialized();
+        if target_mode == RenderMode::Cpu {
+            self.deferred_gpu_init_failures = 0;
+        }
     }
 
     fn emit_runtime_notice(&mut self, message: &str) {
@@ -702,6 +793,7 @@ impl GuiRuntimeApp {
                     &mut self.settings,
                     command,
                 )?;
+                self.sync_deferred_gpu_init_state();
                 self.palette_open = false;
                 self.emit_runtime_notice(&result_line);
             }
@@ -1378,7 +1470,9 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
                     self.window_size = window.inner_size();
-                    if self.gpu_renderer.is_initialized() {
+                    if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
+                        && self.gpu_renderer.is_initialized()
+                    {
                         self.gpu_renderer
                             .resize(self.window_size.width, self.window_size.height);
                     }
@@ -1415,7 +1509,11 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu_init_pending {
-            self.try_deferred_gpu_init();
+            self.try_deferred_gpu_init(event_loop);
+        }
+        if self.fatal_error.is_some() {
+            event_loop.exit();
+            return;
         }
 
         self.request_redraw_if_needed();
@@ -1435,16 +1533,22 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             event_loop.set_control_flow(ControlFlow::Wait);
         } else {
             // CPU: software timer for frame pacing (no VSync via softbuffer).
-            let cadence = self.ui_runtime.cadence();
-            match cadence.frame_interval() {
-                Some(interval) => {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
+            if self.redraw_pending {
+                let cadence = self.ui_runtime.cadence();
+                match cadence.frame_interval() {
+                    Some(interval) => {
+                        event_loop
+                            .set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
+                    }
+                    None => {
+                        // No cadence available (headless, VNC, or monitor detection failed).
+                        // Wait for events to avoid busy-spin.
+                        event_loop.set_control_flow(ControlFlow::Wait);
+                    }
                 }
-                None => {
-                    // No cadence available (headless, VNC, or monitor detection failed).
-                    // Wait for events to avoid busy-spin.
-                    event_loop.set_control_flow(ControlFlow::Wait);
-                }
+            } else {
+                // Nothing dirty in CPU fallback path: sleep until external input/PTY events.
+                event_loop.set_control_flow(ControlFlow::Wait);
             }
         }
     }
@@ -2485,44 +2589,41 @@ mod tests {
 
     #[test]
     fn color_to_u32_default_uses_default_color() {
-        let default_fg = grid::color_to_u32(rldyourterm_core::grid::Color::Default, DEFAULT_FG);
+        let default_fg = grid::color_to_u32(grid::Color::Default, DEFAULT_FG);
         assert_eq!(default_fg, DEFAULT_FG_U32);
     }
 
     #[test]
     fn color_to_u32_indexed_looks_up_palette() {
-        let red = grid::color_to_u32(rldyourterm_core::grid::Color::Indexed(1), DEFAULT_FG);
-        assert_eq!(red, rldyourterm_core::grid::ANSI_PALETTE[1]);
+        let red = grid::color_to_u32(grid::Color::Indexed(1), DEFAULT_FG);
+        assert_eq!(red, grid::ANSI_PALETTE[1]);
     }
 
     #[test]
     fn color_to_u32_rgb_constructs_correctly() {
-        let c = grid::color_to_u32(
-            rldyourterm_core::grid::Color::Rgb(0xFF, 0x80, 0x00),
-            DEFAULT_FG,
-        );
+        let c = grid::color_to_u32(grid::Color::Rgb(0xFF, 0x80, 0x00), DEFAULT_FG);
         assert_eq!(c, 0x00FF_8000);
     }
 
     #[test]
     fn resolve_cell_colors_inverse_swaps_fg_bg() {
-        let attrs = rldyourterm_core::grid::Attrs {
-            fg: rldyourterm_core::grid::Color::Indexed(1),
-            bg: rldyourterm_core::grid::Color::Indexed(2),
+        let attrs = grid::Attrs {
+            fg: grid::Color::Indexed(1),
+            bg: grid::Color::Indexed(2),
             inverse: true,
-            ..rldyourterm_core::grid::Attrs::default()
+            ..grid::Attrs::default()
         };
         let (fg, bg) = resolve_cell_colors(&attrs);
-        assert_eq!(fg, rldyourterm_core::grid::ANSI_PALETTE[2]);
-        assert_eq!(bg, rldyourterm_core::grid::ANSI_PALETTE[1]);
+        assert_eq!(fg, grid::ANSI_PALETTE[2]);
+        assert_eq!(bg, grid::ANSI_PALETTE[1]);
     }
 
     #[test]
     fn resolve_cell_colors_dim_halves_fg() {
-        let attrs = rldyourterm_core::grid::Attrs {
-            fg: rldyourterm_core::grid::Color::Rgb(200, 100, 50),
+        let attrs = grid::Attrs {
+            fg: grid::Color::Rgb(200, 100, 50),
             dim: true,
-            ..rldyourterm_core::grid::Attrs::default()
+            ..grid::Attrs::default()
         };
         let (fg, _bg) = resolve_cell_colors(&attrs);
         assert_eq!(fg, super::rgb_to_u32(100, 50, 25));
