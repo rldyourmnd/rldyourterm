@@ -2,6 +2,8 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -57,13 +59,17 @@ const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2)
 #[cfg(test)]
 const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
 const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
+const PTY_OUTPUT_QUEUE_CAPACITY: usize = 256;
+const MAX_VIEWPORT_COLS: usize = 2_000;
+const MAX_VIEWPORT_ROWS: usize = 1_000;
+const MAX_VIEWPORT_CELLS: usize = 1_000_000;
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
 
 #[derive(Debug)]
 enum GuiEvent {
-    Output(Vec<u8>),
+    OutputReady,
     Exited(i32),
     PtyFailure {
         boundary: SessionBoundary,
@@ -173,7 +179,14 @@ pub fn run_interactive_gui_pty(
     let event_loop = build_gui_event_loop()?;
     let proxy = event_loop.create_proxy();
 
-    let reader_pump = spawn_reader_pump(reader, proxy.clone());
+    let (output_tx, output_rx) = sync_channel::<Vec<u8>>(PTY_OUTPUT_QUEUE_CAPACITY);
+    let output_event_pending = Arc::new(AtomicBool::new(false));
+    let reader_pump = spawn_reader_pump(
+        reader,
+        proxy.clone(),
+        output_tx,
+        Arc::clone(&output_event_pending),
+    );
     let wait_pump = spawn_wait_pump(Arc::clone(&pty), proxy.clone());
     let bootstrap = GuiRuntimeBootstrap {
         initial_mode,
@@ -182,8 +195,16 @@ pub fn run_interactive_gui_pty(
         clipboard,
     };
 
-    let mut app = GuiRuntimeApp::new(pty, writer, reader_pump, wait_pump, bootstrap)
-        .context("failed to initialize GUI runtime app")?;
+    let mut app = GuiRuntimeApp::new(
+        pty,
+        writer,
+        output_rx,
+        output_event_pending,
+        reader_pump,
+        wait_pump,
+        bootstrap,
+    )
+    .context("failed to initialize GUI runtime app")?;
 
     info!(
         mode = ?initial_mode,
@@ -270,6 +291,8 @@ fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty
 fn spawn_reader_pump(
     mut reader: Box<dyn Read + Send>,
     proxy: EventLoopProxy<GuiEvent>,
+    output_tx: SyncSender<Vec<u8>>,
+    output_event_pending: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut buffer = [0_u8; 65536];
@@ -278,9 +301,11 @@ fn spawn_reader_pump(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read_bytes) => {
-                    if proxy
-                        .send_event(GuiEvent::Output(buffer[..read_bytes].to_vec()))
-                        .is_err()
+                    if output_tx.send(buffer[..read_bytes].to_vec()).is_err() {
+                        break;
+                    }
+                    if !output_event_pending.swap(true, Ordering::AcqRel)
+                        && proxy.send_event(GuiEvent::OutputReady).is_err()
                     {
                         break;
                     }
@@ -315,6 +340,8 @@ fn spawn_wait_pump(pty: Arc<dyn PtyIo>, proxy: EventLoopProxy<GuiEvent>) -> Join
 struct GuiRuntimeApp {
     pty: Arc<dyn PtyIo>,
     writer: Box<dyn Write + Send>,
+    output_rx: Receiver<Vec<u8>>,
+    output_event_pending: Arc<AtomicBool>,
     clipboard: Arc<dyn ClipboardAdapter>,
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
@@ -367,6 +394,8 @@ impl GuiRuntimeApp {
     fn new(
         pty: Arc<dyn PtyIo>,
         writer: Box<dyn Write + Send>,
+        output_rx: Receiver<Vec<u8>>,
+        output_event_pending: Arc<AtomicBool>,
         reader_pump: JoinHandle<()>,
         wait_pump: JoinHandle<()>,
         bootstrap: GuiRuntimeBootstrap,
@@ -393,6 +422,8 @@ impl GuiRuntimeApp {
         Ok(Self {
             pty,
             writer,
+            output_rx,
+            output_event_pending,
             clipboard,
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
@@ -812,13 +843,69 @@ impl GuiRuntimeApp {
         }
     }
 
+    fn apply_output_bytes(&mut self, data: &[u8]) {
+        trace!(bytes = data.len(), "pty output received");
+        let events = self.terminal.feed(data);
+        self.dispatch_terminal_responses(&events);
+    }
+
+    fn drain_output_queue(&mut self, event_loop: &ActiveEventLoop) {
+        let mut drained_any = false;
+
+        loop {
+            while let Ok(data) = self.output_rx.try_recv() {
+                drained_any = true;
+                self.apply_output_bytes(&data);
+            }
+
+            // Release the pending flag only after we observed queue empty.
+            self.output_event_pending.store(false, Ordering::Release);
+
+            // Handle producer race: data may arrive between empty check and flag reset.
+            match self.output_rx.try_recv() {
+                Ok(data) => {
+                    self.output_event_pending.store(true, Ordering::Release);
+                    drained_any = true;
+                    self.apply_output_bytes(&data);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+
+        if !drained_any {
+            return;
+        }
+
+        let title = self.terminal.window_title();
+        if !title.is_empty() {
+            self.set_window_title(title);
+        }
+
+        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
+            self.fatal_error = Some(error);
+            event_loop.exit();
+            return;
+        }
+        self.queue_redraw();
+    }
+
     fn update_viewport_geometry(&mut self, event_loop: &ActiveEventLoop) {
-        let cols = ((self.window_size.width as usize) / CELL_WIDTH)
-            .max(1)
-            .min(u16::MAX as usize) as u16;
-        let rows = ((self.window_size.height as usize) / CELL_HEIGHT)
-            .max(1)
-            .min(u16::MAX as usize) as u16;
+        let raw_cols = ((self.window_size.width as usize) / CELL_WIDTH).max(1);
+        let raw_rows = ((self.window_size.height as usize) / CELL_HEIGHT).max(1);
+        let (cols, rows) = cap_terminal_geometry(raw_cols, raw_rows);
+        if cols as usize != raw_cols || rows as usize != raw_rows {
+            warn!(
+                raw_cols,
+                raw_rows,
+                cols,
+                rows,
+                max_cols = MAX_VIEWPORT_COLS,
+                max_rows = MAX_VIEWPORT_ROWS,
+                max_cells = MAX_VIEWPORT_CELLS,
+                "viewport geometry exceeded runtime safety limits; dimensions were clamped"
+            );
+        }
 
         // Skip PTY resize when terminal dimensions are unchanged to avoid
         // redundant SIGWINCH delivery during Wayland startup event bursts.
@@ -1396,21 +1483,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: GuiEvent) {
         match event {
-            GuiEvent::Output(ref data) => {
-                trace!(bytes = data.len(), "pty output received");
-                let events = self.terminal.feed(data);
-                self.dispatch_terminal_responses(&events);
-                let title = self.terminal.window_title();
-                if !title.is_empty() {
-                    self.set_window_title(title);
-                }
-                if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
-                    self.fatal_error = Some(error);
-                    event_loop.exit();
-                    return;
-                }
-                self.queue_redraw();
-            }
+            GuiEvent::OutputReady => self.drain_output_queue(event_loop),
             GuiEvent::Exited(code) => {
                 info!(exit_code = code, "child process exited, shutting down");
                 self.exit_code = Some(code);
@@ -2153,6 +2226,17 @@ fn cap_paste_text(text: &str) -> &str {
     }
 }
 
+fn cap_terminal_geometry(raw_cols: usize, raw_rows: usize) -> (u16, u16) {
+    let cols = raw_cols.clamp(1, MAX_VIEWPORT_COLS);
+    let mut rows = raw_rows.clamp(1, MAX_VIEWPORT_ROWS);
+
+    if cols.saturating_mul(rows) > MAX_VIEWPORT_CELLS {
+        rows = (MAX_VIEWPORT_CELLS / cols.max(1)).max(1);
+    }
+
+    (cols as u16, rows as u16)
+}
+
 /// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
 fn load_app_icon() -> Option<Icon> {
     let img = match image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png) {
@@ -2177,12 +2261,12 @@ fn load_app_icon() -> Option<Icon> {
 mod tests {
     use super::{
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
-        MonitorAffectingWindowEvent, PtyBoundaryPolicyDecision,
-        cadence_resync_command_for_monitor_event, cap_paste_text, classify_pty_boundary_failure,
-        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-        emit_gpu_auto_fallback_observability, encode_winit_key_event, grid,
-        is_runtime_palette_shortcut_key, read_clipboard_text_for_paste, resolve_cell_colors,
-        sample_monitor_refresh_rate_millihz,
+        MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS, MonitorAffectingWindowEvent,
+        PtyBoundaryPolicyDecision, cadence_resync_command_for_monitor_event, cap_paste_text,
+        cap_terminal_geometry, classify_pty_boundary_failure, dispatch_gpu_failure_command,
+        dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability,
+        encode_winit_key_event, grid, is_runtime_palette_shortcut_key,
+        read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2326,6 +2410,19 @@ mod tests {
         let capped = cap_paste_text(&payload);
         assert_eq!(capped.len(), CLIPBOARD_PASTE_CAP_BYTES - 1);
         assert_eq!(capped.chars().last(), Some('a'));
+    }
+
+    #[test]
+    fn viewport_geometry_cap_preserves_small_dimensions() {
+        assert_eq!(cap_terminal_geometry(120, 32), (120, 32));
+    }
+
+    #[test]
+    fn viewport_geometry_cap_enforces_axis_and_cell_limits() {
+        let (cols, rows) = cap_terminal_geometry(20_000, 20_000);
+        assert!(cols as usize <= MAX_VIEWPORT_COLS);
+        assert!(rows as usize <= MAX_VIEWPORT_ROWS);
+        assert!((cols as usize) * (rows as usize) <= MAX_VIEWPORT_CELLS);
     }
 
     #[test]
