@@ -35,3 +35,9 @@ This policy covers:
 - PTY/shell interaction boundaries,
 - clipboard/input/output processing,
 - dependency and CI supply-chain security.
+
+## Known Advisory Exceptions
+
+- `RUSTSEC-2024-0436` (`paste`, informational/unmaintained) is currently accepted as a **temporary transitive risk** via the `wgpu-hal -> metal` macOS dependency path.
+- The ignore is tracked in `.cargo/audit.toml` with rationale.
+- This exception must be re-evaluated on each dependency refresh and removed as soon as an upstream-maintained path is available.
