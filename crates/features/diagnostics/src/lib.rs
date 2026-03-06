@@ -98,12 +98,6 @@ impl Event {
         self
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn with_payload_json(mut self, payload_json: impl Into<String>) -> Self {
-        self.payload_json = Some(payload_json.into());
-        self
-    }
-
     pub fn try_with_payload<T: Serialize>(
         mut self,
         payload: &T,
@@ -144,16 +138,6 @@ pub enum DiagnosticsPayloadError {
     },
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SettingsApplyPayload {
-    pub command: String,
-    pub outcome: String,
-    pub previous_state: String,
-    pub current_state: Option<String>,
-    pub reject_reason: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SettingsApplyOutcomeKind {
@@ -169,17 +153,6 @@ pub struct SettingsApplyTypedPayload {
     pub previous_state: String,
     pub current_state: Option<String>,
     pub reject_reason: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ShellResolutionPayload {
-    pub requested: String,
-    pub resolved: Option<String>,
-    pub fallback_applied: bool,
-    pub fallback_cause: Option<String>,
-    pub reason: Option<String>,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,8 +356,7 @@ impl DiagnosticsSink {
         self.emit(Event::new(kind, message))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn emit_serialized_payload<T: Serialize>(
+    fn emit_serialized_payload<T: Serialize>(
         &self,
         kind: EventKind,
         message: impl Into<String>,
@@ -396,16 +368,6 @@ impl DiagnosticsSink {
             event = event.with_correlation(correlation_id);
         }
         Ok(self.emit(event))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_settings_apply(
-        &self,
-        correlation_id: Option<CorrelationId>,
-        payload: &SettingsApplyPayload,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        let kind = settings_apply_event_kind(payload);
-        self.emit_serialized_payload(kind, "settings.apply", correlation_id, payload)
     }
 
     pub fn emit_settings_apply_typed(
@@ -420,16 +382,6 @@ impl DiagnosticsSink {
             correlation_id,
             payload,
         )
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_shell_resolution(
-        &self,
-        correlation_id: Option<CorrelationId>,
-        payload: &ShellResolutionPayload,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        let kind = shell_resolution_event_kind(payload);
-        self.emit_serialized_payload(kind, "shell.resolve", correlation_id, payload)
     }
 
     pub fn emit_shell_resolution_typed(
@@ -516,26 +468,6 @@ impl<'a> CorrelatedDiagnosticsSink<'a> {
     ) -> Result<Event, DiagnosticsPayloadError> {
         let event = Event::new(kind, message).try_with_payload(payload)?;
         Ok(self.emit(event))
-    }
-}
-
-#[allow(dead_code)]
-fn settings_apply_event_kind(payload: &SettingsApplyPayload) -> EventKind {
-    if payload.reject_reason.is_some() || payload.outcome.eq_ignore_ascii_case("rejected") {
-        EventKind::SettingsRejected
-    } else {
-        EventKind::SettingsApply
-    }
-}
-
-#[allow(dead_code)]
-fn shell_resolution_event_kind(payload: &ShellResolutionPayload) -> EventKind {
-    if payload.error.is_some() {
-        EventKind::ShellResolutionFailed
-    } else if payload.fallback_applied {
-        EventKind::ShellFallbackApplied
-    } else {
-        EventKind::ShellResolved
     }
 }
 
@@ -627,70 +559,6 @@ mod tests {
         let event =
             Event::new(EventKind::ShellResolutionFailed, "fish unavailable").to_foundation_event();
         assert_eq!(event.severity, FoundationDiagnosticSeverity::Warn);
-    }
-
-    #[test]
-    fn emit_settings_apply_maps_rejected_payload_to_settings_rejected_kind() {
-        let sink = DiagnosticsSink::default();
-        let emitted = sink
-            .emit_settings_apply(
-                Some(CorrelationId::new("corr-settings")),
-                &SettingsApplyPayload {
-                    command: "mode gpu".to_string(),
-                    outcome: "rejected".to_string(),
-                    previous_state: "{\"mode\":\"auto\"}".to_string(),
-                    current_state: None,
-                    reject_reason: Some("invalid".to_string()),
-                },
-            )
-            .unwrap();
-
-        assert_eq!(emitted.kind, EventKind::SettingsRejected);
-        assert_eq!(
-            emitted.correlation_id,
-            Some(CorrelationId::new("corr-settings"))
-        );
-        assert!(emitted.payload_json.is_some());
-    }
-
-    #[test]
-    fn emit_shell_resolution_maps_fallback_to_shell_fallback_kind() {
-        let sink = DiagnosticsSink::default();
-        let emitted = sink
-            .emit_shell_resolution(
-                None,
-                &ShellResolutionPayload {
-                    requested: "auto".to_string(),
-                    resolved: Some("zsh".to_string()),
-                    fallback_applied: true,
-                    fallback_cause: Some("fish-unavailable".to_string()),
-                    reason: Some("fish baseline unavailable".to_string()),
-                    error: None,
-                },
-            )
-            .unwrap();
-
-        assert_eq!(emitted.kind, EventKind::ShellFallbackApplied);
-        assert!(emitted.payload_json.is_some());
-    }
-
-    #[test]
-    fn emit_settings_apply_uses_outcome_when_reason_missing() {
-        let sink = DiagnosticsSink::default();
-        let emitted = sink
-            .emit_settings_apply(
-                None,
-                &SettingsApplyPayload {
-                    command: "shell auto-init on".to_string(),
-                    outcome: "rejected".to_string(),
-                    previous_state: "{\"shell_target\":\"zsh\"}".to_string(),
-                    current_state: None,
-                    reject_reason: None,
-                },
-            )
-            .unwrap();
-
-        assert_eq!(emitted.kind, EventKind::SettingsRejected);
     }
 
     #[test]
