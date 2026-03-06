@@ -35,9 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.8.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies (Linux)
         run: |
           sudo apt-get update
@@ -53,9 +53,9 @@ jobs:
       matrix:
         os: [ubuntu, macos]
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.8.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu'
         run: |
@@ -72,27 +72,27 @@ jobs:
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2.8.2
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@c1305996457413b456b636a549d9f98354fd89cf
       - name: Generate coverage
         run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: coverage-lcov
           path: lcov.info
       - name: Upload to codecov
         if: ${{ env.CODECOV_TOKEN != '' }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de
         with:
           files: lcov.info
           fail_ci_if_error: true
@@ -108,11 +108,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2.8.2
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -124,8 +124,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -137,11 +137,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: "1.92"
-      - uses: Swatinem/rust-cache@v2.8.2
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -157,11 +157,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2.8.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@c05f3b579dc4e021a32e3f90a4ac41e0ce8a9035
       - name: Run cargo-audit
         run: cargo audit
 
@@ -170,8 +170,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
 
   # ==================== Dependency Linting ====================
 
@@ -180,8 +180,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979
         with:
           command: check bans licenses advisories sources
 
@@ -195,6 +195,6 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/labeler@v6.0.1
+      - uses: actions/labeler@634933edcd8ababfe52f92936142cc22ac488b1b
         with:
           configuration-path: .github/labeler.yml
