@@ -26,6 +26,8 @@ env:
   CARGO_NET_RETRY: "5"
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
+  CI_RUST_TOOLCHAIN: "1.94.0"
+  MSRV_RUST_TOOLCHAIN: "1.92.0"
 
 jobs:
   # ==================== Platform Matrix Jobs ====================
@@ -37,6 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies (Linux)
         run: |
@@ -55,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu'
@@ -74,18 +80,27 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        if: ${{ env.CODECOV_TOKEN != '' }}
         with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        if: ${{ env.CODECOV_TOKEN != '' }}
       - name: Install system dependencies
+        if: ${{ env.CODECOV_TOKEN != '' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: taiki-e/install-action@c1305996457413b456b636a549d9f98354fd89cf
+        with:
+          tool: cargo-llvm-cov@0.8.4
       - name: Generate coverage
+        if: ${{ env.CODECOV_TOKEN != '' }}
         run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
       - name: Upload coverage artifact
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: coverage-lcov
@@ -99,7 +114,7 @@ jobs:
           token: ${{ env.CODECOV_TOKEN }}
       - name: Skip codecov upload when token is unavailable
         if: ${{ env.CODECOV_TOKEN == '' }}
-        run: echo "CODECOV_TOKEN is not configured; coverage artifact was generated locally, codecov upload skipped."
+        run: echo "CODECOV_TOKEN is not configured; skipping llvm-cov generation and Codecov upload for deterministic tokenless runs."
 
   # ==================== Lint & Format ====================
 
@@ -111,6 +126,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: clippy
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
@@ -127,6 +143,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -140,7 +157,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
-          toolchain: "1.92"
+          toolchain: ${{ env.MSRV_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
@@ -159,9 +176,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          cache-targets: false
       - name: Install cargo-audit
         uses: taiki-e/install-action@c05f3b579dc4e021a32e3f90a4ac41e0ce8a9035
+        with:
+          tool: cargo-audit@0.22.1
       - name: Run cargo-audit
         run: cargo audit
 
