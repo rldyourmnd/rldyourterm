@@ -21,6 +21,7 @@ use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_foundation_platform::window::PlatformWindowFactory;
 use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::CoreEvent;
+use rldyourterm_services::MAX_FEED_BYTES_PER_CALL;
 use rldyourterm_services::TerminalState;
 use rldyourterm_services::grid::{self, CELL_HEIGHT, CELL_WIDTH};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
@@ -61,7 +62,7 @@ const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2)
 const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
 const PTY_OUTPUT_QUEUE_CAPACITY: usize = 256;
 const OUTPUT_BATCH_INITIAL_CAPACITY: usize = 64 * 1024;
-const OUTPUT_BATCH_MAX_BYTES: usize = 1024 * 1024;
+const OUTPUT_BATCH_MAX_BYTES: usize = MAX_FEED_BYTES_PER_CALL * 4;
 const MAX_VIEWPORT_COLS: usize = 2_000;
 const MAX_VIEWPORT_ROWS: usize = 1_000;
 const MAX_VIEWPORT_CELLS: usize = 1_000_000;
@@ -849,8 +850,10 @@ impl GuiRuntimeApp {
 
     fn apply_output_bytes(&mut self, data: &[u8]) {
         trace!(bytes = data.len(), "pty output received");
-        let events = self.terminal.feed(data);
-        self.dispatch_terminal_responses(&events);
+        for chunk in terminal_feed_chunks(data) {
+            let events = self.terminal.feed(chunk);
+            self.dispatch_terminal_responses(&events);
+        }
     }
 
     fn flush_output_batch(&mut self, batch: &mut Vec<u8>) {
@@ -2273,6 +2276,10 @@ fn should_flush_output_batch(current_batch_len: usize, incoming_chunk_len: usize
         && current_batch_len.saturating_add(incoming_chunk_len) > OUTPUT_BATCH_MAX_BYTES
 }
 
+fn terminal_feed_chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    data.chunks(MAX_FEED_BYTES_PER_CALL)
+}
+
 /// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
 fn load_app_icon() -> Option<Icon> {
     let img = match image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png) {
@@ -2297,13 +2304,14 @@ fn load_app_icon() -> Option<Icon> {
 mod tests {
     use super::{
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
-        MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS, MonitorAffectingWindowEvent,
-        PtyBoundaryPolicyDecision, cadence_resync_command_for_monitor_event, cap_paste_text,
-        cap_terminal_geometry, classify_pty_boundary_failure, dispatch_gpu_failure_command,
+        MAX_FEED_BYTES_PER_CALL, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS,
+        MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES, PtyBoundaryPolicyDecision,
+        cadence_resync_command_for_monitor_event, cap_paste_text, cap_terminal_geometry,
+        classify_pty_boundary_failure, dispatch_gpu_failure_command,
         dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability,
         encode_winit_key_event, grid, is_runtime_palette_shortcut_key,
         read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
-        should_flush_output_batch,
+        should_flush_output_batch, terminal_feed_chunks,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2466,7 +2474,19 @@ mod tests {
     fn output_batch_flush_policy_only_triggers_on_overflow_with_existing_batch() {
         assert!(!should_flush_output_batch(0, 32));
         assert!(!should_flush_output_batch(128, 256));
-        assert!(should_flush_output_batch(1024 * 1024 - 64, 128));
+        assert!(should_flush_output_batch(OUTPUT_BATCH_MAX_BYTES - 64, 128));
+    }
+
+    #[test]
+    fn terminal_feed_chunking_respects_core_per_call_limit() {
+        let payload = vec![b'x'; MAX_FEED_BYTES_PER_CALL * 2 + 17];
+        let chunk_sizes: Vec<usize> = terminal_feed_chunks(&payload)
+            .map(|chunk| chunk.len())
+            .collect();
+        assert_eq!(
+            chunk_sizes,
+            vec![MAX_FEED_BYTES_PER_CALL, MAX_FEED_BYTES_PER_CALL, 17]
+        );
     }
 
     #[test]

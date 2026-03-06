@@ -6,7 +6,7 @@ use crate::{
     scrollback::Scrollback,
 };
 
-const MAX_FEED_BYTES_PER_CALL: usize = 64 * 1024;
+pub const MAX_FEED_BYTES_PER_CALL: usize = 64 * 1024;
 const FEED_CHUNK_BYTES: usize = 4 * 1024;
 
 #[derive(Debug)]
