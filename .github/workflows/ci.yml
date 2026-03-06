@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'planning/**'
+      - '**/*.md'
+      - 'assets/**'
   pull_request:
     branches: [main, dev]
+    paths-ignore:
+      - 'planning/**'
+      - '**/*.md'
+      - 'assets/**'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -15,24 +23,22 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  CARGO_NET_RETRY: "5"
   RUSTFLAGS: "-D warnings"
 
 jobs:
   # ==================== Platform Matrix Jobs ====================
 
   check:
-    name: Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu, macos]
+    name: Check (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.8.2
       - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev
@@ -41,6 +47,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +68,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
@@ -93,6 +101,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -108,6 +117,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -120,6 +130,7 @@ jobs:
   msrv:
     name: MSRV (1.92)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -137,6 +148,7 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -144,7 +156,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.8.2
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@cargo-audit
       - name: Run cargo-audit
         run: cargo audit
 
@@ -161,6 +173,7 @@ jobs:
   deny:
     name: Cargo Deny
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
