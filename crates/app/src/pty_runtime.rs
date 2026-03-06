@@ -1,4 +1,5 @@
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -150,7 +151,7 @@ pub fn run_interactive_pty(
     let mut writer = pty.take_writer().context("failed to acquire PTY writer")?;
 
     let _raw_mode_guard = RawModeGuard::new()?;
-    let read_pump = spawn_read_pump(reader);
+    let (read_pump, read_pump_failures) = spawn_read_pump(reader);
     let mut session_policy = SessionController::new();
     session_policy
         .mark_running()
@@ -175,6 +176,36 @@ pub fn run_interactive_pty(
                 fatal_error = Some(error);
                 break;
             }
+        }
+
+        match read_pump_failures.try_recv() {
+            Ok(detail) => {
+                fatal_error = Some(anyhow!(
+                    "fatal PTY read pump failure boundary={} detail={detail}",
+                    session_boundary_token(SessionBoundary::PtyRead),
+                ));
+                break;
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) if read_pump.is_finished() => {
+                match pty
+                    .try_wait()
+                    .context("failed to poll PTY after read pump disconnect")
+                {
+                    Ok(Some(code)) => {
+                        exit_code = Some(code);
+                    }
+                    Ok(None) => {
+                        fatal_error = Some(anyhow!(
+                            "PTY read pump terminated unexpectedly while child is running boundary={}",
+                            session_boundary_token(SessionBoundary::PtyRead),
+                        ));
+                    }
+                    Err(error) => fatal_error = Some(error),
+                }
+                break;
+            }
+            Err(TryRecvError::Disconnected) => {}
         }
 
         let has_event = match event::poll(poll_controller.next_timeout()) {
@@ -521,8 +552,9 @@ fn current_pty_size() -> PtySize {
     }
 }
 
-fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
-    thread::spawn(move || {
+fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> (JoinHandle<()>, Receiver<String>) {
+    let (failure_tx, failure_rx) = mpsc::channel::<String>();
+    let handle = thread::spawn(move || {
         let mut stdout = BufWriter::with_capacity(READ_PUMP_FLUSH_MAX_BYTES * 2, io::stdout());
         let mut buffer = [0_u8; 65536];
         let mut buffered_bytes = 0usize;
@@ -534,6 +566,7 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
                 Ok(read_bytes) => {
                     let chunk = &buffer[..read_bytes];
                     if stdout.write_all(chunk).is_err() {
+                        let _ = failure_tx.send("failed to write PTY chunk to stdout".to_owned());
                         break;
                     }
                     buffered_bytes = buffered_bytes.saturating_add(read_bytes);
@@ -541,6 +574,7 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
                     let should_flush =
                         should_flush_read_pump(chunk, buffered_bytes, last_flush.elapsed());
                     if should_flush && stdout.flush().is_err() {
+                        let _ = failure_tx.send("failed to flush PTY chunk to stdout".to_owned());
                         break;
                     }
                     if should_flush {
@@ -550,14 +584,15 @@ fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> JoinHandle<()> {
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    eprintln!("PTY read error: {error}");
+                    let _ = failure_tx.send(format!("PTY read error: {error}"));
                     break;
                 }
             }
         }
 
         let _ = stdout.flush();
-    })
+    });
+    (handle, failure_rx)
 }
 
 fn join_thread_with_timeout(
