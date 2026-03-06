@@ -38,7 +38,7 @@ Defines how Codex resolves conflicts between documents in `planning/`.
 - Any durable GPU failure in `auto` leads to bounded retry then deterministic `gpu -> cpu` fallback.
 - No silent fallback: transition is always logged and user-visible.
 - Settings primary UX is in-terminal command palette.
-- Scrollback default cap is 50_000 lines.
+- Scrollback keeps dual bounds by default: 50_000 lines + 512 MiB byte budget guardrail.
 - Frame pacing is monitor-driven (system refresh-rate), no hardcoded fps in primary path.
 - Window transfer between monitors (e.g., 144Hz <-> 60Hz) must re-sync cadence without session drop.
 - v1.0.0 scope: single window, no multiplexer.
