@@ -73,7 +73,7 @@ jobs:
     name: Coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    if: ${{ secrets.CODECOV_TOKEN != '' }}
+    if: ${{ vars.CODECOV_ENABLED == 'true' }}
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
