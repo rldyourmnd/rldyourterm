@@ -208,8 +208,10 @@ impl TerminalState {
                 // which is handled in gui_runtime's encode_winit_key_event.
             }
             ParserAction::SetWindowTitle(title) => {
-                self.window_title = title.clone();
-                events.push(CoreEvent::WindowTitleChanged { title });
+                if self.window_title != title {
+                    self.window_title = title.clone();
+                    events.push(CoreEvent::WindowTitleChanged { title });
+                }
             }
             ParserAction::BracketedPasteMode(enabled) => {
                 self.bracketed_paste = enabled;
@@ -1007,6 +1009,24 @@ mod tests {
             events.iter().any(
                 |e| matches!(e, CoreEvent::WindowTitleChanged { title } if title == "My Title")
             )
+        );
+    }
+
+    #[test]
+    fn repeated_window_title_does_not_emit_duplicate_event() {
+        let mut state = TerminalState::new(10, 2, 5);
+        let first = state.feed(b"\x1b]0;My Title\x07");
+        let second = state.feed(b"\x1b]0;My Title\x07");
+
+        assert!(
+            first.iter().any(
+                |e| matches!(e, CoreEvent::WindowTitleChanged { title } if title == "My Title")
+            )
+        );
+        assert!(
+            !second
+                .iter()
+                .any(|e| matches!(e, CoreEvent::WindowTitleChanged { .. }))
         );
     }
 

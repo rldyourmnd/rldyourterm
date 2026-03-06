@@ -253,7 +253,8 @@ impl Grid {
             }
         }
 
-        self.scroll_count += lines;
+        let max_scroll = self.height.saturating_sub(1) as usize;
+        self.scroll_count = self.scroll_count.saturating_add(lines).min(max_scroll);
         self.mark_all_dirty();
         removed
     }
@@ -902,9 +903,18 @@ mod tests {
         for _ in 0..10_000 {
             grid.scroll_up(1);
         }
-        assert_eq!(grid.scroll_count(), 10_000);
+        assert_eq!(grid.scroll_count(), 23);
         grid.take_dirty_rows();
         assert_eq!(grid.scroll_count(), 0);
+    }
+
+    #[test]
+    fn scroll_count_saturates_to_visible_grid_height_minus_one() {
+        let mut grid = Grid::new(80, 24);
+        for _ in 0..100 {
+            grid.scroll_up(3);
+        }
+        assert_eq!(grid.scroll_count(), 23);
     }
 
     #[test]

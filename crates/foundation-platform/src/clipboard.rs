@@ -9,6 +9,7 @@ use rldyourterm_foundation::error::{
 };
 
 type BackendFactory = Arc<dyn Fn() -> Result<Clipboard, ArboardError> + Send + Sync>;
+const MAX_FALLBACK_CLIPBOARD_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendMode {
@@ -54,6 +55,18 @@ impl Default for PlatformClipboard {
 }
 
 impl PlatformClipboard {
+    fn cap_fallback_text(text: &str) -> String {
+        if text.len() <= MAX_FALLBACK_CLIPBOARD_BYTES {
+            return text.to_owned();
+        }
+
+        let mut end = MAX_FALLBACK_CLIPBOARD_BYTES;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].to_owned()
+    }
+
     fn new_with_backend_factory(backend_factory: BackendFactory) -> Self {
         Self {
             state: Mutex::new(ClipboardState {
@@ -210,7 +223,7 @@ impl PlatformClipboard {
 impl ClipboardAdapter for PlatformClipboard {
     fn set_text(&self, text: &str) -> FoundationResult<()> {
         let mut state = self.lock_state(ClipboardOperation::SetText)?;
-        state.fallback_text = Some(text.to_owned());
+        state.fallback_text = Some(Self::cap_fallback_text(text));
 
         if let Err(error) = self.ensure_backend(&mut state, ClipboardOperation::SetText) {
             tracing::warn!(
@@ -250,7 +263,7 @@ impl ClipboardAdapter for PlatformClipboard {
         if let Some(backend) = state.backend.as_mut() {
             match backend.get_text() {
                 Ok(text) => {
-                    state.fallback_text = Some(text.clone());
+                    state.fallback_text = Some(Self::cap_fallback_text(&text));
                     Self::update_health(
                         &mut state,
                         ClipboardHealth::Available,
@@ -375,5 +388,36 @@ mod tests {
             2,
             "temporary failures should keep retrying backend init"
         );
+    }
+
+    #[test]
+    fn fallback_text_is_capped_to_prevent_unbounded_growth() {
+        let clipboard = clipboard_with_factory(|| Err(ArboardError::ClipboardNotSupported));
+        let payload = "x".repeat(MAX_FALLBACK_CLIPBOARD_BYTES + 4096);
+        clipboard
+            .set_text(&payload)
+            .expect("set_text should keep capped fallback");
+
+        let stored = clipboard
+            .get_text()
+            .expect("get_text should return fallback")
+            .expect("fallback text should exist");
+        assert_eq!(stored.len(), MAX_FALLBACK_CLIPBOARD_BYTES);
+    }
+
+    #[test]
+    fn fallback_text_cap_preserves_utf8_boundaries() {
+        let clipboard = clipboard_with_factory(|| Err(ArboardError::ClipboardNotSupported));
+        let payload = format!("{}🚀", "a".repeat(MAX_FALLBACK_CLIPBOARD_BYTES - 1));
+        clipboard
+            .set_text(&payload)
+            .expect("set_text should keep fallback");
+
+        let stored = clipboard
+            .get_text()
+            .expect("get_text should return fallback")
+            .expect("fallback text should exist");
+        assert_eq!(stored.len(), MAX_FALLBACK_CLIPBOARD_BYTES - 1);
+        assert_eq!(stored.chars().last(), Some('a'));
     }
 }
