@@ -430,6 +430,9 @@ impl GuiRuntimeApp {
             return Ok(());
         }
 
+        // `mut` needed on Linux/FreeBSD for platform-specific window attributes,
+        // but triggers unused_mut warning on macOS where those blocks don't compile.
+        #[allow(unused_mut)]
         let mut attributes = Window::default_attributes()
             .with_title("rldyourterm")
             .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT))
