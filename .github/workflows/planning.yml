@@ -8,6 +8,7 @@ on:
       - 'AGENTS.md'
       - 'README.md'
       - 'CLAUDE.md'
+      - 'SECURITY.md'
       - '.github/workflows/planning.yml'
   pull_request:
     branches: [main, dev]
@@ -16,6 +17,7 @@ on:
       - 'AGENTS.md'
       - 'README.md'
       - 'CLAUDE.md'
+      - 'SECURITY.md'
       - '.github/workflows/planning.yml'
 
 concurrency:
