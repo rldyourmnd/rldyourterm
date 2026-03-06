@@ -6,16 +6,8 @@ name: CodeQL
 on:
   push:
     branches: [main, dev]
-    paths-ignore:
-      - 'planning/**'
-      - '**/*.md'
-      - 'assets/**'
   pull_request:
     branches: [main, dev]
-    paths-ignore:
-      - 'planning/**'
-      - '**/*.md'
-      - 'assets/**'
   schedule:
     - cron: '0 2 * * 1'  # Weekly on Monday at 02:00 UTC
 
@@ -58,6 +50,9 @@ jobs:
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         run: |
