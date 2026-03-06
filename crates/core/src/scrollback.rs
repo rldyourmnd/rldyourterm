@@ -41,9 +41,11 @@ impl Scrollback {
         }
 
         // Keep logical text while dropping right-side padding cells to reduce RAM.
-        let trimmed_len = line.trim_end_matches(' ').len();
-        if trimmed_len < line.len() {
-            line.truncate(trimmed_len);
+        if line.as_bytes().last().copied() == Some(b' ') {
+            let trimmed_len = line.trim_end_matches(' ').len();
+            if trimmed_len < line.len() {
+                line.truncate(trimmed_len);
+            }
         }
 
         self.lines.push_back(line);
