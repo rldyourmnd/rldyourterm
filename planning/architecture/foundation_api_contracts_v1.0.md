@@ -8,7 +8,7 @@ Implementation status note (2026-03-04):
 - PTY contract path is runtime-wired.
 - Clipboard contract path is runtime-wired in app.
 - Window contract path is runtime-wired in app through `WindowFactory/WindowControl` (`G-010` closed).
-- Cadence timing path is sourced through foundation window contract signals (`current_monitor_timing` and `DisplayRefreshChanged` path).
+- Cadence timing path in app runtime is sourced through foundation `current_monitor_timing` queries triggered by monitor-affecting `winit` events (`Moved/Resized/ScaleFactorChanged`); `DisplayRefreshChanged` remains part of the adapter contract surface.
 
 ## 1) Общие положения
 

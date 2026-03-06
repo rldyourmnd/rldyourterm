@@ -73,6 +73,16 @@
   - cross-job artifact handoff via `actions/upload-artifact` + `actions/download-artifact` with `needs` is a supported contract for passing generated files between jobs while keeping producer-job restrictions intact.
   - these contracts were applied to CI throughput hardening: coverage generation/install is now gated by `CODECOV_TOKEN` env presence, and workflow-level read-only permission defaults were kept explicit.
 
+## 2026-03-06 TTY Runtime Stability/Throughput Addendum
+
+- `portable-pty` (`/websites/rs_portable-pty`):
+  - `Child::try_wait` remains non-blocking; `Child::wait` remains blocking by contract.
+  - `ChildKiller::clone_killer` exists explicitly to support independent termination signaling when another thread may be blocked in `wait`.
+  - these semantics justify bounded join behavior around shutdown helper threads: PTY lifecycle is closed first, but helper-thread joins remain time-bounded to avoid terminal teardown deadlocks.
+- Runtime alignment:
+  - TTY `read_pump` join now uses bounded timeout/poll-loop semantics with explicit timeout diagnostics rather than unbounded `join()`.
+  - TTY stdout pump keeps interactive flush triggers (`\\n`/`\\r`) and adds bounded byte/latency flush budgets to reduce per-chunk flush overhead under AI CLI burst output.
+
 Implementation alignment updated in:
 - `crates/foundation-platform/src/pty.rs`
 - `crates/services/src/render_mode.rs`
