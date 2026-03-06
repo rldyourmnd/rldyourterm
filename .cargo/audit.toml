@@ -1,0 +1,4 @@
+[advisories]
+# Transitive-only via wgpu-hal -> metal (macOS path). No upstream patched
+# release is available yet; keep CI signal focused on actionable advisories.
+ignore = ["RUSTSEC-2024-0436"]
