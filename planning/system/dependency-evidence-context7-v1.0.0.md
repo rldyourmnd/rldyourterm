@@ -49,6 +49,18 @@
   - `take_writer()` remains single-acquire; `try_clone_reader()` remains the intended read-side duplication path.
   - `try_wait`/`wait` semantics remain consistent with non-blocking poll + blocking termination wait.
 
+## 2026-03-06 CI/Runtime Hardening Addendum
+
+- `wgpu` (`/websites/rs_wgpu`):
+  - `Queue::write_buffer` copies input into staging memory immediately but transfer starts on next `Queue::submit`; runtime keeps batched upload semantics and avoids per-cell submit spam.
+  - `Queue::write_buffer_with` can reduce extra allocation/copy when data can be assembled directly in staging view; suitable for future micro-optimizations on burst paths.
+  - `Buffer::destroy` is valid explicit resource release path; runtime uses it on cell-buffer realloc to reduce VRAM high-water retention.
+  - `SurfaceError` variants remain canonical: `Timeout`, `Outdated`, `Lost`, `OutOfMemory`, `Other`; runtime classification enforces deterministic retry/reconfigure/degrade mapping.
+- `portable-pty` (`/websites/rs_portable-pty`):
+  - `MasterPty::resize` updates kernel winsize and signals child process; runtime keeps resize as explicit boundary event.
+  - `take_writer` is invalid more than once and dropping writer sends EOF; runtime preserves single-writer invariant for crash-intolerant session continuity.
+  - `Child::try_wait` (non-blocking) and `wait` (blocking) plus `kill/clone_killer` semantics support bounded shutdown/recovery orchestration.
+
 Implementation alignment updated in:
 - `crates/foundation-platform/src/pty.rs`
 - `crates/services/src/render_mode.rs`
