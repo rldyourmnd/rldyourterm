@@ -6,6 +6,10 @@ name: Scorecard
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'planning/**'
+      - '**/*.md'
+      - 'assets/**'
   schedule:
     - cron: '0 0 * * 0'  # Weekly at 00:00 UTC
   workflow_dispatch:
@@ -16,6 +20,7 @@ jobs:
   scorecard:
     name: Security Scorecard
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
