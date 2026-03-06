@@ -61,7 +61,7 @@
   - `take_writer` is invalid more than once and dropping writer sends EOF; runtime preserves single-writer invariant for crash-intolerant session continuity.
   - `Child::try_wait` (non-blocking) and `wait` (blocking) plus `kill/clone_killer` semantics support bounded shutdown/recovery orchestration.
 - `GitHub Actions` (`/websites/github_en_actions`):
-  - `paths-ignore` on `push`/`pull_request` skips workflow execution when all changed files match ignored globs; this is used to avoid burning CI minutes on docs-only/planning-only commits.
+  - `paths-ignore` on `push`/`pull_request` skips workflow execution when all changed files match ignored globs; for required checks this can leave merge-blocking pending states, so required workflows in this repo use always-on triggers and apply filtering at job/policy level instead.
   - workflow `concurrency` with `cancel-in-progress: true` guarantees stale runs are canceled in favor of the newest run for the same group/ref.
 
 ## 2026-03-06 CI Throughput/Supply-Chain Addendum
