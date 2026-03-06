@@ -85,23 +85,31 @@ impl TerminalState {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<CoreEvent> {
+        let mut events = Vec::new();
+        self.feed_into(bytes, &mut events);
+        events
+    }
+
+    /// Feed terminal bytes while reusing a caller-provided event buffer.
+    /// This avoids per-call `Vec<CoreEvent>` allocations on hot ingest paths.
+    pub fn feed_into(&mut self, bytes: &[u8], events: &mut Vec<CoreEvent>) {
+        events.clear();
         if bytes.is_empty() {
-            return Vec::new();
+            return;
         }
 
         let accepted = bytes.len().min(MAX_FEED_BYTES_PER_CALL);
-        let mut events = Vec::new();
 
         for chunk in bytes[..accepted].chunks(FEED_CHUNK_BYTES) {
             for action in self.parser.feed(chunk) {
-                self.apply_action_into(action, &mut events);
+                self.apply_action_into(action, events);
             }
         }
 
         let dropped = bytes.len() - accepted;
         if dropped > 0 {
             for action in self.parser.resync_after_truncation() {
-                self.apply_action_into(action, &mut events);
+                self.apply_action_into(action, events);
             }
             events.push(CoreEvent::IngestDegraded {
                 reason: IngestDegradeReason::InputFeedTooLarge,
@@ -109,8 +117,6 @@ impl TerminalState {
                 dropped,
             });
         }
-
-        events
     }
 
     pub fn apply_actions<I>(&mut self, actions: I) -> Vec<CoreEvent>
@@ -761,6 +767,55 @@ mod tests {
                 dropped
             } if *accepted == MAX_FEED_BYTES_PER_CALL && *dropped == 17
         )));
+    }
+
+    #[test]
+    fn feed_into_matches_feed_behavior() {
+        let payload = b"abc\x1b[31mZ\x1b[0m\r\n\x1b]0;wave\x07";
+
+        let mut via_feed = TerminalState::new(8, 2, 8);
+        let mut via_feed_into = TerminalState::new(8, 2, 8);
+
+        let expected_events = via_feed.feed(payload);
+        let mut reused_events = vec![CoreEvent::Bell];
+        via_feed_into.feed_into(payload, &mut reused_events);
+
+        assert_eq!(reused_events, expected_events);
+        assert_eq!(via_feed.cursor, via_feed_into.cursor);
+        assert_eq!(via_feed.pen, via_feed_into.pen);
+        assert_eq!(via_feed.window_title(), via_feed_into.window_title());
+        assert_eq!(
+            via_feed.scrollback.iter().collect::<Vec<_>>(),
+            via_feed_into.scrollback.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            via_feed.grid.row_string(0).expect("row 0"),
+            via_feed_into.grid.row_string(0).expect("row 0")
+        );
+        assert_eq!(
+            via_feed.grid.row_string(1).expect("row 1"),
+            via_feed_into.grid.row_string(1).expect("row 1")
+        );
+    }
+
+    #[test]
+    fn feed_into_clears_and_reuses_output_buffer() {
+        let mut state = TerminalState::new(4, 1, 4);
+        let mut events = vec![CoreEvent::Bell];
+
+        state.feed_into(b"A", &mut events);
+        assert!(
+            events.iter().all(|event| !matches!(event, CoreEvent::Bell)),
+            "reused event buffer must be cleared before collecting new events"
+        );
+        let reused_capacity = events.capacity();
+
+        state.feed_into(b"", &mut events);
+        assert!(events.is_empty());
+        assert_eq!(events.capacity(), reused_capacity);
+
+        state.feed_into(b"B", &mut events);
+        assert_eq!(events.capacity(), reused_capacity);
     }
 
     #[test]

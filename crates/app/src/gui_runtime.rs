@@ -63,6 +63,7 @@ const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
 const PTY_OUTPUT_QUEUE_CAPACITY: usize = 256;
 const OUTPUT_BATCH_INITIAL_CAPACITY: usize = 64 * 1024;
 const OUTPUT_BATCH_MAX_BYTES: usize = MAX_FEED_BYTES_PER_CALL * 4;
+const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 256;
 const MAX_VIEWPORT_COLS: usize = 2_000;
 const MAX_VIEWPORT_ROWS: usize = 1_000;
 const MAX_VIEWPORT_CELLS: usize = 1_000_000;
@@ -375,6 +376,7 @@ struct GuiRuntimeApp {
     last_viewport_cols: u16,
     last_viewport_rows: u16,
     output_batch: Vec<u8>,
+    feed_events_scratch: Vec<CoreEvent>,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -457,6 +459,7 @@ impl GuiRuntimeApp {
             last_viewport_cols: DEFAULT_COLS,
             last_viewport_rows: DEFAULT_ROWS,
             output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
+            feed_events_scratch: Vec::with_capacity(FEED_EVENTS_SCRATCH_INITIAL_CAPACITY),
             exit_code: None,
             fatal_error: None,
         })
@@ -788,8 +791,10 @@ impl GuiRuntimeApp {
         let mut line = String::from("\r\n");
         line.push_str(message);
         line.push_str("\r\n");
-        let events = self.terminal.feed(line.as_bytes());
+        let mut events = std::mem::take(&mut self.feed_events_scratch);
+        self.terminal.feed_into(line.as_bytes(), &mut events);
         self.dispatch_terminal_responses(&events);
+        self.feed_events_scratch = events;
         self.queue_redraw();
     }
 
@@ -850,10 +855,12 @@ impl GuiRuntimeApp {
 
     fn apply_output_bytes(&mut self, data: &[u8]) {
         trace!(bytes = data.len(), "pty output received");
+        let mut events = std::mem::take(&mut self.feed_events_scratch);
         for chunk in terminal_feed_chunks(data) {
-            let events = self.terminal.feed(chunk);
+            self.terminal.feed_into(chunk, &mut events);
             self.dispatch_terminal_responses(&events);
         }
+        self.feed_events_scratch = events;
     }
 
     fn flush_output_batch(&mut self, batch: &mut Vec<u8>) {
