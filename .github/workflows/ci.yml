@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main, dev]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -109,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.92"
       - uses: Swatinem/rust-cache@v2.7.3
@@ -157,29 +164,11 @@ jobs:
   labeler:
     name: Label PR
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/labeler@v5
+      - uses: actions/labeler@v6.0.1
         with:
           configuration-path: .github/labeler.yml
-
-  # ==================== Security Posture ====================
-
-  scorecard:
-    name: Scorecard
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-      actions: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ossf/scorecard-action@v2
-        with:
-          results_file: scorecard.sarif
-          results_format: sarif
-          publish_results: true
