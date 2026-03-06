@@ -16,6 +16,65 @@ warn() {
   printf '[WARN] %s\n' "$1"
 }
 
+RG_AVAILABLE=0
+if [[ "${VALIDATE_PLANNING_FORCE_GREP:-0}" == "1" ]]; then
+  warn "forcing grep fallback for planning validation checks"
+elif command -v rg >/dev/null 2>&1; then
+  RG_AVAILABLE=1
+else
+  warn "ripgrep (rg) is not available; falling back to grep-compatible checks"
+fi
+
+search_pattern() {
+  local pattern="$1"
+  shift
+  if [[ $RG_AVAILABLE -eq 1 ]]; then
+    rg -n "$pattern" "$@"
+  else
+    grep -R -nE "$pattern" "$@"
+  fi
+}
+
+search_pattern_rs() {
+  local pattern="$1"
+  local path="$2"
+  if [[ $RG_AVAILABLE -eq 1 ]]; then
+    rg -n "$pattern" "$path" --glob '*.rs'
+  else
+    grep -R -nE --include='*.rs' "$pattern" "$path"
+  fi
+}
+
+search_pattern_excluding_validate_script() {
+  local pattern="$1"
+  shift
+  if [[ $RG_AVAILABLE -eq 1 ]]; then
+    rg -n "$pattern" "$@" --glob '!planning/system/validate_planning.sh'
+  else
+    grep -R -nE "$pattern" "$@" --exclude='validate_planning.sh'
+  fi
+}
+
+extract_req_ids() {
+  local pattern="$1"
+  shift
+  if [[ $RG_AVAILABLE -eq 1 ]]; then
+    rg -o --no-filename "$pattern" "$@"
+  else
+    grep -h -oE "$pattern" "$@"
+  fi
+}
+
+filter_unexpected_req_ids() {
+  local allowed_pattern="$1"
+  local file="$2"
+  if [[ $RG_AVAILABLE -eq 1 ]]; then
+    rg -v "$allowed_pattern" "$file"
+  else
+    grep -Ev "$allowed_pattern" "$file"
+  fi
+}
+
 required_paths=(
   "AGENTS.md"
   "README.md"
@@ -62,63 +121,63 @@ authoritative_req_paths=(
   "planning/system/source-of-truth-and-precedence-v1.0.0.md"
 )
 
-if rg -n "render fps target 120|performance fps-target <hz>|1h test window|Run sustained output for at least 30 minutes" "${authoritative_paths[@]}" >/tmp/planning_bad_patterns.txt 2>/dev/null; then
+if search_pattern "render fps target 120|performance fps-target <hz>|1h test window|Run sustained output for at least 30 minutes" "${authoritative_paths[@]}" >/tmp/planning_bad_patterns.txt 2>/dev/null; then
   fail "legacy inconsistent fps/long-run patterns still present (see /tmp/planning_bad_patterns.txt)"
 else
   pass "no legacy inconsistent fps/long-run patterns"
 fi
 
-if rg -n "monitor-driven|refresh-rate|render cadence monitor-auto" AGENTS.md planning README.md >/tmp/planning_monitor_patterns.txt 2>/dev/null; then
+if search_pattern "monitor-driven|refresh-rate|render cadence monitor-auto" AGENTS.md planning README.md >/tmp/planning_monitor_patterns.txt 2>/dev/null; then
   pass "monitor-driven cadence policy is present"
 else
   fail "monitor-driven cadence policy markers are missing"
 fi
 
-if rg -n "^\| G-010 \|.*\| Closed \|$" planning/system/gap-closure-register-v1.0.0.md >/dev/null 2>&1; then
+if search_pattern "^\| G-010 \|.*\| Closed \|$" planning/system/gap-closure-register-v1.0.0.md >/dev/null 2>&1; then
   pass "foundation window ownership gap is closed in gap register (G-010)"
 else
   fail "G-010 must be closed with explicit evidence in gap register"
 fi
 
-if rg -n "No free-form command-line input inside GUI/TTY palette UI" planning/settings/settings_palette.md >/dev/null 2>&1; then
+if search_pattern "No free-form command-line input inside GUI/TTY palette UI" planning/settings/settings_palette.md >/dev/null 2>&1; then
   pass "settings palette scope explicitly forbids free-form UI command line"
 else
   fail "settings palette scope does not explicitly forbid free-form UI command line"
 fi
 
-if rg -n "arboard::" crates/app/src >/tmp/planning_arch_clipboard_direct.txt 2>/dev/null; then
+if search_pattern "arboard::" crates/app/src >/tmp/planning_arch_clipboard_direct.txt 2>/dev/null; then
   fail "direct arboard usage detected in app runtime; clipboard path must remain adapter-based (see /tmp/planning_arch_clipboard_direct.txt)"
 else
   pass "no direct clipboard integration detected in app runtime"
 fi
 
-if rg -n "\bwindow\s*\.\s*(request_redraw|set_title|current_monitor)\s*\(" crates/app/src --glob '*.rs' >/tmp/planning_arch_drift_window_direct.txt 2>/dev/null; then
+if search_pattern_rs "\bwindow\s*\.\s*(request_redraw|set_title|current_monitor)\s*\(" crates/app/src >/tmp/planning_arch_drift_window_direct.txt 2>/dev/null; then
   fail "direct app-owned window control usage detected in app runtime (see /tmp/planning_arch_drift_window_direct.txt)"
 else
   pass "no direct app-owned window control usage detected in app runtime"
 fi
 
-if rg -n "TODO|TBD|XXX" AGENTS.md planning README.md --glob '!planning/system/validate_planning.sh' >/tmp/planning_todo_patterns.txt 2>/dev/null; then
+if search_pattern_excluding_validate_script "TODO|TBD|XXX" AGENTS.md planning README.md >/tmp/planning_todo_patterns.txt 2>/dev/null; then
   fail "unresolved placeholders found (see /tmp/planning_todo_patterns.txt)"
 else
   pass "no unresolved TODO/TBD/XXX placeholders"
 fi
 
 for req in R-01 R-02 R-03 R-04 R-05 R-06 R-07 R-08 R-09 R-10 R-11 R-12 R-13 R-14; do
-  if rg -n "\| ${req} \|" planning/system/traceability-matrix-v1.0.0.md >/dev/null 2>&1; then
+  if search_pattern "\| ${req} \|" planning/system/traceability-matrix-v1.0.0.md >/dev/null 2>&1; then
     pass "traceability row exists: ${req}"
   else
     fail "missing traceability row: ${req}"
   fi
 done
 
-rg -o --no-filename 'R-[0-9]{2}' "${authoritative_req_paths[@]}" 2>/dev/null | sort -u >/tmp/planning_req_ids_all.txt || true
-rg -v '^(R-0[1-9]|R-1[0-4])$' /tmp/planning_req_ids_all.txt >/tmp/planning_unexpected_req_ids.txt || true
+extract_req_ids 'R-[0-9]{2}' "${authoritative_req_paths[@]}" 2>/dev/null | sort -u >/tmp/planning_req_ids_all.txt || true
+filter_unexpected_req_ids '^(R-0[1-9]|R-1[0-4])$' /tmp/planning_req_ids_all.txt >/tmp/planning_unexpected_req_ids.txt || true
 
 if [[ -s /tmp/planning_unexpected_req_ids.txt ]]; then
   unexpected_req_ids="$(xargs </tmp/planning_unexpected_req_ids.txt)"
   unexpected_req_pattern="$(paste -sd'|' /tmp/planning_unexpected_req_ids.txt)"
-  rg -n "${unexpected_req_pattern}" "${authoritative_req_paths[@]}" >/tmp/planning_unexpected_req_ids_refs.txt 2>/dev/null || true
+  search_pattern "${unexpected_req_pattern}" "${authoritative_req_paths[@]}" >/tmp/planning_unexpected_req_ids_refs.txt 2>/dev/null || true
   fail "unexpected Req IDs in authoritative planning docs: ${unexpected_req_ids} (see /tmp/planning_unexpected_req_ids_refs.txt)"
 else
   pass "authoritative planning Req IDs are restricted to R-01..R-14"
