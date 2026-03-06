@@ -76,11 +76,15 @@ jobs:
       - name: Generate coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
       - name: Upload to codecov
+        if: ${{ secrets.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Skip codecov upload when token is unavailable
+        if: ${{ secrets.CODECOV_TOKEN == '' }}
+        run: echo "CODECOV_TOKEN is not configured; skipping coverage upload."
 
   # ==================== Lint & Format ====================
 
