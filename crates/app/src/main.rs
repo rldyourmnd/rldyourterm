@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io::IsTerminal, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, ValueEnum};
@@ -120,6 +120,25 @@ enum RunOutcome {
     Interactive { exit_code: i32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TtyStdioSnapshot {
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+}
+
+impl TtyStdioSnapshot {
+    fn capture() -> Self {
+        Self {
+            stdin_is_terminal: std::io::stdin().is_terminal(),
+            stdout_is_terminal: std::io::stdout().is_terminal(),
+        }
+    }
+
+    const fn interactive_ready(self) -> bool {
+        self.stdin_is_terminal && self.stdout_is_terminal
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.log_level);
@@ -131,7 +150,9 @@ fn main() -> Result<()> {
 
 fn init_tracing(level: LogLevelArg) {
     let default_filter = match level {
-        LogLevelArg::Standard => "warn,rldyourterm=info".to_owned(),
+        LogLevelArg::Standard => {
+            "warn,rldyourterm=info,wgpu_hal::gles::egl=off,sctk_adwaita=off".to_owned()
+        }
         LogLevelArg::Debug => {
             "warn,rldyourterm=debug,wgpu_hal::gles::egl=off,sctk_adwaita=off".to_owned()
         }
@@ -217,12 +238,16 @@ fn run(cli: Cli) -> Result<RunOutcome> {
 
     emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
     let launch_plan = ShellLaunchPlan::from_resolution(selected_shell);
+    let tty_stdio_snapshot = TtyStdioSnapshot::capture();
     let tty_runtime_config = pty_runtime::TtyRuntimeConfig {
         initial_mode: render_mode,
         refresh_rate_millihz: cli.refresh_rate_millihz,
         window_count: cli.window_count,
     };
     let exit_code = if cli.tty {
+        if !tty_stdio_snapshot.interactive_ready() {
+            return Err(anyhow!(tty_runtime_unavailable_reason(tty_stdio_snapshot)));
+        }
         pty_runtime::run_interactive_pty(
             &launch_plan.executable,
             &launch_plan.args,
@@ -241,6 +266,12 @@ fn run(cli: Cli) -> Result<RunOutcome> {
         ) {
             Ok(code) => code,
             Err(error) => {
+                if !tty_stdio_snapshot.interactive_ready() {
+                    return Err(error).context(format!(
+                        "GUI runtime unavailable and TTY fallback is not possible: {}",
+                        tty_runtime_unavailable_reason(tty_stdio_snapshot),
+                    ));
+                }
                 warn!(
                     error = %error,
                     "GUI runtime unavailable; falling back to TTY interactive runtime"
@@ -283,6 +314,14 @@ fn normalize_exit_code(exit_code: i32) -> i32 {
     }
 }
 
+fn tty_runtime_unavailable_reason(snapshot: TtyStdioSnapshot) -> String {
+    format!(
+        "TTY interactive runtime requires terminal stdin/stdout (stdin_is_terminal={} stdout_is_terminal={})",
+        yes_no_token(snapshot.stdin_is_terminal),
+        yes_no_token(snapshot.stdout_is_terminal),
+    )
+}
+
 fn resolve_startup_shell(preferred_shell: ShellTarget) -> Result<ShellResolution> {
     resolve_shell(preferred_shell, shell_availability())
         .map_err(|err| anyhow!("failed to resolve startup shell target: {err:?}"))
@@ -305,8 +344,8 @@ fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer) {
         ActiveRenderPath::Gpu => {
             // GPU render requires an initialized backend (window + surface).
             // Harness runs without a window, so GPU cannot be initialized here.
-            warn!(
-                "GPU render path selected in harness but no window available; skipping initial frame"
+            info!(
+                "GPU render path selected in harness without window; initial frame intentionally skipped"
             );
         }
     }
@@ -854,7 +893,7 @@ fn shell_available_on_path(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_exit_code;
+    use super::{TtyStdioSnapshot, normalize_exit_code, tty_runtime_unavailable_reason};
 
     #[test]
     fn normalizes_negative_exit_code_to_failure() {
@@ -867,6 +906,42 @@ mod tests {
         assert_eq!(normalize_exit_code(0), 0);
         assert_eq!(normalize_exit_code(1), 1);
         assert_eq!(normalize_exit_code(42), 42);
+    }
+
+    #[test]
+    fn tty_reason_message_contains_terminal_capability_snapshot() {
+        let reason = tty_runtime_unavailable_reason(TtyStdioSnapshot {
+            stdin_is_terminal: false,
+            stdout_is_terminal: true,
+        });
+
+        assert!(reason.contains("stdin_is_terminal=no"));
+        assert!(reason.contains("stdout_is_terminal=yes"));
+    }
+
+    #[test]
+    fn tty_snapshot_requires_both_streams_to_be_terminals() {
+        assert!(
+            TtyStdioSnapshot {
+                stdin_is_terminal: true,
+                stdout_is_terminal: true,
+            }
+            .interactive_ready()
+        );
+        assert!(
+            !TtyStdioSnapshot {
+                stdin_is_terminal: false,
+                stdout_is_terminal: true,
+            }
+            .interactive_ready()
+        );
+        assert!(
+            !TtyStdioSnapshot {
+                stdin_is_terminal: true,
+                stdout_is_terminal: false,
+            }
+            .interactive_ready()
+        );
     }
 }
 
