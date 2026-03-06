@@ -63,6 +63,8 @@ const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
 const PTY_OUTPUT_QUEUE_CAPACITY: usize = 256;
 const OUTPUT_BATCH_INITIAL_CAPACITY: usize = 64 * 1024;
 const OUTPUT_BATCH_MAX_BYTES: usize = MAX_FEED_BYTES_PER_CALL * 4;
+const OUTPUT_DRAIN_MAX_BYTES_PER_TICK: usize = 4 * 1024 * 1024;
+const OUTPUT_DRAIN_MAX_LATENCY: Duration = Duration::from_millis(8);
 const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 256;
 const MAX_VIEWPORT_COLS: usize = 2_000;
 const MAX_VIEWPORT_ROWS: usize = 1_000;
@@ -200,6 +202,7 @@ pub fn run_interactive_gui_pty(
     };
 
     let mut app = GuiRuntimeApp::new(
+        proxy.clone(),
         pty,
         writer,
         output_rx,
@@ -342,6 +345,7 @@ fn spawn_wait_pump(pty: Arc<dyn PtyIo>, proxy: EventLoopProxy<GuiEvent>) -> Join
 }
 
 struct GuiRuntimeApp {
+    event_proxy: EventLoopProxy<GuiEvent>,
     pty: Arc<dyn PtyIo>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
@@ -398,6 +402,7 @@ impl FoundationWindowEventSink for NoopFoundationWindowEventSink {
 
 impl GuiRuntimeApp {
     fn new(
+        event_proxy: EventLoopProxy<GuiEvent>,
         pty: Arc<dyn PtyIo>,
         writer: Box<dyn Write + Send>,
         output_rx: Receiver<Vec<u8>>,
@@ -426,6 +431,7 @@ impl GuiRuntimeApp {
             .context("failed to initialize GUI session boundary policy")?;
 
         Ok(Self {
+            event_proxy,
             pty,
             writer,
             output_rx,
@@ -654,7 +660,7 @@ impl GuiRuntimeApp {
     }
 
     fn try_deferred_gpu_init(&mut self, event_loop: &ActiveEventLoop) {
-        if self.ui_runtime.render_mode() == RenderMode::Cpu {
+        if self.ui_runtime.active_render_path() == ActiveRenderPath::Cpu {
             self.gpu_init_pending = false;
             return;
         }
@@ -718,6 +724,8 @@ impl GuiRuntimeApp {
                     Ok(GpuFailureHandling::FallbackToCpu {
                         transition_sequence,
                     }) => {
+                        self.gpu_renderer.release_backend();
+                        self.sync_deferred_gpu_init_state();
                         self.terminal.grid.mark_all_dirty();
                         let (diagnostics_event, fallback_notice) =
                             emit_gpu_auto_fallback_observability(
@@ -779,12 +787,17 @@ impl GuiRuntimeApp {
     }
 
     fn sync_deferred_gpu_init_state(&mut self) {
-        let target_mode = self.ui_runtime.render_mode();
-        self.gpu_init_pending =
-            target_mode != RenderMode::Cpu && !self.gpu_renderer.is_initialized();
-        if target_mode == RenderMode::Cpu {
+        let target_path = self.ui_runtime.active_render_path();
+        if target_path == ActiveRenderPath::Cpu {
+            if self.gpu_renderer.is_initialized() {
+                self.gpu_renderer.release_backend();
+            }
+            self.gpu_init_pending = false;
             self.deferred_gpu_init_failures = 0;
+            return;
         }
+
+        self.gpu_init_pending = !self.gpu_renderer.is_initialized();
     }
 
     fn emit_runtime_notice(&mut self, message: &str) {
@@ -886,11 +899,19 @@ impl GuiRuntimeApp {
     fn drain_output_queue(&mut self, event_loop: &ActiveEventLoop) {
         let mut drained_any = false;
         let mut batch = std::mem::take(&mut self.output_batch);
+        let drain_started = Instant::now();
+        let mut drained_bytes = 0usize;
+        let mut budget_exhausted = false;
 
-        loop {
+        'drain: loop {
             while let Ok(data) = self.output_rx.try_recv() {
                 drained_any = true;
+                drained_bytes = drained_bytes.saturating_add(data.len());
                 self.append_output_chunk_to_batch(&mut batch, &data);
+                if output_drain_budget_exhausted(drained_bytes, drain_started.elapsed()) {
+                    budget_exhausted = true;
+                    break 'drain;
+                }
             }
 
             // Release the pending flag only after we observed queue empty.
@@ -901,7 +922,12 @@ impl GuiRuntimeApp {
                 Ok(data) => {
                     self.output_event_pending.store(true, Ordering::Release);
                     drained_any = true;
+                    drained_bytes = drained_bytes.saturating_add(data.len());
                     self.append_output_chunk_to_batch(&mut batch, &data);
+                    if output_drain_budget_exhausted(drained_bytes, drain_started.elapsed()) {
+                        budget_exhausted = true;
+                        break;
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
@@ -916,6 +942,15 @@ impl GuiRuntimeApp {
 
         if !drained_any {
             return;
+        }
+
+        if budget_exhausted {
+            debug!(
+                drained_bytes,
+                elapsed_ms = drain_started.elapsed().as_millis(),
+                "output drain budget exhausted; scheduling continuation"
+            );
+            let _ = self.event_proxy.send_event(GuiEvent::OutputReady);
         }
 
         let title = self.terminal.window_title();
@@ -1403,6 +1438,8 @@ impl GuiRuntimeApp {
                         GpuFailureHandling::FallbackToCpu {
                             transition_sequence,
                         } => {
+                            self.gpu_renderer.release_backend();
+                            self.sync_deferred_gpu_init_state();
                             // Force full redraw on CPU path: GPU previously cleared dirty
                             // flags via take_dirty_rows, so the CPU softbuffer has no valid
                             // content and needs every row repainted.
@@ -2283,6 +2320,10 @@ fn should_flush_output_batch(current_batch_len: usize, incoming_chunk_len: usize
         && current_batch_len.saturating_add(incoming_chunk_len) > OUTPUT_BATCH_MAX_BYTES
 }
 
+fn output_drain_budget_exhausted(drained_bytes: usize, elapsed: Duration) -> bool {
+    drained_bytes >= OUTPUT_DRAIN_MAX_BYTES_PER_TICK || elapsed >= OUTPUT_DRAIN_MAX_LATENCY
+}
+
 fn terminal_feed_chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
     data.chunks(MAX_FEED_BYTES_PER_CALL)
 }
@@ -2312,13 +2353,14 @@ mod tests {
     use super::{
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
         MAX_FEED_BYTES_PER_CALL, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS,
-        MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES, PtyBoundaryPolicyDecision,
+        MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES, OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
+        OUTPUT_DRAIN_MAX_LATENCY, PtyBoundaryPolicyDecision,
         cadence_resync_command_for_monitor_event, cap_paste_text, cap_terminal_geometry,
         classify_pty_boundary_failure, dispatch_gpu_failure_command,
         dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability,
         encode_winit_key_event, grid, is_runtime_palette_shortcut_key,
-        read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
-        should_flush_output_batch, terminal_feed_chunks,
+        output_drain_budget_exhausted, read_clipboard_text_for_paste, resolve_cell_colors,
+        sample_monitor_refresh_rate_millihz, should_flush_output_batch, terminal_feed_chunks,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2334,6 +2376,7 @@ mod tests {
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
+    use std::time::Duration;
     use winit::keyboard::{Key, ModifiersState};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2482,6 +2525,27 @@ mod tests {
         assert!(!should_flush_output_batch(0, 32));
         assert!(!should_flush_output_batch(128, 256));
         assert!(should_flush_output_batch(OUTPUT_BATCH_MAX_BYTES - 64, 128));
+    }
+
+    #[test]
+    fn output_drain_budget_triggers_on_byte_limit() {
+        assert!(!output_drain_budget_exhausted(
+            OUTPUT_DRAIN_MAX_BYTES_PER_TICK - 1,
+            Duration::ZERO
+        ));
+        assert!(output_drain_budget_exhausted(
+            OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
+            Duration::ZERO
+        ));
+    }
+
+    #[test]
+    fn output_drain_budget_triggers_on_elapsed_limit() {
+        assert!(!output_drain_budget_exhausted(
+            0,
+            OUTPUT_DRAIN_MAX_LATENCY.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(output_drain_budget_exhausted(0, OUTPUT_DRAIN_MAX_LATENCY));
     }
 
     #[test]
