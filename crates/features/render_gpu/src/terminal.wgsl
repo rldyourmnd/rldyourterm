@@ -54,6 +54,9 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) instance: u32,
     @location(2) cell_pos: vec2<f32>,
+    @location(3) @interpolate(flat) atlas_and_flags: u32,
+    @location(4) @interpolate(flat) fg_color: u32,
+    @location(5) @interpolate(flat) bg_color: u32,
 };
 
 @vertex
@@ -100,6 +103,9 @@ fn vs_main(
     out.uv = vec2<f32>(u, v);
     out.instance = instance_index;
     out.cell_pos = corner;
+    out.atlas_and_flags = cell.atlas_and_flags;
+    out.fg_color = cell.fg_color;
+    out.bg_color = cell.bg_color;
     return out;
 }
 
@@ -113,11 +119,10 @@ fn unpack_rgb(packed: u32) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let cell = cells[in.instance];
-    let flags = cell.atlas_and_flags;
+    let flags = in.atlas_and_flags;
 
-    var fg = unpack_rgb(cell.fg_color);
-    var bg = unpack_rgb(cell.bg_color);
+    var fg = unpack_rgb(in.fg_color);
+    var bg = unpack_rgb(in.bg_color);
 
     // Dim: halve foreground brightness (SGR 2)
     if (flags & DIM_BIT) != 0u {

@@ -1,12 +1,15 @@
 use font8x8::{BLOCK_FONTS, BOX_FONTS, UnicodeFonts};
 use fontdue::{Font, FontSettings};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Bundled JetBrains Mono Nerd Font Mono (SIL OFL 1.1).
 /// Covers ASCII, Latin Extended, Cyrillic, Greek, Powerline, Nerd Font icons,
 /// Box Drawing, and Block Elements.
 static FONT_DATA: &[u8] =
     include_bytes!("../../../../assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf");
+
+const DEFAULT_MAX_GLYPH_CACHE_ENTRIES: usize = 8_192;
+const FALLBACK_GLYPH_CHAR: char = '?';
 
 /// Pre-rasterized glyph bitmap sized to fit a terminal cell.
 pub struct GlyphBitmap {
@@ -25,7 +28,8 @@ pub struct GlyphBitmap {
 /// Glyph rasterization cache backed by fontdue + bundled Nerd Font.
 ///
 /// Loads the embedded TTF at construction time. Rasterizes glyphs on demand
-/// and caches the results for the lifetime of the cache.
+/// and caches the results for the lifetime of the cache with an explicit upper
+/// bound to prevent unbounded growth in long-running sessions.
 pub struct GlyphCache {
     font: Font,
     px_size: f32,
@@ -33,6 +37,8 @@ pub struct GlyphCache {
     cell_height: u16,
     ascent_px: i32,
     cache: HashMap<char, GlyphBitmap>,
+    eviction_queue: VecDeque<char>,
+    max_entries: usize,
 }
 
 impl GlyphCache {
@@ -42,6 +48,12 @@ impl GlyphCache {
     /// `cell_width`, ensuring glyphs fill each cell without overflow.
     #[must_use]
     pub fn new(cell_width: u16, cell_height: u16) -> Self {
+        Self::new_with_max_entries(cell_width, cell_height, DEFAULT_MAX_GLYPH_CACHE_ENTRIES)
+    }
+
+    /// Create a bounded cache with an explicit max entry limit.
+    #[must_use]
+    pub fn new_with_max_entries(cell_width: u16, cell_height: u16, max_entries: usize) -> Self {
         let font = Font::from_bytes(FONT_DATA, FontSettings::default())
             .expect("embedded font data must be valid");
 
@@ -62,23 +74,58 @@ impl GlyphCache {
             .map(|lm| lm.ascent.round() as i32)
             .unwrap_or(cell_height as i32 - 2);
 
-        Self {
+        let max_entries = max_entries.max(1);
+        let mut cache = HashMap::with_capacity(max_entries.min(1024));
+        let mut value = Self {
             font,
             px_size,
             cell_width,
             cell_height,
             ascent_px,
             cache: HashMap::new(),
-        }
+            eviction_queue: VecDeque::new(),
+            max_entries,
+        };
+
+        cache.insert(
+            FALLBACK_GLYPH_CHAR,
+            value.rasterize_into_cell(FALLBACK_GLYPH_CHAR),
+        );
+        value.cache = cache;
+        value
     }
 
     /// Get or rasterize a glyph for `ch`. Returns a reference to the cached bitmap.
     pub fn get(&mut self, ch: char) -> &GlyphBitmap {
-        if !self.cache.contains_key(&ch) {
-            let bitmap = self.rasterize_into_cell(ch);
-            self.cache.insert(ch, bitmap);
+        if self.cache.contains_key(&ch) {
+            return self
+                .cache
+                .get(&ch)
+                .expect("cache entry checked above must exist");
         }
-        &self.cache[&ch]
+
+        if self.cache.len() >= self.max_entries {
+            while let Some(candidate) = self.eviction_queue.pop_front() {
+                if self.cache.remove(&candidate).is_some() {
+                    break;
+                }
+            }
+            if self.cache.len() >= self.max_entries {
+                return self
+                    .cache
+                    .get(&FALLBACK_GLYPH_CHAR)
+                    .expect("fallback glyph must stay cached");
+            }
+        }
+
+        let bitmap = self.rasterize_into_cell(ch);
+        self.cache.insert(ch, bitmap);
+        if ch != FALLBACK_GLYPH_CHAR {
+            self.eviction_queue.push_back(ch);
+        }
+        self.cache
+            .get(&ch)
+            .expect("glyph inserted above must exist in cache")
     }
 
     /// Check if the font contains a real glyph for `ch` (not just .notdef / tofu).
@@ -261,5 +308,26 @@ mod tests {
         let cache = GlyphCache::new(8, 16);
         // Private Use Area char unlikely to be in font
         assert!(!cache.has_glyph('\u{FFFF}'));
+    }
+
+    #[test]
+    fn cache_size_is_bounded_and_evicts_old_entries() {
+        let mut cache = GlyphCache::new_with_max_entries(8, 16, 2);
+        let _ = cache.get('A');
+        let _ = cache.get('Ж');
+
+        assert_eq!(cache.cache.len(), 2);
+        assert!(!cache.cache.contains_key(&'A'));
+        assert!(cache.cache.contains_key(&'Ж'));
+    }
+
+    #[test]
+    fn fallback_is_used_when_cache_cannot_evict_more_entries() {
+        let mut cache = GlyphCache::new_with_max_entries(8, 16, 1);
+        let fallback = cache.get(FALLBACK_GLYPH_CHAR).data.clone();
+        let glyph = cache.get('Ж').data.clone();
+        assert_eq!(glyph, fallback);
+        assert_eq!(cache.cache.len(), 1);
+        assert!(cache.cache.contains_key(&FALLBACK_GLYPH_CHAR));
     }
 }
