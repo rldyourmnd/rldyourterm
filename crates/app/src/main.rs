@@ -605,7 +605,7 @@ fn emit_command_receipts(diagnostics: &DiagnosticsSink, receipts: &[UiCommandRec
                     RenderTransitionReason::AutoGpuFallback { .. }
                 ) {
                     diagnostics.emit_kind(
-                        EventKind::ResourceWarning,
+                        EventKind::RenderModeTransition,
                         format!(
                             "gpu auto-fallback applied step={} command={} mode={} state={}",
                             index + 1,

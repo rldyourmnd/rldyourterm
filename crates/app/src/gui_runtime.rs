@@ -68,6 +68,7 @@ const OUTPUT_BATCH_MAX_BYTES: usize = MAX_FEED_BYTES_PER_CALL * 4;
 const OUTPUT_DRAIN_MAX_BYTES_PER_TICK: usize = 4 * 1024 * 1024;
 const OUTPUT_DRAIN_MAX_LATENCY: Duration = Duration::from_millis(8);
 const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 256;
+const DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY: usize = 64;
 const MAX_VIEWPORT_COLS: usize = 2_000;
 const MAX_VIEWPORT_ROWS: usize = 1_000;
 const MAX_VIEWPORT_CELLS: usize = 1_000_000;
@@ -388,6 +389,7 @@ struct GuiRuntimeApp {
     last_viewport_rows: u16,
     output_batch: Vec<u8>,
     feed_events_scratch: Vec<CoreEvent>,
+    dirty_rows_scratch: Vec<u16>,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -476,6 +478,7 @@ impl GuiRuntimeApp {
             last_viewport_rows: DEFAULT_ROWS,
             output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
             feed_events_scratch: Vec::with_capacity(FEED_EVENTS_SCRATCH_INITIAL_CAPACITY),
+            dirty_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
             exit_code: None,
             fatal_error: None,
         })
@@ -1555,6 +1558,7 @@ impl GuiRuntimeApp {
             &mut self.terminal,
             &mut self.glyph_cache,
             self.last_rendered_cursor_row,
+            &mut self.dirty_rows_scratch,
         );
         self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
         buffer
@@ -1781,6 +1785,7 @@ fn render_terminal(
     terminal: &mut TerminalState,
     glyph_cache: &mut GlyphCache,
     prev_cursor_row: Option<u16>,
+    dirty_rows_scratch: &mut Vec<u16>,
 ) {
     if width == 0 || height == 0 {
         return;
@@ -1796,7 +1801,11 @@ fn render_terminal(
     let dirty_flags = terminal.grid.dirty_rows();
     let cursor_row = terminal.cursor.row;
 
-    let mut dirty: Vec<u16> = Vec::with_capacity(visible_rows / 4 + 2);
+    let mut dirty = std::mem::take(dirty_rows_scratch);
+    dirty.clear();
+    if dirty.capacity() < (visible_rows / 4 + 2) {
+        dirty.reserve((visible_rows / 4 + 2) - dirty.capacity());
+    }
     for row in 0..visible_rows {
         let r = row as u16;
         if dirty_flags.get(row).copied().unwrap_or(false)
@@ -1809,6 +1818,7 @@ fn render_terminal(
     terminal.grid.clear_dirty_rows();
 
     if dirty.is_empty() {
+        *dirty_rows_scratch = dirty;
         return;
     }
 
@@ -1882,6 +1892,8 @@ fn render_terminal(
             draw_cursor(buffer, width, height, ccol * CELL_WIDTH, crow * CELL_HEIGHT);
         }
     }
+
+    *dirty_rows_scratch = dirty;
 }
 
 fn resolve_cell_colors(attrs: &grid::Attrs) -> (u32, u32) {
@@ -2248,7 +2260,7 @@ fn emit_gpu_auto_fallback_observability(
     );
     let event = diagnostics
         .with_correlation(correlation_id.clone())
-        .emit_kind(EventKind::ResourceWarning, diagnostics_message);
+        .emit_kind(EventKind::RenderModeTransition, diagnostics_message);
     let notice = format!(
         "[runtime] gpu auto-fallback transition-seq={transition_sequence} failure-seq={gpu_failure_sequence} render-attempt-seq={render_attempt_sequence} failure={failure_kind:?} observed-ms={observed_at_millis} correlation-id={}",
         correlation_id.as_str()
@@ -2888,7 +2900,7 @@ mod tests {
             2_500,
         );
 
-        assert_eq!(event.kind, EventKind::ResourceWarning);
+        assert_eq!(event.kind, EventKind::RenderModeTransition);
         let correlation = event
             .correlation_id
             .as_ref()
