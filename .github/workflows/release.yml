@@ -24,11 +24,12 @@ env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   CARGO_NET_RETRY: "5"
   CARGO_INCREMENTAL: "0"
+  CI_RUST_TOOLCHAIN: "1.94.0"
 
 jobs:
   preflight:
     name: Release Preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
       resolved_sha: ${{ steps.resolve.outputs.sha }}
@@ -54,12 +55,13 @@ jobs:
           echo "sha=$resolved_sha" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: clippy,rustfmt
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Validate planning consistency
         run: bash planning/system/validate_planning.sh
       - name: Quality gates
@@ -74,7 +76,7 @@ jobs:
   plan:
     name: Plan Release
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -100,11 +102,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
+          - os: macos-14
             target: x86_64-apple-darwin
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -112,29 +114,33 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          key: target-${{ matrix.target }}
       - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p rldyourterm-app
       - name: Package
         run: |
           mkdir -p release
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../release/rldyourterm-${{ matrix.target }}.tar.gz rldyourterm-app
+          tar -czf ../../../release/rldyourterm-${{ matrix.target }}.tar.gz rldyourterm-app
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: rldyourterm-${{ matrix.target }}
           path: release/
+          compression-level: 0
 
   publish:
     name: Publish Release
     needs: [preflight, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
