@@ -89,7 +89,7 @@ crates/
 - `parser/`: ANSI/escape baseline subset.
 - `cursor/`: позиция, visibility, mode flags.
 - `state/`: terminal transitions в чистом коде.
-- `scrollback/`: bounded ring with cap 50_000.
+- `scrollback/`: bounded ring with cap 50_000 lines + high byte-budget guardrail (default 512 MiB).
 
 ### ui
 
@@ -153,6 +153,7 @@ crates/
 ## 6) Пороги и ограничения v1.0
 
 - scrollback max: 50_000 lines.
+- scrollback byte budget: default 512 MiB (oldest-line eviction on overflow).
 - no multiplexer, no multi-window.
 - no mandatory file-config-first UX.
 - поддержка только baseline визуальных эффектов без heavy effects.
