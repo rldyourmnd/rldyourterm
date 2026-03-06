@@ -1390,7 +1390,7 @@ mod tests {
         for _ in 0..10_000 {
             state.feed(line);
         }
-        assert!(state.scrollback.len() > 0);
+        assert!(!state.scrollback.is_empty());
         assert!(state.scrollback.len() <= 50_000);
     }
 
@@ -1541,7 +1541,7 @@ mod tests {
             elapsed.as_secs() < 5,
             "1MB throughput took {elapsed:?} ({mb_per_sec:.1} MB/s) — regression detected"
         );
-        assert!(state.scrollback.len() > 0);
+        assert!(!state.scrollback.is_empty());
     }
 
     #[test]
