@@ -79,6 +79,7 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        if: ${{ env.CODECOV_TOKEN != '' }}
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         if: ${{ env.CODECOV_TOKEN != '' }}
         with:
