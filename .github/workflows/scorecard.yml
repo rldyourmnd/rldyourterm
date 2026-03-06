@@ -53,6 +53,10 @@ jobs:
     permissions:
       security-events: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
       - name: Download Scorecard SARIF artifact
         uses: actions/download-artifact@v4
         with:
@@ -63,7 +67,7 @@ jobs:
           jq '
             (.runs[]?.results[]?.locations[]?.physicalLocation?.artifactLocation?.uri) |=
               (if . == "no file associated with this alert"
-               then "scorecard://no-file-associated-with-this-alert"
+               then "no-file-associated-with-this-alert"
                else .
                end)
           ' results.sarif > results.normalized.sarif
