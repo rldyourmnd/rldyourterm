@@ -70,6 +70,7 @@
   - `uses:` pinning by full commit SHA is the most reliable/immutable action reference form; tags/branches are mutable.
   - workflow-level `permissions: read-all` with job-level write overrides is a documented least-privilege baseline pattern.
   - secrets cannot be referenced directly in `if`; documented pattern is mapping secret -> job env and gating steps with `if: env.SECRET != ''`.
+  - cross-job artifact handoff via `actions/upload-artifact` + `actions/download-artifact` with `needs` is a supported contract for passing generated files between jobs while keeping producer-job restrictions intact.
   - these contracts were applied to CI throughput hardening: coverage generation/install is now gated by `CODECOV_TOKEN` env presence, and workflow-level read-only permission defaults were kept explicit.
 
 Implementation alignment updated in:

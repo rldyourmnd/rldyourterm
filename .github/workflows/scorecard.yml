@@ -39,7 +39,36 @@ jobs:
           publish_results: true
           repo_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Upload raw Scorecard SARIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+
+  upload-sarif:
+    name: Upload Normalized Scorecard SARIF
+    needs: scorecard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      security-events: write
+    steps:
+      - name: Download Scorecard SARIF artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scorecard-sarif
+
+      - name: Normalize non-URI placeholder artifact paths
+        run: |
+          jq '
+            (.runs[]?.results[]?.locations[]?.physicalLocation?.artifactLocation?.uri) |=
+              (if . == "no file associated with this alert"
+               then "scorecard://no-file-associated-with-this-alert"
+               else .
+               end)
+          ' results.sarif > results.normalized.sarif
+
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: results.sarif
+          sarif_file: results.normalized.sarif
