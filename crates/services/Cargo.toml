@@ -9,5 +9,5 @@ license.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-rldyourterm-core = { path = "../core" }
-rldyourterm-foundation = { path = "../foundation" }
+rldyourterm-core.workspace = true
+rldyourterm-foundation.workspace = true

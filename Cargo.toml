@@ -47,3 +47,14 @@ fontdue = "0.9"
 pollster = "0.4"
 bytemuck = { version = "1.25", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+rldyourterm-core = { version = "0.1.0", path = "crates/core" }
+rldyourterm-services = { version = "0.1.0", path = "crates/services" }
+rldyourterm-foundation = { version = "0.1.0", path = "crates/foundation" }
+rldyourterm-foundation-platform = { version = "0.1.0", path = "crates/foundation-platform" }
+rldyourterm-ui = { version = "0.1.0", path = "crates/ui" }
+rldyourterm-render-cpu = { version = "0.1.0", path = "crates/features/render_cpu" }
+rldyourterm-render-gpu = { version = "0.1.0", path = "crates/features/render_gpu" }
+rldyourterm-font = { version = "0.1.0", path = "crates/features/font" }
+rldyourterm-settings = { version = "0.1.0", path = "crates/features/settings" }
+rldyourterm-shell-integration = { version = "0.1.0", path = "crates/features/shell_integration" }
+rldyourterm-diagnostics = { version = "0.1.0", path = "crates/features/diagnostics" }
