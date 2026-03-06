@@ -1,0 +1,35 @@
+name: Planning
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'planning/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'CLAUDE.md'
+      - '.github/workflows/planning.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'planning/**'
+      - 'AGENTS.md'
+      - 'README.md'
+      - 'CLAUDE.md'
+      - '.github/workflows/planning.yml'
+
+concurrency:
+  group: planning-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  validate-planning:
+    name: Validate Planning Consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate planning knowledge system
+        run: bash planning/system/validate_planning.sh
