@@ -34,7 +34,7 @@ jobs:
 
   check:
     name: Check (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -44,18 +44,18 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies (Linux)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo check --workspace --locked
 
   test:
     name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu, macos]
+        os: [ubuntu-24.04, macos-14]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
@@ -63,17 +63,17 @@ jobs:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu'
+        if: matrix.os == 'ubuntu-24.04'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo test --workspace --locked
 
   # ==================== Code Coverage ====================
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -89,8 +89,8 @@ jobs:
       - name: Install system dependencies
         if: ${{ env.CODECOV_TOKEN != '' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
         if: ${{ env.CODECOV_TOKEN != '' }}
         uses: taiki-e/install-action@c1305996457413b456b636a549d9f98354fd89cf
@@ -110,7 +110,7 @@ jobs:
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de
         with:
           files: lcov.info
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           token: ${{ env.CODECOV_TOKEN }}
       - name: Skip codecov upload when token is unavailable
         if: ${{ env.CODECOV_TOKEN == '' }}
@@ -120,7 +120,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -131,13 +131,13 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -151,7 +151,7 @@ jobs:
 
   msrv:
     name: MSRV (1.92)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -161,15 +161,15 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo check --workspace --locked
 
   # ==================== Security ====================
 
   audit:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -190,7 +190,8 @@ jobs:
 
   dependency-review:
     name: Dependency Review
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -200,7 +201,7 @@ jobs:
 
   deny:
     name: Cargo Deny
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -212,7 +213,8 @@ jobs:
 
   labeler:
     name: Label PR
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
