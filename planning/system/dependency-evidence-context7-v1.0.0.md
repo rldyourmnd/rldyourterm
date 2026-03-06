@@ -64,6 +64,14 @@
   - `paths-ignore` on `push`/`pull_request` skips workflow execution when all changed files match ignored globs; this is used to avoid burning CI minutes on docs-only/planning-only commits.
   - workflow `concurrency` with `cancel-in-progress: true` guarantees stale runs are canceled in favor of the newest run for the same group/ref.
 
+## 2026-03-06 CI Throughput/Supply-Chain Addendum
+
+- `GitHub Actions` (`/websites/github_en_actions`):
+  - `uses:` pinning by full commit SHA is the most reliable/immutable action reference form; tags/branches are mutable.
+  - workflow-level `permissions: read-all` with job-level write overrides is a documented least-privilege baseline pattern.
+  - secrets cannot be referenced directly in `if`; documented pattern is mapping secret -> job env and gating steps with `if: env.SECRET != ''`.
+  - these contracts were applied to CI throughput hardening: coverage generation/install is now gated by `CODECOV_TOKEN` env presence, and workflow-level read-only permission defaults were kept explicit.
+
 Implementation alignment updated in:
 - `crates/foundation-platform/src/pty.rs`
 - `crates/services/src/render_mode.rs`
