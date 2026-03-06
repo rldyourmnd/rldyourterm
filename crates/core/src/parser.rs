@@ -1342,7 +1342,7 @@ mod tests {
         // Complete the UTF-8 char, then immediately start a CSI
         let actions2 = parser.feed(&[0xAC, 0x1B, b'[']);
         assert!(
-            actions2.iter().any(|a| *a == ParserAction::Print('€')),
+            actions2.contains(&ParserAction::Print('€')),
             "€ should be printed after completion"
         );
         // Complete the CSI in a third feed
@@ -1354,7 +1354,7 @@ mod tests {
             "CSI should complete across feeds"
         );
         assert!(
-            actions3.iter().any(|a| *a == ParserAction::Print('A')),
+            actions3.contains(&ParserAction::Print('A')),
             "'A' should print after CSI"
         );
     }
