@@ -51,6 +51,8 @@ const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
 const DEFERRED_GPU_INIT_RETRY_BUDGET: u8 = 3;
+const DEFERRED_GPU_INIT_MIN_BACKOFF: Duration = Duration::from_millis(50);
+const DEFERRED_GPU_INIT_MAX_BACKOFF: Duration = Duration::from_millis(400);
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -69,6 +71,9 @@ const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 256;
 const MAX_VIEWPORT_COLS: usize = 2_000;
 const MAX_VIEWPORT_ROWS: usize = 1_000;
 const MAX_VIEWPORT_CELLS: usize = 1_000_000;
+const MAX_FRAMEBUFFER_WIDTH: u32 = 16_384;
+const MAX_FRAMEBUFFER_HEIGHT: u32 = 16_384;
+const MAX_FRAMEBUFFER_PIXELS: u64 = 67_108_864; // 8192 * 8192
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
 const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
@@ -376,7 +381,9 @@ struct GuiRuntimeApp {
     redraw_pending: bool,
     gpu_init_pending: bool,
     deferred_gpu_init_failures: u8,
+    next_gpu_init_retry_at: Option<Instant>,
     last_rendered_cursor_row: Option<u16>,
+    last_softbuffer_size: Option<PhysicalSize<u32>>,
     last_viewport_cols: u16,
     last_viewport_rows: u16,
     output_batch: Vec<u8>,
@@ -462,7 +469,9 @@ impl GuiRuntimeApp {
             redraw_pending: true,
             gpu_init_pending: initial_mode != RenderMode::Cpu,
             deferred_gpu_init_failures: 0,
+            next_gpu_init_retry_at: None,
             last_rendered_cursor_row: None,
+            last_softbuffer_size: None,
             last_viewport_cols: DEFAULT_COLS,
             last_viewport_rows: DEFAULT_ROWS,
             output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
@@ -549,7 +558,7 @@ impl GuiRuntimeApp {
             "bootstrap: softbuffer context created, GPU init deferred to event loop"
         );
 
-        self.window_size = window.inner_size();
+        self.window_size = cap_framebuffer_extent(window.inner_size());
         self.window_id = Some(window.id());
         self.window_control = Some(window_control);
         self.window = Some(window);
@@ -601,6 +610,7 @@ impl GuiRuntimeApp {
         );
         // 1. Drop softbuffer surface (holds Arc<Window>)
         self.surface = None;
+        self.last_softbuffer_size = None;
         // 2. Drop softbuffer context (holds Arc<Window>)
         self._context = None;
         // 3. Drop GPU backend which holds wgpu::Surface<'static> -> Arc<Window>
@@ -611,6 +621,7 @@ impl GuiRuntimeApp {
         self.window_id = None;
         self.window = None;
         self.sync_deferred_gpu_init_state();
+        self.next_gpu_init_retry_at = None;
         debug!("window resources released");
     }
 
@@ -663,16 +674,26 @@ impl GuiRuntimeApp {
     fn try_deferred_gpu_init(&mut self, event_loop: &ActiveEventLoop) {
         if self.ui_runtime.active_render_path() == ActiveRenderPath::Cpu {
             self.gpu_init_pending = false;
+            self.next_gpu_init_retry_at = None;
             return;
         }
+        if let Some(retry_at) = self.next_gpu_init_retry_at
+            && Instant::now() < retry_at
+        {
+            return;
+        }
+        self.next_gpu_init_retry_at = None;
+
         let Some(window) = self.window.clone() else {
             return;
         };
-        let w = window.inner_size().width;
-        let h = window.inner_size().height;
+        let size = cap_framebuffer_extent(window.inner_size());
+        let w = size.width;
+        let h = size.height;
 
         debug!("deferred GPU init: dropping softbuffer for Wayland surface exclusivity");
         self.surface = None;
+        self.last_softbuffer_size = None;
         self._context = None;
 
         let attempt = self.deferred_gpu_init_failures.saturating_add(1);
@@ -705,11 +726,14 @@ impl GuiRuntimeApp {
 
                 if attempt < DEFERRED_GPU_INIT_RETRY_BUDGET {
                     self.gpu_init_pending = true;
+                    let backoff = deferred_gpu_init_backoff(attempt);
+                    self.next_gpu_init_retry_at = Some(Instant::now() + backoff);
                     self.queue_redraw();
                     return;
                 }
 
                 self.gpu_init_pending = false;
+                self.next_gpu_init_retry_at = None;
                 let observed_at_millis = self
                     .started_at
                     .elapsed()
@@ -795,10 +819,15 @@ impl GuiRuntimeApp {
             }
             self.gpu_init_pending = false;
             self.deferred_gpu_init_failures = 0;
+            self.next_gpu_init_retry_at = None;
             return;
         }
 
         self.gpu_init_pending = !self.gpu_renderer.is_initialized();
+        if !self.gpu_init_pending {
+            self.next_gpu_init_retry_at = None;
+            self.deferred_gpu_init_failures = 0;
+        }
     }
 
     fn emit_runtime_notice(&mut self, message: &str) {
@@ -1508,9 +1537,13 @@ impl GuiRuntimeApp {
 
         let nz_width = NonZeroU32::new(width).ok_or_else(|| anyhow!("zero width is invalid"))?;
         let nz_height = NonZeroU32::new(height).ok_or_else(|| anyhow!("zero height is invalid"))?;
-        surface
-            .resize(nz_width, nz_height)
-            .map_err(|error| anyhow!("failed to resize softbuffer surface: {error}"))?;
+        let target_size = PhysicalSize::new(width, height);
+        if self.last_softbuffer_size != Some(target_size) {
+            surface
+                .resize(nz_width, nz_height)
+                .map_err(|error| anyhow!("failed to resize softbuffer surface: {error}"))?;
+            self.last_softbuffer_size = Some(target_size);
+        }
 
         let mut buffer = surface
             .buffer_mut()
@@ -1609,11 +1642,25 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Moved);
             }
             WindowEvent::Resized(size) => {
-                self.window_size = size;
+                let capped_size = cap_framebuffer_extent(size);
+                if capped_size != size {
+                    warn!(
+                        requested_width = size.width,
+                        requested_height = size.height,
+                        capped_width = capped_size.width,
+                        capped_height = capped_size.height,
+                        max_width = MAX_FRAMEBUFFER_WIDTH,
+                        max_height = MAX_FRAMEBUFFER_HEIGHT,
+                        max_pixels = MAX_FRAMEBUFFER_PIXELS,
+                        "window framebuffer exceeded runtime safety limits; dimensions were clamped"
+                    );
+                }
+                self.window_size = capped_size;
                 if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
                     && self.gpu_renderer.is_initialized()
                 {
-                    self.gpu_renderer.resize(size.width, size.height);
+                    self.gpu_renderer
+                        .resize(self.window_size.width, self.window_size.height);
                 }
                 self.update_viewport_geometry(event_loop);
                 self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Resized);
@@ -1621,7 +1668,21 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
-                    self.window_size = window.inner_size();
+                    let raw_size = window.inner_size();
+                    let capped_size = cap_framebuffer_extent(raw_size);
+                    if capped_size != raw_size {
+                        warn!(
+                            requested_width = raw_size.width,
+                            requested_height = raw_size.height,
+                            capped_width = capped_size.width,
+                            capped_height = capped_size.height,
+                            max_width = MAX_FRAMEBUFFER_WIDTH,
+                            max_height = MAX_FRAMEBUFFER_HEIGHT,
+                            max_pixels = MAX_FRAMEBUFFER_PIXELS,
+                            "scale-factor framebuffer exceeded runtime safety limits; dimensions were clamped"
+                        );
+                    }
+                    self.window_size = capped_size;
                     if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
                         && self.gpu_renderer.is_initialized()
                     {
@@ -1665,6 +1726,13 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         }
         if self.fatal_error.is_some() {
             event_loop.exit();
+            return;
+        }
+        if self.gpu_init_pending
+            && let Some(retry_at) = self.next_gpu_init_retry_at
+            && Instant::now() < retry_at
+        {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
             return;
         }
 
@@ -2316,6 +2384,38 @@ fn cap_terminal_geometry(raw_cols: usize, raw_rows: usize) -> (u16, u16) {
     (cols as u16, rows as u16)
 }
 
+fn cap_framebuffer_extent(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
+    let mut width = size.width.clamp(1, MAX_FRAMEBUFFER_WIDTH);
+    let mut height = size.height.clamp(1, MAX_FRAMEBUFFER_HEIGHT);
+
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_FRAMEBUFFER_PIXELS {
+        let scale = ((MAX_FRAMEBUFFER_PIXELS as f64) / (pixels as f64)).sqrt();
+        width = ((width as f64 * scale).floor() as u32).clamp(1, MAX_FRAMEBUFFER_WIDTH);
+        height = ((height as f64 * scale).floor() as u32).clamp(1, MAX_FRAMEBUFFER_HEIGHT);
+
+        while u64::from(width) * u64::from(height) > MAX_FRAMEBUFFER_PIXELS {
+            if width >= height && width > 1 {
+                width = width.saturating_sub(1);
+            } else if height > 1 {
+                height = height.saturating_sub(1);
+            } else {
+                break;
+            }
+        }
+    }
+
+    PhysicalSize::new(width, height)
+}
+
+fn deferred_gpu_init_backoff(attempt: u8) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(3);
+    let multiplier = 1_u32 << exponent;
+    DEFERRED_GPU_INIT_MIN_BACKOFF
+        .saturating_mul(multiplier)
+        .min(DEFERRED_GPU_INIT_MAX_BACKOFF)
+}
+
 fn should_flush_output_batch(current_batch_len: usize, incoming_chunk_len: usize) -> bool {
     current_batch_len > 0
         && current_batch_len.saturating_add(incoming_chunk_len) > OUTPUT_BATCH_MAX_BYTES
@@ -2353,15 +2453,17 @@ fn load_app_icon() -> Option<Icon> {
 mod tests {
     use super::{
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
-        MAX_FEED_BYTES_PER_CALL, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS,
+        MAX_FEED_BYTES_PER_CALL, MAX_FRAMEBUFFER_HEIGHT, MAX_FRAMEBUFFER_PIXELS,
+        MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS,
         MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES, OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
         OUTPUT_DRAIN_MAX_LATENCY, PtyBoundaryPolicyDecision,
-        cadence_resync_command_for_monitor_event, cap_paste_text, cap_terminal_geometry,
-        classify_pty_boundary_failure, dispatch_gpu_failure_command,
-        dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability,
-        encode_winit_key_event, grid, is_runtime_palette_shortcut_key,
-        output_drain_budget_exhausted, read_clipboard_text_for_paste, resolve_cell_colors,
-        sample_monitor_refresh_rate_millihz, should_flush_output_batch, terminal_feed_chunks,
+        cadence_resync_command_for_monitor_event, cap_framebuffer_extent, cap_paste_text,
+        cap_terminal_geometry, classify_pty_boundary_failure, deferred_gpu_init_backoff,
+        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+        emit_gpu_auto_fallback_observability, encode_winit_key_event, grid,
+        is_runtime_palette_shortcut_key, output_drain_budget_exhausted,
+        read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
+        should_flush_output_batch, terminal_feed_chunks,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2378,6 +2480,7 @@ mod tests {
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
     use std::time::Duration;
+    use winit::dpi::PhysicalSize;
     use winit::keyboard::{Key, ModifiersState};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2519,6 +2622,34 @@ mod tests {
         assert!(cols as usize <= MAX_VIEWPORT_COLS);
         assert!(rows as usize <= MAX_VIEWPORT_ROWS);
         assert!((cols as usize) * (rows as usize) <= MAX_VIEWPORT_CELLS);
+    }
+
+    #[test]
+    fn framebuffer_extent_cap_preserves_small_dimensions() {
+        let capped = cap_framebuffer_extent(PhysicalSize::new(1920, 1080));
+        assert_eq!(capped, PhysicalSize::new(1920, 1080));
+    }
+
+    #[test]
+    fn framebuffer_extent_cap_enforces_axis_and_pixel_limits() {
+        let capped = cap_framebuffer_extent(PhysicalSize::new(100_000, 100_000));
+        assert!(capped.width <= MAX_FRAMEBUFFER_WIDTH);
+        assert!(capped.height <= MAX_FRAMEBUFFER_HEIGHT);
+        assert!(u64::from(capped.width) * u64::from(capped.height) <= MAX_FRAMEBUFFER_PIXELS);
+    }
+
+    #[test]
+    fn deferred_gpu_init_backoff_is_bounded_and_monotonic() {
+        let first = deferred_gpu_init_backoff(1);
+        let second = deferred_gpu_init_backoff(2);
+        let third = deferred_gpu_init_backoff(3);
+        let fourth = deferred_gpu_init_backoff(4);
+        let saturated = deferred_gpu_init_backoff(8);
+
+        assert!(first <= second);
+        assert!(second <= third);
+        assert!(third <= fourth);
+        assert_eq!(fourth, saturated);
     }
 
     #[test]
