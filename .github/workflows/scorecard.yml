@@ -11,7 +11,7 @@ on:
       - '**/*.md'
       - 'assets/**'
   schedule:
-    - cron: '0 0 * * 0'  # Weekly at 00:00 UTC
+    - cron: '0 0 * * 0' # Weekly at 00:00 UTC
   workflow_dispatch:
 
 permissions: read-all
@@ -24,43 +24,19 @@ jobs:
     permissions:
       actions: read
       contents: read
-      id-token: write
       security-events: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-      
+
       - name: Run Scorecard
-        uses: ossf/scorecard-action@v2.4.3
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: true
+          publish_results: false
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload raw Scorecard SARIF artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: scorecard-sarif
-          path: results.sarif
-
-  upload-sarif:
-    name: Upload Normalized Scorecard SARIF
-    needs: scorecard
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      security-events: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Download Scorecard SARIF artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: scorecard-sarif
 
       - name: Normalize non-URI placeholder artifact paths
         run: |
@@ -73,6 +49,6 @@ jobs:
           ' results.sarif > results.normalized.sarif
 
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4
         with:
           sarif_file: results.normalized.sarif
