@@ -1,0 +1,4 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-31
+reason = "Transitive informational(unmaintained) advisory via wgpu-hal -> metal on macOS; tracked in SECURITY.md and re-evaluated on dependency refresh."
