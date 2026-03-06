@@ -6,6 +6,7 @@ use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation_platform::clipboard::PlatformClipboard;
 use rldyourterm_render_cpu::CpuRenderer;
+use rldyourterm_services::TerminalState;
 use rldyourterm_services::render_mode::{
     ActiveRenderPath, GpuFailureKind, RenderMode, RenderTransitionReason,
 };
@@ -298,7 +299,7 @@ fn shell_availability() -> ShellAvailability {
 fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer) {
     match ui.active_render_path() {
         ActiveRenderPath::Cpu => {
-            let placeholder = rldyourterm_core::state::TerminalState::new(120, 30, 1);
+            let placeholder = TerminalState::new(120, 30, 1);
             let _ = cpu_renderer.render_full(&placeholder);
         }
         ActiveRenderPath::Gpu => {

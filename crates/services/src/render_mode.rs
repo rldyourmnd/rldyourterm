@@ -1,8 +1,22 @@
 use std::time::Duration;
 
 pub use rldyourterm_core::render_mode::RenderMode;
-pub use rldyourterm_foundation::error::GpuFailureKind;
 use tracing::{info, warn};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuFailureKind {
+    DeviceLost,
+    SurfaceError,
+    SubmitError,
+    SwapchainOutOfDate,
+}
+
+impl GpuFailureKind {
+    #[must_use]
+    pub const fn is_immediate_fallback(self) -> bool {
+        matches!(self, Self::DeviceLost)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveRenderPath {
