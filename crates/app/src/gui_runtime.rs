@@ -60,6 +60,8 @@ const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2)
 const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
 const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
 const PTY_OUTPUT_QUEUE_CAPACITY: usize = 256;
+const OUTPUT_BATCH_INITIAL_CAPACITY: usize = 64 * 1024;
+const OUTPUT_BATCH_MAX_BYTES: usize = 1024 * 1024;
 const MAX_VIEWPORT_COLS: usize = 2_000;
 const MAX_VIEWPORT_ROWS: usize = 1_000;
 const MAX_VIEWPORT_CELLS: usize = 1_000_000;
@@ -371,6 +373,7 @@ struct GuiRuntimeApp {
     last_rendered_cursor_row: Option<u16>,
     last_viewport_cols: u16,
     last_viewport_rows: u16,
+    output_batch: Vec<u8>,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -452,6 +455,7 @@ impl GuiRuntimeApp {
             last_rendered_cursor_row: None,
             last_viewport_cols: DEFAULT_COLS,
             last_viewport_rows: DEFAULT_ROWS,
+            output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
             exit_code: None,
             fatal_error: None,
         })
@@ -849,13 +853,34 @@ impl GuiRuntimeApp {
         self.dispatch_terminal_responses(&events);
     }
 
+    fn flush_output_batch(&mut self, batch: &mut Vec<u8>) {
+        if batch.is_empty() {
+            return;
+        }
+        self.apply_output_bytes(batch.as_slice());
+        batch.clear();
+    }
+
+    fn append_output_chunk_to_batch(&mut self, batch: &mut Vec<u8>, data: &[u8]) {
+        if data.len() >= OUTPUT_BATCH_MAX_BYTES {
+            self.flush_output_batch(batch);
+            self.apply_output_bytes(data);
+            return;
+        }
+        if should_flush_output_batch(batch.len(), data.len()) {
+            self.flush_output_batch(batch);
+        }
+        batch.extend_from_slice(data);
+    }
+
     fn drain_output_queue(&mut self, event_loop: &ActiveEventLoop) {
         let mut drained_any = false;
+        let mut batch = std::mem::take(&mut self.output_batch);
 
         loop {
             while let Ok(data) = self.output_rx.try_recv() {
                 drained_any = true;
-                self.apply_output_bytes(&data);
+                self.append_output_chunk_to_batch(&mut batch, &data);
             }
 
             // Release the pending flag only after we observed queue empty.
@@ -866,12 +891,18 @@ impl GuiRuntimeApp {
                 Ok(data) => {
                     self.output_event_pending.store(true, Ordering::Release);
                     drained_any = true;
-                    self.apply_output_bytes(&data);
+                    self.append_output_chunk_to_batch(&mut batch, &data);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
+
+        self.flush_output_batch(&mut batch);
+        if batch.capacity() > OUTPUT_BATCH_MAX_BYTES * 2 {
+            batch.shrink_to(OUTPUT_BATCH_INITIAL_CAPACITY);
+        }
+        self.output_batch = batch;
 
         if !drained_any {
             return;
@@ -2237,6 +2268,11 @@ fn cap_terminal_geometry(raw_cols: usize, raw_rows: usize) -> (u16, u16) {
     (cols as u16, rows as u16)
 }
 
+fn should_flush_output_batch(current_batch_len: usize, incoming_chunk_len: usize) -> bool {
+    current_batch_len > 0
+        && current_batch_len.saturating_add(incoming_chunk_len) > OUTPUT_BATCH_MAX_BYTES
+}
+
 /// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
 fn load_app_icon() -> Option<Icon> {
     let img = match image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png) {
@@ -2267,6 +2303,7 @@ mod tests {
         dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability,
         encode_winit_key_event, grid, is_runtime_palette_shortcut_key,
         read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
+        should_flush_output_batch,
     };
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
@@ -2423,6 +2460,13 @@ mod tests {
         assert!(cols as usize <= MAX_VIEWPORT_COLS);
         assert!(rows as usize <= MAX_VIEWPORT_ROWS);
         assert!((cols as usize) * (rows as usize) <= MAX_VIEWPORT_CELLS);
+    }
+
+    #[test]
+    fn output_batch_flush_policy_only_triggers_on_overflow_with_existing_batch() {
+        assert!(!should_flush_output_batch(0, 32));
+        assert!(!should_flush_output_batch(128, 256));
+        assert!(should_flush_output_batch(1024 * 1024 - 64, 128));
     }
 
     #[test]
