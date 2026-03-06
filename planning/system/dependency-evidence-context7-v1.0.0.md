@@ -2,7 +2,7 @@
 
 ## Snapshot Metadata
 
-- Retrieval date: 2026-03-02.
+- Retrieval date: 2026-03-06.
 - Evidence source: Context7 (official docs registries only).
 - Scope: boundary dependencies defined in `planning/stack/*`.
 
@@ -36,9 +36,23 @@
   - `Surface::resize`, `buffer_mut`, `present` are sufficient for deterministic redraw loop in GUI MVP path.
   - GUI bootstrap/present failures remain bounded by deterministic fallback to TTY runtime with explicit warning events.
 
+## 2026-03-06 Runtime Revalidation Snapshot
+
+- `wgpu` (`/websites/rs_wgpu`):
+  - `RequestAdapterOptions.power_preference` is the adapter selection hint; runtime uses `HighPerformance` for primary low-latency interactive path.
+  - `DeviceDescriptor.memory_hints` supports `Performance | MemoryUsage | Manual`; runtime uses `MemoryHints::Performance`.
+  - `SurfaceConfiguration.present_mode` auto modes (`AutoVsync` / `AutoNoVsync`) are explicitly documented as graceful fallback variants.
+  - `desired_maximum_frame_latency` is a backend hint; value `1` is valid low-latency configuration for GUI-like responsiveness.
+- `winit` (`/websites/rs_winit_winit`):
+  - `WindowEvent::RedrawRequested` includes OS invalidation and explicit `request_redraw()`; duplicate redraw requests are coalesced, keeping event-driven pacing deterministic.
+- `portable-pty` (`/websites/rs_portable-pty`):
+  - `take_writer()` remains single-acquire; `try_clone_reader()` remains the intended read-side duplication path.
+  - `try_wait`/`wait` semantics remain consistent with non-blocking poll + blocking termination wait.
+
 Implementation alignment updated in:
 - `crates/foundation-platform/src/pty.rs`
 - `crates/services/src/render_mode.rs`
+- `crates/features/render_gpu/src/lib.rs`
 - `crates/ui/src/lib.rs`
 - `crates/app/src/main.rs`
 - `crates/app/src/pty_runtime.rs`
