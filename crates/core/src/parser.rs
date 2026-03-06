@@ -157,27 +157,43 @@ pub struct Parser {
 
 impl Parser {
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<ParserAction> {
-        let mut actions = Vec::with_capacity(bytes.len() / 2);
+        let mut actions = Vec::new();
+        self.feed_into(bytes, &mut actions);
+        actions
+    }
+
+    pub fn feed_into(&mut self, bytes: &[u8], actions: &mut Vec<ParserAction>) {
+        actions.clear();
+        let expected = bytes.len() / 2;
+        if actions.capacity() < expected {
+            actions.reserve(expected - actions.capacity());
+        }
+
         for &byte in bytes {
             match self.state {
-                ParseState::Ground => self.handle_ground_byte(byte, &mut actions),
-                ParseState::Escape => self.handle_escape_byte(byte, &mut actions),
-                ParseState::Csi => self.handle_csi_byte(byte, &mut actions),
-                ParseState::CsiDiscard => self.handle_csi_discard_byte(byte, &mut actions),
-                ParseState::Osc => self.handle_osc_byte(byte, &mut actions),
-                ParseState::OscDiscard => self.handle_osc_discard_byte(byte, &mut actions),
-                ParseState::OscEsc => self.handle_osc_esc_byte(byte, &mut actions),
+                ParseState::Ground => self.handle_ground_byte(byte, actions),
+                ParseState::Escape => self.handle_escape_byte(byte, actions),
+                ParseState::Csi => self.handle_csi_byte(byte, actions),
+                ParseState::CsiDiscard => self.handle_csi_discard_byte(byte, actions),
+                ParseState::Osc => self.handle_osc_byte(byte, actions),
+                ParseState::OscDiscard => self.handle_osc_discard_byte(byte, actions),
+                ParseState::OscEsc => self.handle_osc_esc_byte(byte, actions),
                 ParseState::Dcs => self.handle_dcs_byte(byte),
-                ParseState::DcsEsc => self.handle_dcs_esc_byte(byte, &mut actions),
+                ParseState::DcsEsc => self.handle_dcs_esc_byte(byte, actions),
             }
         }
-        self.flush_text_buffer(&mut actions, true);
-        actions
+        self.flush_text_buffer(actions, true);
     }
 
     pub fn resync_after_truncation(&mut self) -> Vec<ParserAction> {
         let mut actions = Vec::new();
-        self.flush_text_buffer(&mut actions, false);
+        self.resync_after_truncation_into(&mut actions);
+        actions
+    }
+
+    pub fn resync_after_truncation_into(&mut self, actions: &mut Vec<ParserAction>) {
+        actions.clear();
+        self.flush_text_buffer(actions, false);
 
         match self.state {
             ParseState::Ground => {}
@@ -191,7 +207,7 @@ impl Parser {
                     self.csi_sequence_string(&self.csi_buffer),
                 ));
             }
-            ParseState::CsiDiscard => self.emit_oversized_csi(&mut actions),
+            ParseState::CsiDiscard => self.emit_oversized_csi(actions),
             ParseState::Osc | ParseState::OscDiscard | ParseState::OscEsc => {
                 // Discard incomplete OSC
             }
@@ -201,7 +217,6 @@ impl Parser {
         }
 
         self.reset_state_to_ground();
-        actions
     }
 
     fn handle_ground_byte(&mut self, byte: u8, actions: &mut Vec<ParserAction>) {
@@ -478,7 +493,7 @@ impl Parser {
             b'r' => {
                 let top = position_param(&parsed, 0);
                 let bottom = if parsed.len() >= 2 {
-                    Some(position_param(&parsed, 1))
+                    parsed.get(1).flatten().map(|value| value - 1)
                 } else {
                     None
                 };
@@ -963,6 +978,19 @@ mod tests {
             vec![ParserAction::SetScrollRegion {
                 top: 4,
                 bottom: Some(19)
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_scroll_region_with_empty_bottom_as_none() {
+        let mut parser = Parser::default();
+        let actions = parser.feed(b"\x1b[5;r");
+        assert_eq!(
+            actions,
+            vec![ParserAction::SetScrollRegion {
+                top: 4,
+                bottom: None
             }]
         );
     }

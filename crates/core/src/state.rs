@@ -8,6 +8,7 @@ use crate::{
 
 pub const MAX_FEED_BYTES_PER_CALL: usize = 64 * 1024;
 const FEED_CHUNK_BYTES: usize = 4 * 1024;
+const PARSER_ACTIONS_SCRATCH_INITIAL_CAPACITY: usize = FEED_CHUNK_BYTES / 2;
 
 #[derive(Debug)]
 struct AlternateScreenState {
@@ -25,12 +26,14 @@ pub struct TerminalState {
     pub cursor: Cursor,
     pub scrollback: Scrollback,
     parser: Parser,
+    parser_actions_scratch: Vec<ParserAction>,
     pub pen: Attrs,
     saved_cursor: Option<(Cursor, Attrs)>,
     scroll_region: Option<(u16, u16)>,
     alternate_screen: Option<Box<AlternateScreenState>>,
     window_title: String,
     pub bracketed_paste: bool,
+    pub application_keypad_mode: bool,
     pub application_cursor_keys: bool,
     pub auto_wrap: bool,
 }
@@ -42,12 +45,14 @@ impl TerminalState {
             cursor: Cursor::new(),
             scrollback: Scrollback::new(scrollback_cap),
             parser: Parser::default(),
+            parser_actions_scratch: Vec::with_capacity(PARSER_ACTIONS_SCRATCH_INITIAL_CAPACITY),
             pen: Attrs::default(),
             saved_cursor: None,
             scroll_region: None,
             alternate_screen: None,
             window_title: String::new(),
             bracketed_paste: false,
+            application_keypad_mode: false,
             application_cursor_keys: false,
             auto_wrap: true,
         }
@@ -63,6 +68,10 @@ impl TerminalState {
 
     pub fn application_cursor_keys_enabled(&self) -> bool {
         self.application_cursor_keys
+    }
+
+    pub fn application_keypad_mode_enabled(&self) -> bool {
+        self.application_keypad_mode
     }
 
     pub fn auto_wrap_enabled(&self) -> bool {
@@ -101,16 +110,23 @@ impl TerminalState {
         let accepted = bytes.len().min(MAX_FEED_BYTES_PER_CALL);
 
         for chunk in bytes[..accepted].chunks(FEED_CHUNK_BYTES) {
-            for action in self.parser.feed(chunk) {
+            let mut parser_actions = std::mem::take(&mut self.parser_actions_scratch);
+            self.parser.feed_into(chunk, &mut parser_actions);
+            for action in parser_actions.drain(..) {
                 self.apply_action_into(action, events);
             }
+            self.parser_actions_scratch = parser_actions;
         }
 
         let dropped = bytes.len() - accepted;
         if dropped > 0 {
-            for action in self.parser.resync_after_truncation() {
+            let mut parser_actions = std::mem::take(&mut self.parser_actions_scratch);
+            self.parser
+                .resync_after_truncation_into(&mut parser_actions);
+            for action in parser_actions.drain(..) {
                 self.apply_action_into(action, events);
             }
+            self.parser_actions_scratch = parser_actions;
             events.push(CoreEvent::IngestDegraded {
                 reason: IngestDegradeReason::InputFeedTooLarge,
                 accepted,
@@ -208,10 +224,8 @@ impl TerminalState {
                 self.apply_carriage_return(events);
                 self.apply_line_feed(events);
             }
-            ParserAction::ApplicationKeypadMode(_enabled) => {
-                // Acknowledged but no terminal state change needed.
-                // Keypad mode affects key encoding on the input side,
-                // which is handled in gui_runtime's encode_winit_key_event.
+            ParserAction::ApplicationKeypadMode(enabled) => {
+                self.application_keypad_mode = enabled;
             }
             ParserAction::SetWindowTitle(title) => {
                 if self.window_title != title {
@@ -1200,6 +1214,16 @@ mod tests {
         assert!(state.application_cursor_keys_enabled());
         let _ = state.feed(b"\x1b[?1l");
         assert!(!state.application_cursor_keys_enabled());
+    }
+
+    #[test]
+    fn application_keypad_mode_toggle() {
+        let mut state = TerminalState::new(10, 2, 5);
+        assert!(!state.application_keypad_mode_enabled());
+        let _ = state.feed(b"\x1b=");
+        assert!(state.application_keypad_mode_enabled());
+        let _ = state.feed(b"\x1b>");
+        assert!(!state.application_keypad_mode_enabled());
     }
 
     #[test]
