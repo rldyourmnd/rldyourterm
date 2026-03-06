@@ -1,27 +1,90 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or commit SHA)"
+        required: true
+        default: "main"
+        type: string
+      tag:
+        description: "Release tag name (example: v1.0.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.workflow }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  CARGO_NET_RETRY: "5"
+  CARGO_INCREMENTAL: "0"
+
 jobs:
-  plan:
-    name: Plan Release
+  preflight:
+    name: Release Preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
-      releases: ${{ steps.plan.outputs.releases }}
+      resolved_sha: ${{ steps.resolve.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - id: resolve
+        name: Validate ref/tag integrity
+        run: |
+          set -euo pipefail
+          resolved_sha="$(git rev-parse HEAD)"
+
+          if git rev-parse -q --verify "refs/tags/${{ inputs.tag }}" >/dev/null; then
+            tag_sha="$(git rev-list -n 1 "refs/tags/${{ inputs.tag }}")"
+            if [ "$tag_sha" != "$resolved_sha" ]; then
+              echo "tag '${{ inputs.tag }}' points to $tag_sha but selected ref resolves to $resolved_sha" >&2
+              exit 1
+            fi
+          fi
+
+          echo "sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2.8.2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+      - name: Validate planning consistency
+        run: bash planning/system/validate_planning.sh
+      - name: Quality gates
+        run: |
+          cargo check --workspace --locked
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo fmt --all -- --check
+      - name: Compatibility gate
+        run: bash scripts/mvp/run_matrix.sh 3
+
+  plan:
+    name: Plan Release
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
       - name: Install cargo-dist
         uses: cargo-bins/cargo-binstall@v1.17.6
         with:
           bins: cargo-dist
-      - id: plan
+      - name: Generate dist plan
         run: cargo dist plan --output-format=json > dist-plan.json
       - uses: actions/upload-artifact@v4
         with:
@@ -30,8 +93,9 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: plan
+    needs: [preflight, plan]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,17 +108,19 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2.8.2
       - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p rldyourterm-app
+        run: cargo build --release --locked --target ${{ matrix.target }} -p rldyourterm-app
       - name: Package
         run: |
           mkdir -p release
@@ -67,8 +133,9 @@ jobs:
 
   publish:
     name: Publish Release
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -80,5 +147,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ needs.preflight.outputs.resolved_sha }}
           files: artifacts/*
           generate_release_notes: true

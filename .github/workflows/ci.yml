@@ -24,6 +24,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   CARGO_NET_RETRY: "5"
+  CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-D warnings"
 
 jobs:
@@ -41,7 +42,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
-      - run: cargo check --workspace
+      - run: cargo check --workspace --locked
 
   test:
     name: Test (${{ matrix.os }})
@@ -60,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
-      - run: cargo test --workspace
+      - run: cargo test --workspace --locked
 
   # ==================== Code Coverage ====================
 
@@ -73,32 +74,32 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-        if: ${{ env.CODECOV_TOKEN != '' }}
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2.8.2
-        if: ${{ env.CODECOV_TOKEN != '' }}
       - name: Install system dependencies
-        if: ${{ env.CODECOV_TOKEN != '' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
-        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
-        if: ${{ env.CODECOV_TOKEN != '' }}
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
       - name: Upload to codecov
         if: ${{ env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           token: ${{ env.CODECOV_TOKEN }}
       - name: Skip codecov upload when token is unavailable
         if: ${{ env.CODECOV_TOKEN == '' }}
-        run: echo "CODECOV_TOKEN is not configured; skipping coverage generation and upload."
+        run: echo "CODECOV_TOKEN is not configured; coverage artifact was generated locally, codecov upload skipped."
 
   # ==================== Lint & Format ====================
 
@@ -116,7 +117,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   fmt:
     name: Format
@@ -145,7 +146,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
-      - run: cargo check --workspace
+      - run: cargo check --workspace --locked
 
   # ==================== Security ====================
 
