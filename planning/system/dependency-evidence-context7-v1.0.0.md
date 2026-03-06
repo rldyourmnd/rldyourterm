@@ -60,6 +60,9 @@
   - `MasterPty::resize` updates kernel winsize and signals child process; runtime keeps resize as explicit boundary event.
   - `take_writer` is invalid more than once and dropping writer sends EOF; runtime preserves single-writer invariant for crash-intolerant session continuity.
   - `Child::try_wait` (non-blocking) and `wait` (blocking) plus `kill/clone_killer` semantics support bounded shutdown/recovery orchestration.
+- `GitHub Actions` (`/websites/github_en_actions`):
+  - `paths-ignore` on `push`/`pull_request` skips workflow execution when all changed files match ignored globs; this is used to avoid burning CI minutes on docs-only/planning-only commits.
+  - workflow `concurrency` with `cancel-in-progress: true` guarantees stale runs are canceled in favor of the newest run for the same group/ref.
 
 Implementation alignment updated in:
 - `crates/foundation-platform/src/pty.rs`
