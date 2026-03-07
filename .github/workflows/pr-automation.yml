@@ -23,12 +23,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          status="$(gh api repos/${{ github.repository }} --jq '.security_and_analysis.dependency_graph.status // "unknown"' || echo unknown)"
-          if [ "$status" = "enabled" ]; then
+          # Probe the same endpoint used by dependency review with the current PR range.
+          # Repository metadata omits dependency_graph status in some contexts/tokens.
+          if gh api \
+            "repos/${{ github.repository }}/dependency-graph/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
+            --silent >/dev/null 2>&1; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Dependency graph status is '$status'; dependency review will be skipped."
+            echo "Dependency graph compare API is unavailable for this token/repository; dependency review will be skipped."
           fi
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
