@@ -22,7 +22,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      security-events: write
+      id-token: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -33,21 +33,5 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: false
+          publish_results: true
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Normalize non-URI placeholder artifact paths
-        run: |
-          jq '
-            (.runs[]?.results[]?.locations[]?.physicalLocation?.artifactLocation?.uri) |=
-              (if . == "no file associated with this alert"
-               then "no-file-associated-with-this-alert"
-               else .
-               end)
-          ' results.sarif > results.normalized.sarif
-
-      - name: Upload SARIF results
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4
-        with:
-          sarif_file: results.normalized.sarif
