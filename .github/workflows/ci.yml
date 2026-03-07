@@ -230,24 +230,28 @@ jobs:
       - name: Validate fan-out job results
         run: |
           set -euo pipefail
-          results=(
-            "${{ needs.check.result }}"
-            "${{ needs.test.result }}"
-            "${{ needs.coverage.result }}"
-            "${{ needs.clippy.result }}"
-            "${{ needs.fmt.result }}"
-            "${{ needs.msrv.result }}"
-            "${{ needs.audit.result }}"
-            "${{ needs.deny.result }}"
-          )
+          require_success() {
+            local name="$1"
+            local result="$2"
+            if [ "$result" != "success" ]; then
+              echo "CI gate blocked: '$name' must be success, got '$result'" >&2
+              exit 1
+            fi
+          }
 
-          for result in "${results[@]}"; do
-            case "${result}" in
-              success|skipped)
-                ;;
-              *)
-                echo "CI gate blocked by upstream job result: ${result}" >&2
-                exit 1
-                ;;
-            esac
-          done
+          require_success "check" "${{ needs.check.result }}"
+          require_success "test" "${{ needs.test.result }}"
+          require_success "clippy" "${{ needs.clippy.result }}"
+          require_success "fmt" "${{ needs.fmt.result }}"
+          require_success "msrv" "${{ needs.msrv.result }}"
+          require_success "audit" "${{ needs.audit.result }}"
+          require_success "deny" "${{ needs.deny.result }}"
+
+          case "${{ needs.coverage.result }}" in
+            success|skipped)
+              ;;
+            *)
+              echo "CI gate blocked: 'coverage' must be success or skipped, got '${{ needs.coverage.result }}'" >&2
+              exit 1
+              ;;
+          esac
