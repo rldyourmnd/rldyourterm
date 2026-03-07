@@ -1,0 +1,7 @@
+# Default ownership.
+* @rldyourmnd
+
+# Security- and runtime-sensitive paths.
+.github/workflows/* @rldyourmnd
+scripts/* @rldyourmnd
+crates/** @rldyourmnd
