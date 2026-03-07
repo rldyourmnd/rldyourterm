@@ -45,6 +45,7 @@ cargo check -p rldyourterm-app
 
 - Required merge gates: `CI`, `Planning`, `CodeQL`, `Scorecard`.
 - `CI` gate is strict for critical fan-out jobs (`check/test/clippy/fmt/msrv/audit/deny` must be `success`); only `coverage` may be `skipped` when disabled.
+- `CodeQL` publishes Rust extraction diagnostics artifact and now fails only on actionable extraction diagnostics (`ExtractionErrors > 0` or non-benign extraction warnings), while known generated build-output warnings remain observable but non-blocking.
 - Release governance remains manual-only (`workflow_dispatch`) with enforced preflight (`planning validation`, `locked quality gates`, `security gates`, `AI CLI compatibility matrix`).
 - Weekly non-blocking soak lane: `.github/workflows/soak.yml` runs `scripts/mvp/run_matrix.sh` and publishes artifacts for long-run compatibility evidence.
 
