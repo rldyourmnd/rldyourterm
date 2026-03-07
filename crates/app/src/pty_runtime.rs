@@ -4,10 +4,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::shared::{
-    PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified, encode_ctrl_letter,
-    fatal_boundary_reason_token, fkey_ss3_modified, is_disconnect_error, on_off_token,
-    render_mode_token, session_boundary_token, tilde_modified, write_all_and_flush,
-    xterm_modifier_param,
+    PtyBoundaryPolicyDecision, ai_cli_spawn_env_overrides, classify_pty_boundary_failure,
+    csi_modified, encode_ctrl_letter, fatal_boundary_reason_token, fkey_ss3_modified,
+    is_disconnect_error, on_off_token, render_mode_token, session_boundary_token, tilde_modified,
+    write_all_and_flush, xterm_modifier_param,
 };
 use anyhow::{Context, Result, anyhow};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -28,7 +28,7 @@ const DEFAULT_ROWS: u16 = 24;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READ_PUMP_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
-const READ_PUMP_FLUSH_MAX_BYTES: usize = 16 * 1024;
+const READ_PUMP_FLUSH_MAX_BYTES: usize = 32 * 1024;
 const READ_PUMP_SIGNAL_STDOUT_DISCONNECTED: &str = "stdout-disconnected";
 const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
@@ -138,11 +138,17 @@ pub fn run_interactive_pty(
     );
 
     let initial_size = current_pty_size();
+    let spawn_env = ai_cli_spawn_env_overrides();
+    debug_assert!(spawn_env.iter().all(|(key, _)| !key.trim().is_empty()));
+    info!(
+        env_overrides = spawn_env.len(),
+        "applying default AI CLI spawn environment overrides for TTY runtime"
+    );
     let spawn_config = PtySpawnConfig {
         shell_command: shell_executable.to_owned(),
         args: shell_args.to_vec(),
         cwd: None,
-        env: Vec::new(),
+        env: spawn_env,
         size: initial_size,
     };
 
@@ -195,6 +201,24 @@ pub fn run_interactive_pty(
                         exit_code.get_or_insert(0);
                     }
                     break;
+                }
+                match pty
+                    .try_wait()
+                    .context("failed to poll PTY after read pump failure")
+                {
+                    Ok(Some(code)) => {
+                        exit_code = Some(code);
+                        info!(
+                            exit_code = code,
+                            "TTY read pump failure observed after child exit; stopping without fatal escalation"
+                        );
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        fatal_error = Some(error);
+                        break;
+                    }
                 }
                 fatal_error = Some(anyhow!(
                     "fatal PTY read pump failure boundary={} detail={detail}",

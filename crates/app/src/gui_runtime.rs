@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -56,6 +56,7 @@ const DEFERRED_GPU_INIT_MAX_BACKOFF: Duration = Duration::from_millis(400);
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CHILD_EXIT_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
 const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
@@ -67,6 +68,14 @@ const OUTPUT_BATCH_INITIAL_CAPACITY: usize = 64 * 1024;
 const OUTPUT_BATCH_MAX_BYTES: usize = MAX_FEED_BYTES_PER_CALL * 4;
 const OUTPUT_DRAIN_MAX_BYTES_PER_TICK: usize = 4 * 1024 * 1024;
 const OUTPUT_DRAIN_MAX_LATENCY: Duration = Duration::from_millis(8);
+const OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK: usize = 8 * 1024 * 1024;
+const OUTPUT_DRAIN_ELEVATED_MAX_LATENCY: Duration = Duration::from_millis(10);
+const OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK: usize = 16 * 1024 * 1024;
+const OUTPUT_DRAIN_CRITICAL_MAX_LATENCY: Duration = Duration::from_millis(12);
+const OUTPUT_DRAIN_ELEVATED_QUEUE_BYTES: usize = 2 * 1024 * 1024;
+const OUTPUT_DRAIN_CRITICAL_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+const OUTPUT_DRAIN_ELEVATED_QUEUE_CHUNKS: usize = PTY_OUTPUT_QUEUE_CAPACITY / 4;
+const OUTPUT_DRAIN_CRITICAL_QUEUE_CHUNKS: usize = (PTY_OUTPUT_QUEUE_CAPACITY * 3) / 4;
 const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 256;
 const DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY: usize = 64;
 const MAX_VIEWPORT_COLS: usize = 2_000;
@@ -87,6 +96,59 @@ enum GuiEvent {
         boundary: SessionBoundary,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputQueueSnapshot {
+    queued_bytes: usize,
+    queued_chunks: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputDrainPressure {
+    Normal,
+    Elevated,
+    Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputDrainBudget {
+    pressure: OutputDrainPressure,
+    max_bytes_per_tick: usize,
+    max_latency: Duration,
+}
+
+#[derive(Debug, Default)]
+struct OutputQueueBackpressure {
+    queued_bytes: AtomicUsize,
+    queued_chunks: AtomicUsize,
+}
+
+impl OutputQueueBackpressure {
+    fn note_enqueue(&self, bytes: usize) {
+        self.queued_bytes.fetch_add(bytes, Ordering::AcqRel);
+        self.queued_chunks.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn note_dequeue(&self, bytes: usize) {
+        let _ = self
+            .queued_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(bytes))
+            });
+        let _ = self
+            .queued_chunks
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(1))
+            });
+    }
+
+    fn snapshot(&self) -> OutputQueueSnapshot {
+        OutputQueueSnapshot {
+            queued_bytes: self.queued_bytes.load(Ordering::Acquire),
+            queued_chunks: self.queued_chunks.load(Ordering::Acquire),
+        }
+    }
 }
 
 type SpawnedPty = (Arc<dyn PtyIo>, Box<dyn Write + Send>, Box<dyn Read + Send>);
@@ -119,10 +181,10 @@ enum MonitorAffectingWindowEvent {
 }
 
 use crate::shared::{
-    PtyBoundaryPolicyDecision, classify_pty_boundary_failure, csi_modified, encode_ctrl_letter,
-    fatal_boundary_reason_token, fkey_ss3_modified, is_disconnect_error, on_off_token,
-    render_mode_token, session_boundary_token, tilde_modified, write_all_and_flush,
-    xterm_modifier_param,
+    PtyBoundaryPolicyDecision, ai_cli_spawn_env_overrides, classify_pty_boundary_failure,
+    csi_modified, encode_ctrl_letter, fatal_boundary_reason_token, fkey_ss3_modified,
+    is_disconnect_error, on_off_token, render_mode_token, session_boundary_token, tilde_modified,
+    write_all_and_flush, xterm_modifier_param,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,11 +255,13 @@ pub fn run_interactive_gui_pty(
 
     let (output_tx, output_rx) = sync_channel::<Vec<u8>>(PTY_OUTPUT_QUEUE_CAPACITY);
     let output_event_pending = Arc::new(AtomicBool::new(false));
+    let output_backpressure = Arc::new(OutputQueueBackpressure::default());
     let reader_pump = spawn_reader_pump(
         reader,
         proxy.clone(),
         output_tx,
         Arc::clone(&output_event_pending),
+        Arc::clone(&output_backpressure),
     );
     let wait_pump = spawn_wait_pump(Arc::clone(&pty), proxy.clone());
     let bootstrap = GuiRuntimeBootstrap {
@@ -205,6 +269,7 @@ pub fn run_interactive_gui_pty(
         initial_mode,
         refresh_rate_millihz,
         window_count,
+        output_backpressure,
         clipboard,
     };
 
@@ -265,9 +330,11 @@ fn build_gui_event_loop() -> Result<EventLoop<GuiEvent>> {
 }
 
 fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty> {
+    let spawn_env = ai_cli_spawn_env_overrides();
     debug!(
         shell = shell_executable,
         args = ?shell_args,
+        env_overrides = spawn_env.len(),
         cols = DEFAULT_COLS,
         rows = DEFAULT_ROWS,
         "spawning PTY child process"
@@ -276,7 +343,7 @@ fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty
         shell_command: shell_executable.to_owned(),
         args: shell_args.to_vec(),
         cwd: None,
-        env: Vec::new(),
+        env: spawn_env,
         size: PtySize {
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
@@ -306,6 +373,7 @@ fn spawn_reader_pump(
     proxy: EventLoopProxy<GuiEvent>,
     output_tx: SyncSender<Vec<u8>>,
     output_event_pending: Arc<AtomicBool>,
+    output_backpressure: Arc<OutputQueueBackpressure>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut buffer = [0_u8; 65536];
@@ -314,7 +382,9 @@ fn spawn_reader_pump(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read_bytes) => {
+                    output_backpressure.note_enqueue(read_bytes);
                     if output_tx.send(buffer[..read_bytes].to_vec()).is_err() {
+                        output_backpressure.note_dequeue(read_bytes);
                         break;
                     }
                     if !output_event_pending.swap(true, Ordering::AcqRel)
@@ -356,6 +426,7 @@ struct GuiRuntimeApp {
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
     output_event_pending: Arc<AtomicBool>,
+    output_backpressure: Arc<OutputQueueBackpressure>,
     clipboard: Arc<dyn ClipboardAdapter>,
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
@@ -380,6 +451,8 @@ struct GuiRuntimeApp {
     modifiers: ModifiersState,
     palette_open: bool,
     redraw_pending: bool,
+    redraw_in_flight: bool,
+    child_exit_pending: bool,
     gpu_init_pending: bool,
     deferred_gpu_init_failures: u8,
     next_gpu_init_retry_at: Option<Instant>,
@@ -400,6 +473,7 @@ struct GuiRuntimeBootstrap {
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
     window_count: u8,
+    output_backpressure: Arc<OutputQueueBackpressure>,
     clipboard: Arc<dyn ClipboardAdapter>,
 }
 
@@ -425,6 +499,7 @@ impl GuiRuntimeApp {
             initial_mode,
             refresh_rate_millihz,
             window_count,
+            output_backpressure,
             clipboard,
         } = bootstrap;
 
@@ -446,6 +521,7 @@ impl GuiRuntimeApp {
             writer,
             output_rx,
             output_event_pending,
+            output_backpressure,
             clipboard,
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
@@ -469,6 +545,8 @@ impl GuiRuntimeApp {
             modifiers: ModifiersState::default(),
             palette_open: false,
             redraw_pending: true,
+            redraw_in_flight: false,
+            child_exit_pending: false,
             gpu_init_pending: initial_mode != RenderMode::Cpu,
             deferred_gpu_init_failures: 0,
             next_gpu_init_retry_at: None,
@@ -655,6 +733,7 @@ impl GuiRuntimeApp {
         // 5. Drop the window itself (final Arc<Window> reference)
         self.window_id = None;
         self.window = None;
+        self.redraw_in_flight = false;
         self.sync_deferred_gpu_init_state();
         self.next_gpu_init_retry_at = None;
         debug!("window resources released");
@@ -666,6 +745,28 @@ impl GuiRuntimeApp {
         }
     }
 
+    fn reader_pump_finished(&self) -> bool {
+        match self.reader_pump.as_ref() {
+            Some(handle) => handle.is_finished(),
+            None => true,
+        }
+    }
+
+    fn child_exit_drain_complete(&self) -> bool {
+        self.reader_pump_finished()
+            && !self.output_event_pending.load(Ordering::Acquire)
+            && self.output_batch.is_empty()
+    }
+
+    fn begin_child_exit_drain(&mut self, event_loop: &ActiveEventLoop) {
+        self.child_exit_pending = true;
+        self.drain_output_queue(event_loop);
+        if self.child_exit_drain_complete() {
+            self.child_exit_pending = false;
+            event_loop.exit();
+        }
+    }
+
     fn shutdown(&mut self) {
         debug!(
             exit_code = ?self.exit_code,
@@ -674,6 +775,23 @@ impl GuiRuntimeApp {
         );
 
         self.persist_gpu_pipeline_cache();
+
+        let child_exited = self.exit_code.is_some() || self.pty.try_wait().ok().flatten().is_some();
+        if child_exited {
+            if let Some(handle) = self.reader_pump.take() {
+                join_pump_thread_with_timeout(handle, "reader_pump");
+            }
+            if let Some(handle) = self.wait_pump.take() {
+                join_pump_thread_with_timeout(handle, "wait_pump");
+            }
+            if let Err(error) = self.pty.close() {
+                warn!(error = %error, "failed to close PTY during GUI shutdown");
+                if self.fatal_error.is_none() {
+                    self.fatal_error = Some(anyhow!("failed to close PTY: {error}"));
+                }
+            }
+            return;
+        }
 
         if let Err(error) = self.pty.close() {
             warn!(error = %error, "failed to close PTY during GUI shutdown");
@@ -840,7 +958,7 @@ impl GuiRuntimeApp {
         if let Some(window) = self.window.as_ref() {
             window.set_visible(true);
             window.focus_window();
-            self.request_window_redraw();
+            let _ = self.request_window_redraw();
             info!("applied visibility handshake after first frame commit");
         }
     }
@@ -924,12 +1042,13 @@ impl GuiRuntimeApp {
     }
 
     fn request_redraw_if_needed(&mut self) {
-        if !self.redraw_pending {
+        if !self.redraw_pending || self.redraw_in_flight {
             return;
         }
-        if self.window_control.is_some() || self.window.is_some() {
-            self.request_window_redraw();
+        if (self.window_control.is_some() || self.window.is_some()) && self.request_window_redraw()
+        {
             self.redraw_pending = false;
+            self.redraw_in_flight = true;
         }
     }
 
@@ -985,16 +1104,23 @@ impl GuiRuntimeApp {
         let drain_started = Instant::now();
         let mut drained_bytes = 0usize;
         let mut budget_exhausted = false;
+        let mut active_budget = output_drain_budget(self.output_backpressure.snapshot());
 
         'drain: loop {
             while let Ok(data) = self.output_rx.try_recv() {
+                self.output_backpressure.note_dequeue(data.len());
                 drained_any = true;
                 drained_bytes = drained_bytes.saturating_add(data.len());
                 if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
                     self.output_batch = batch;
                     return;
                 }
-                if output_drain_budget_exhausted(drained_bytes, drain_started.elapsed()) {
+                active_budget = output_drain_budget(self.output_backpressure.snapshot());
+                if output_drain_budget_exhausted(
+                    drained_bytes,
+                    drain_started.elapsed(),
+                    active_budget,
+                ) {
                     budget_exhausted = true;
                     break 'drain;
                 }
@@ -1006,6 +1132,7 @@ impl GuiRuntimeApp {
             // Handle producer race: data may arrive between empty check and flag reset.
             match self.output_rx.try_recv() {
                 Ok(data) => {
+                    self.output_backpressure.note_dequeue(data.len());
                     self.output_event_pending.store(true, Ordering::Release);
                     drained_any = true;
                     drained_bytes = drained_bytes.saturating_add(data.len());
@@ -1013,7 +1140,12 @@ impl GuiRuntimeApp {
                         self.output_batch = batch;
                         return;
                     }
-                    if output_drain_budget_exhausted(drained_bytes, drain_started.elapsed()) {
+                    active_budget = output_drain_budget(self.output_backpressure.snapshot());
+                    if output_drain_budget_exhausted(
+                        drained_bytes,
+                        drain_started.elapsed(),
+                        active_budget,
+                    ) {
                         budget_exhausted = true;
                         break;
                     }
@@ -1037,9 +1169,15 @@ impl GuiRuntimeApp {
         }
 
         if budget_exhausted {
+            let queue_snapshot = self.output_backpressure.snapshot();
             debug!(
                 drained_bytes,
                 elapsed_ms = drain_started.elapsed().as_millis(),
+                queue_pressure = ?active_budget.pressure,
+                queue_bytes = queue_snapshot.queued_bytes,
+                queue_chunks = queue_snapshot.queued_chunks,
+                drain_byte_budget = active_budget.max_bytes_per_tick,
+                drain_latency_budget_ms = active_budget.max_latency.as_millis(),
                 "output drain budget exhausted; scheduling continuation"
             );
             let _ = self.event_proxy.send_event(GuiEvent::OutputReady);
@@ -1418,17 +1556,19 @@ impl GuiRuntimeApp {
         }
     }
 
-    fn request_window_redraw(&self) {
+    fn request_window_redraw(&self) -> bool {
         if let Some(window_control) = self.window_control.as_ref() {
             if let Err(error) = window_control.request_redraw() {
                 warn!(
                     error = %error,
                     "failed to request redraw via window control"
                 );
+                return false;
             }
-            return;
+            return true;
         }
         warn!("window control unavailable while requesting redraw");
+        false
     }
 
     fn set_window_title(&self, title: &str) {
@@ -1661,9 +1801,12 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         match event {
             GuiEvent::OutputReady => self.drain_output_queue(event_loop),
             GuiEvent::Exited(code) => {
-                info!(exit_code = code, "child process exited, shutting down");
+                info!(
+                    exit_code = code,
+                    "child process exited; draining pending output"
+                );
                 self.exit_code = Some(code);
-                event_loop.exit();
+                self.begin_child_exit_drain(event_loop);
             }
             GuiEvent::PtyFailure {
                 ref boundary,
@@ -1671,11 +1814,31 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             } => {
                 warn!(?boundary, %message, "pty boundary failure event");
                 if *boundary == SessionBoundary::PtyRead {
-                    self.fatal_error = Some(anyhow!(
-                        "fatal PTY reader boundary failure: reader pump terminated and cannot be resumed safely: {message}"
-                    ));
-                    event_loop.exit();
-                    return;
+                    if self.exit_code.is_some() {
+                        self.begin_child_exit_drain(event_loop);
+                        return;
+                    }
+                    match self
+                        .pty
+                        .try_wait()
+                        .context("failed to poll PTY after reader boundary failure")
+                    {
+                        Ok(Some(code)) => {
+                            self.exit_code = Some(code);
+                            info!(
+                                exit_code = code,
+                                "reader boundary reported after child exit; draining remaining output"
+                            );
+                            self.begin_child_exit_drain(event_loop);
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            self.fatal_error = Some(error);
+                            event_loop.exit();
+                            return;
+                        }
+                    }
                 }
                 match self.handle_pty_boundary_failure(*boundary, message) {
                     Ok(PtyBoundaryLoopAction::Continue) => {}
@@ -1704,6 +1867,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         match event {
             WindowEvent::CloseRequested => self.handle_close_requested(event_loop),
             WindowEvent::RedrawRequested => {
+                self.redraw_in_flight = false;
                 if let Err(error) = self.draw_frame() {
                     self.fatal_error = Some(error);
                     event_loop.exit();
@@ -1797,6 +1961,18 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         }
         if self.fatal_error.is_some() {
             event_loop.exit();
+            return;
+        }
+        if self.child_exit_pending {
+            self.drain_output_queue(event_loop);
+            if self.child_exit_drain_complete() {
+                self.child_exit_pending = false;
+                event_loop.exit();
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + CHILD_EXIT_DRAIN_POLL_INTERVAL,
+                ));
+            }
             return;
         }
         if self.gpu_init_pending
@@ -2500,8 +2676,40 @@ fn should_flush_output_batch(current_batch_len: usize, incoming_chunk_len: usize
         && current_batch_len.saturating_add(incoming_chunk_len) > OUTPUT_BATCH_MAX_BYTES
 }
 
-fn output_drain_budget_exhausted(drained_bytes: usize, elapsed: Duration) -> bool {
-    drained_bytes >= OUTPUT_DRAIN_MAX_BYTES_PER_TICK || elapsed >= OUTPUT_DRAIN_MAX_LATENCY
+fn output_drain_budget(snapshot: OutputQueueSnapshot) -> OutputDrainBudget {
+    if snapshot.queued_bytes >= OUTPUT_DRAIN_CRITICAL_QUEUE_BYTES
+        || snapshot.queued_chunks >= OUTPUT_DRAIN_CRITICAL_QUEUE_CHUNKS
+    {
+        return OutputDrainBudget {
+            pressure: OutputDrainPressure::Critical,
+            max_bytes_per_tick: OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK,
+            max_latency: OUTPUT_DRAIN_CRITICAL_MAX_LATENCY,
+        };
+    }
+
+    if snapshot.queued_bytes >= OUTPUT_DRAIN_ELEVATED_QUEUE_BYTES
+        || snapshot.queued_chunks >= OUTPUT_DRAIN_ELEVATED_QUEUE_CHUNKS
+    {
+        return OutputDrainBudget {
+            pressure: OutputDrainPressure::Elevated,
+            max_bytes_per_tick: OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK,
+            max_latency: OUTPUT_DRAIN_ELEVATED_MAX_LATENCY,
+        };
+    }
+
+    OutputDrainBudget {
+        pressure: OutputDrainPressure::Normal,
+        max_bytes_per_tick: OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
+        max_latency: OUTPUT_DRAIN_MAX_LATENCY,
+    }
+}
+
+fn output_drain_budget_exhausted(
+    drained_bytes: usize,
+    elapsed: Duration,
+    budget: OutputDrainBudget,
+) -> bool {
+    drained_bytes >= budget.max_bytes_per_tick || elapsed >= budget.max_latency
 }
 
 fn terminal_feed_chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -2534,13 +2742,15 @@ mod tests {
         CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
         MAX_FEED_BYTES_PER_CALL, MAX_FRAMEBUFFER_HEIGHT, MAX_FRAMEBUFFER_PIXELS,
         MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS,
-        MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES, OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
-        OUTPUT_DRAIN_MAX_LATENCY, PtyBoundaryPolicyDecision,
+        MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES,
+        OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK,
+        OUTPUT_DRAIN_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_MAX_LATENCY, OutputDrainBudget,
+        OutputDrainPressure, OutputQueueSnapshot, PtyBoundaryPolicyDecision,
         cadence_resync_command_for_monitor_event, cap_framebuffer_extent, cap_paste_text,
         cap_terminal_geometry, classify_pty_boundary_failure, deferred_gpu_init_backoff,
         dispatch_gpu_failure_command, dispatch_runtime_palette_command,
         emit_gpu_auto_fallback_observability, encode_winit_key_event, grid,
-        is_runtime_palette_shortcut_key, output_drain_budget_exhausted,
+        is_runtime_palette_shortcut_key, output_drain_budget, output_drain_budget_exhausted,
         read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
         should_flush_output_batch, terminal_feed_chunks,
     };
@@ -2740,23 +2950,70 @@ mod tests {
 
     #[test]
     fn output_drain_budget_triggers_on_byte_limit() {
+        let budget = OutputDrainBudget {
+            pressure: OutputDrainPressure::Normal,
+            max_bytes_per_tick: OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
+            max_latency: OUTPUT_DRAIN_MAX_LATENCY,
+        };
         assert!(!output_drain_budget_exhausted(
             OUTPUT_DRAIN_MAX_BYTES_PER_TICK - 1,
-            Duration::ZERO
+            Duration::ZERO,
+            budget,
         ));
         assert!(output_drain_budget_exhausted(
             OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
-            Duration::ZERO
+            Duration::ZERO,
+            budget,
         ));
     }
 
     #[test]
     fn output_drain_budget_triggers_on_elapsed_limit() {
+        let budget = OutputDrainBudget {
+            pressure: OutputDrainPressure::Normal,
+            max_bytes_per_tick: OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
+            max_latency: OUTPUT_DRAIN_MAX_LATENCY,
+        };
         assert!(!output_drain_budget_exhausted(
             0,
-            OUTPUT_DRAIN_MAX_LATENCY.saturating_sub(Duration::from_millis(1))
+            OUTPUT_DRAIN_MAX_LATENCY.saturating_sub(Duration::from_millis(1)),
+            budget,
         ));
-        assert!(output_drain_budget_exhausted(0, OUTPUT_DRAIN_MAX_LATENCY));
+        assert!(output_drain_budget_exhausted(
+            0,
+            OUTPUT_DRAIN_MAX_LATENCY,
+            budget
+        ));
+    }
+
+    #[test]
+    fn output_drain_budget_escalates_with_queue_pressure() {
+        let normal = output_drain_budget(OutputQueueSnapshot {
+            queued_bytes: 0,
+            queued_chunks: 0,
+        });
+        assert_eq!(normal.pressure, OutputDrainPressure::Normal);
+        assert_eq!(normal.max_bytes_per_tick, OUTPUT_DRAIN_MAX_BYTES_PER_TICK);
+
+        let elevated = output_drain_budget(OutputQueueSnapshot {
+            queued_bytes: 3 * 1024 * 1024,
+            queued_chunks: 4,
+        });
+        assert_eq!(elevated.pressure, OutputDrainPressure::Elevated);
+        assert_eq!(
+            elevated.max_bytes_per_tick,
+            OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK
+        );
+
+        let critical = output_drain_budget(OutputQueueSnapshot {
+            queued_bytes: 10 * 1024 * 1024,
+            queued_chunks: 220,
+        });
+        assert_eq!(critical.pressure, OutputDrainPressure::Critical);
+        assert_eq!(
+            critical.max_bytes_per_tick,
+            OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK
+        );
     }
 
     #[test]
