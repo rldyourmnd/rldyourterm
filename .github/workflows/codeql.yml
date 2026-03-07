@@ -24,6 +24,8 @@ env:
   CARGO_NET_RETRY: "5"
   CARGO_INCREMENTAL: "0"
   CI_RUST_TOOLCHAIN: "1.94.0"
+  # Keep CodeQL metric drift fail-closed while allowing known benign generated warnings.
+  CODEQL_MAX_EXTRACTED_WITH_ERRORS: "5"
 
 jobs:
   analyze:
@@ -106,6 +108,8 @@ jobs:
 
           errors="${CODEQL_EXTRACTION_ERROR_ROWS:-0}"
           actionable="${CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS:-0}"
+          extracted_with_errors_metric="${CODEQL_EXTRACTED_WITH_ERRORS_METRIC:-0}"
+          extracted_with_errors_budget="${CODEQL_MAX_EXTRACTED_WITH_ERRORS:-0}"
           case "${errors}" in
             ''|*[!0-9]*)
               echo "::error::Invalid CODEQL_EXTRACTION_ERROR_ROWS='${errors}' in ${status_file}."
@@ -118,9 +122,25 @@ jobs:
               exit 1
               ;;
           esac
+          case "${extracted_with_errors_metric}" in
+            ''|*[!0-9]*)
+              echo "::error::Invalid CODEQL_EXTRACTED_WITH_ERRORS_METRIC='${extracted_with_errors_metric}' in ${status_file}."
+              exit 1
+              ;;
+          esac
+          case "${extracted_with_errors_budget}" in
+            ''|*[!0-9]*)
+              echo "::error::Invalid CODEQL_MAX_EXTRACTED_WITH_ERRORS='${extracted_with_errors_budget}' in workflow env."
+              exit 1
+              ;;
+          esac
 
-          echo "CodeQL extraction diagnostics enforcement: errors=${errors}, actionable_warnings=${actionable}"
+          echo "CodeQL extraction diagnostics enforcement: errors=${errors}, actionable_warnings=${actionable}, extracted_with_errors_metric=${extracted_with_errors_metric}, extracted_with_errors_budget=${extracted_with_errors_budget}"
           if [ "${errors}" -gt 0 ] || [ "${actionable}" -gt 0 ]; then
             echo "::error::Actionable CodeQL extraction diagnostics detected."
+            exit 1
+          fi
+          if [ "${extracted_with_errors_metric}" -gt "${extracted_with_errors_budget}" ]; then
+            echo "::error::CodeQL extracted-with-errors metric (${extracted_with_errors_metric}) exceeded budget (${extracted_with_errors_budget})."
             exit 1
           fi
