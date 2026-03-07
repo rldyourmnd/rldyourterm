@@ -15,9 +15,11 @@ jobs:
     name: Dependency Review
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && vars.ENABLE_DEPENDENCY_REVIEW == 'true' }}
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
 
   labeler:

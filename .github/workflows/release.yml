@@ -38,16 +38,24 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
+          persist-credentials: false
       - id: resolve
         name: Validate ref/tag integrity
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           resolved_sha="$(git rev-parse HEAD)"
 
-          if git rev-parse -q --verify "refs/tags/${{ inputs.tag }}" >/dev/null; then
-            tag_sha="$(git rev-list -n 1 "refs/tags/${{ inputs.tag }}")"
+          if ! [[ "$INPUT_TAG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "invalid release tag: '$INPUT_TAG'" >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$INPUT_TAG" >/dev/null; then
+            tag_sha="$(git rev-list -n 1 "refs/tags/$INPUT_TAG")"
             if [ "$tag_sha" != "$resolved_sha" ]; then
-              echo "tag '${{ inputs.tag }}' points to $tag_sha but selected ref resolves to $resolved_sha" >&2
+              echo "tag '$INPUT_TAG' points to $tag_sha but selected ref resolves to $resolved_sha" >&2
               exit 1
             fi
           fi
@@ -82,6 +90,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
       - name: Install cargo-dist
         uses: cargo-bins/cargo-binstall@bc432b49369a3f25c8c8b19578a82060c18a5dd6
         with:
@@ -112,6 +121,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
