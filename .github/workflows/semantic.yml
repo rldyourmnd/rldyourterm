@@ -31,6 +31,8 @@ jobs:
             docs
             test
             chore
+            ci
+            build
             perf
             style
             revert
