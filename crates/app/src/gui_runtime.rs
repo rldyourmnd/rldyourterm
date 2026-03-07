@@ -57,6 +57,7 @@ use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CHILD_EXIT_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const CHILD_EXIT_DRAIN_MAX_WAIT: Duration = Duration::from_millis(750);
 const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
 const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
@@ -453,6 +454,7 @@ struct GuiRuntimeApp {
     redraw_pending: bool,
     redraw_in_flight: bool,
     child_exit_pending: bool,
+    child_exit_drain_started_at: Option<Instant>,
     gpu_init_pending: bool,
     deferred_gpu_init_failures: u8,
     next_gpu_init_retry_at: Option<Instant>,
@@ -547,6 +549,7 @@ impl GuiRuntimeApp {
             redraw_pending: true,
             redraw_in_flight: false,
             child_exit_pending: false,
+            child_exit_drain_started_at: None,
             gpu_init_pending: initial_mode != RenderMode::Cpu,
             deferred_gpu_init_failures: 0,
             next_gpu_init_retry_at: None,
@@ -760,9 +763,12 @@ impl GuiRuntimeApp {
 
     fn begin_child_exit_drain(&mut self, event_loop: &ActiveEventLoop) {
         self.child_exit_pending = true;
+        self.child_exit_drain_started_at
+            .get_or_insert_with(Instant::now);
         self.drain_output_queue(event_loop);
         if self.child_exit_drain_complete() {
             self.child_exit_pending = false;
+            self.child_exit_drain_started_at = None;
             event_loop.exit();
         }
     }
@@ -1964,14 +1970,32 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             return;
         }
         if self.child_exit_pending {
+            let now = Instant::now();
             self.drain_output_queue(event_loop);
             if self.child_exit_drain_complete() {
                 self.child_exit_pending = false;
+                self.child_exit_drain_started_at = None;
+                event_loop.exit();
+            } else if self
+                .child_exit_drain_started_at
+                .map(|started_at| child_exit_drain_timed_out(started_at, now))
+                .unwrap_or(false)
+            {
+                let elapsed_ms = self
+                    .child_exit_drain_started_at
+                    .map(|started_at| now.saturating_duration_since(started_at).as_millis())
+                    .unwrap_or(0);
+                warn!(
+                    elapsed_ms,
+                    max_wait_ms = CHILD_EXIT_DRAIN_MAX_WAIT.as_millis(),
+                    "child-exit output drain exceeded max wait budget; forcing shutdown"
+                );
+                self.child_exit_pending = false;
+                self.child_exit_drain_started_at = None;
                 event_loop.exit();
             } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + CHILD_EXIT_DRAIN_POLL_INTERVAL,
-                ));
+                event_loop
+                    .set_control_flow(ControlFlow::WaitUntil(now + CHILD_EXIT_DRAIN_POLL_INTERVAL));
             }
             return;
         }
@@ -2712,6 +2736,10 @@ fn output_drain_budget_exhausted(
     drained_bytes >= budget.max_bytes_per_tick || elapsed >= budget.max_latency
 }
 
+fn child_exit_drain_timed_out(started_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(started_at) >= CHILD_EXIT_DRAIN_MAX_WAIT
+}
+
 fn terminal_feed_chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
     data.chunks(MAX_FEED_BYTES_PER_CALL)
 }
@@ -2739,16 +2767,16 @@ fn load_app_icon() -> Option<Icon> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling,
-        MAX_FEED_BYTES_PER_CALL, MAX_FRAMEBUFFER_HEIGHT, MAX_FRAMEBUFFER_PIXELS,
-        MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS,
-        MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES,
+        CHILD_EXIT_DRAIN_MAX_WAIT, CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32,
+        GpuFailureHandling, MAX_FEED_BYTES_PER_CALL, MAX_FRAMEBUFFER_HEIGHT,
+        MAX_FRAMEBUFFER_PIXELS, MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS,
+        MAX_VIEWPORT_ROWS, MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES,
         OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK,
         OUTPUT_DRAIN_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_MAX_LATENCY, OutputDrainBudget,
         OutputDrainPressure, OutputQueueSnapshot, PtyBoundaryPolicyDecision,
         cadence_resync_command_for_monitor_event, cap_framebuffer_extent, cap_paste_text,
-        cap_terminal_geometry, classify_pty_boundary_failure, deferred_gpu_init_backoff,
-        dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+        cap_terminal_geometry, child_exit_drain_timed_out, classify_pty_boundary_failure,
+        deferred_gpu_init_backoff, dispatch_gpu_failure_command, dispatch_runtime_palette_command,
         emit_gpu_auto_fallback_observability, encode_winit_key_event, grid,
         is_runtime_palette_shortcut_key, output_drain_budget, output_drain_budget_exhausted,
         read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
@@ -2768,7 +2796,7 @@ mod tests {
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use winit::dpi::PhysicalSize;
     use winit::keyboard::{Key, ModifiersState};
 
@@ -3014,6 +3042,19 @@ mod tests {
             critical.max_bytes_per_tick,
             OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK
         );
+    }
+
+    #[test]
+    fn child_exit_drain_timeout_boundary_is_deterministic() {
+        let started_at = Instant::now();
+        assert!(!child_exit_drain_timed_out(
+            started_at,
+            started_at + CHILD_EXIT_DRAIN_MAX_WAIT.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(child_exit_drain_timed_out(
+            started_at,
+            started_at + CHILD_EXIT_DRAIN_MAX_WAIT
+        ));
     }
 
     #[test]
