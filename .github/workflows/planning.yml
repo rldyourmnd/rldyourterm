@@ -14,7 +14,8 @@ permissions: read-all
 
 jobs:
   validate-planning:
-    name: Validate Planning Consistency
+    # Branch protection expects a required check named exactly "Planning".
+    name: Planning
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
