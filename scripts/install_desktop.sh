@@ -28,13 +28,22 @@ echo "Scaling and installing icons..."
 for size in "${SIZES[@]}"; do
     dir="$ICONS_DIR/${size}x${size}/apps"
     mkdir -p "$dir"
-    python3 -c "
+    RLD_LOGO="$LOGO" \
+    RLD_ICON_OUT="$dir/$APP_NAME.png" \
+    RLD_ICON_SIZE="$size" \
+    python3 - <<'PY'
+import os
 from PIL import Image
-img = Image.open('$LOGO')
-img = img.resize(($size, $size), Image.LANCZOS)
-img.save('$dir/$APP_NAME.png')
-print(f'  {$size}x{$size} -> $dir/$APP_NAME.png')
-"
+
+logo = os.environ["RLD_LOGO"]
+out_path = os.environ["RLD_ICON_OUT"]
+size = int(os.environ["RLD_ICON_SIZE"])
+
+img = Image.open(logo)
+img = img.resize((size, size), Image.LANCZOS)
+img.save(out_path)
+print(f"  {size}x{size} -> {out_path}")
+PY
 done
 
 echo "Installing desktop entry..."
@@ -45,12 +54,19 @@ BINARY="$PROJECT_ROOT/target/release/$APP_NAME-app"
 if [ ! -f "$BINARY" ]; then
     BINARY="$PROJECT_ROOT/target/debug/$APP_NAME-app"
 fi
-if [ ! -f "$BINARY" ]; then
-    echo "warning: binary not found, using 'cargo run' in Exec" >&2
-    EXEC_LINE="bash -c 'cd $PROJECT_ROOT && cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1'"
-else
-    EXEC_LINE="$BINARY --mode auto --shell fish --window-count 1"
+
+if [ ! -x "$BINARY" ]; then
+    echo "error: binary not found or not executable: $BINARY" >&2
+    echo "hint: run 'cargo build -p rldyourterm-app' first" >&2
+    exit 1
 fi
+
+escape_desktop_exec_arg() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+EXEC_BINARY="$(escape_desktop_exec_arg "$BINARY")"
+EXEC_LINE="\"$EXEC_BINARY\" --mode auto --shell fish --window-count 1"
 
 cat > "$APPS_DIR/$APP_NAME.desktop" << EOF
 [Desktop Entry]
