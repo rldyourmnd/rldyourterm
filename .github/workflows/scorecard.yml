@@ -6,10 +6,8 @@ name: Scorecard
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'planning/**'
-      - '**/*.md'
-      - 'assets/**'
+  pull_request:
+    branches: [main, dev]
   schedule:
     - cron: '0 0 * * 0' # Weekly at 00:00 UTC
   workflow_dispatch:
@@ -49,6 +47,7 @@ jobs:
           ' results.sarif > results.normalized.sarif
 
       - name: Upload SARIF results
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: github/codeql-action/upload-sarif@0d579ffd059c29b07949a3cce3983f0780820c98 # v4
         with:
           sarif_file: results.normalized.sarif

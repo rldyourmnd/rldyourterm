@@ -13,6 +13,12 @@ The project currently maintains the latest `main` branch for security fixes.
 
 Please do **not** open a public issue for sensitive vulnerabilities.
 
+Primary private reporting endpoint:
+- [GitHub Security Advisories - Report a Vulnerability](https://github.com/rldyourmnd/rldyourterm/security/advisories/new)
+
+Project security policy landing page:
+- [Repository Security Policy](https://github.com/rldyourmnd/rldyourterm/security/policy)
+
 1. Open a private report through GitHub Security Advisories ("Report a vulnerability").
 2. Include:
    - affected commit/tag,

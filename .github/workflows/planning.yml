@@ -3,22 +3,8 @@ name: Planning
 on:
   push:
     branches: [main, dev]
-    paths:
-      - 'planning/**'
-      - 'AGENTS.md'
-      - 'README.md'
-      - 'CLAUDE.md'
-      - 'SECURITY.md'
-      - '.github/workflows/planning.yml'
   pull_request:
     branches: [main, dev]
-    paths:
-      - 'planning/**'
-      - 'AGENTS.md'
-      - 'README.md'
-      - 'CLAUDE.md'
-      - 'SECURITY.md'
-      - '.github/workflows/planning.yml'
 
 concurrency:
   group: planning-${{ github.workflow }}-${{ github.ref }}

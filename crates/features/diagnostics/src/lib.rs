@@ -18,6 +18,7 @@ pub enum EventKind {
     ShellResolutionFailed,
     ShellFallbackApplied,
     ShellLaunchPlanned,
+    RenderModeTransition,
     ResourceWarning,
 }
 
@@ -33,6 +34,7 @@ impl EventKind {
             Self::ShellResolutionFailed => FoundationDiagnosticKind::ShellResolutionFailed,
             Self::ShellFallbackApplied => FoundationDiagnosticKind::ShellFallbackApplied,
             Self::ShellLaunchPlanned => FoundationDiagnosticKind::ShellLaunchPlanned,
+            Self::RenderModeTransition => FoundationDiagnosticKind::RenderModeTransition,
             Self::ResourceWarning => FoundationDiagnosticKind::ResourceWarning,
         }
     }
@@ -43,6 +45,7 @@ impl EventKind {
             Self::ShellResolutionFailed | Self::SettingsRejected => {
                 FoundationDiagnosticSeverity::Warn
             }
+            Self::RenderModeTransition => FoundationDiagnosticSeverity::Warn,
             Self::ResourceWarning => FoundationDiagnosticSeverity::Warn,
             Self::SessionStarted
             | Self::SessionEnded
@@ -559,6 +562,14 @@ mod tests {
         let event =
             Event::new(EventKind::ShellResolutionFailed, "fish unavailable").to_foundation_event();
         assert_eq!(event.severity, FoundationDiagnosticSeverity::Warn);
+    }
+
+    #[test]
+    fn render_mode_transition_maps_to_warn_severity_and_kind() {
+        let event =
+            Event::new(EventKind::RenderModeTransition, "gpu->cpu fallback").to_foundation_event();
+        assert_eq!(event.severity, FoundationDiagnosticSeverity::Warn);
+        assert_eq!(event.kind, FoundationDiagnosticKind::RenderModeTransition);
     }
 
     #[test]
