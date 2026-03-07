@@ -36,10 +36,3 @@ jobs:
             revert
           requireScope: false
           subjectPattern: ^(?![A-Z]).+$  # Don't start with uppercase
-          message: |
-            PR title must follow [Conventional Commits](https://www.conventionalcommits.org/).
-
-            Examples:
-            - `feat(render): add GPU atlas optimization`
-            - `fix(parser): handle multi-param CSI sequences`
-            - `docs: update README with build instructions`
