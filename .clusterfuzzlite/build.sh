@@ -12,6 +12,12 @@ cd "$SRC/rldyourterm"
 # Override via CFLITE_RUST_TOOLCHAIN when intentionally updating the snapshot.
 CFLITE_RUST_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN:-nightly-2026-03-07}"
 export RUSTUP_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN}"
+
+if ! rustup run "${CFLITE_RUST_TOOLCHAIN}" rustc --version >/dev/null 2>&1; then
+  echo "installing missing Rust toolchain: ${CFLITE_RUST_TOOLCHAIN}" >&2
+  rustup toolchain install "${CFLITE_RUST_TOOLCHAIN}" --profile minimal
+fi
+
 cargo +"${CFLITE_RUST_TOOLCHAIN}" fuzz build -O
 
 FUZZ_OUTPUT_DIR="fuzz/target/x86_64-unknown-linux-gnu/release"
