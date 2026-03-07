@@ -92,6 +92,18 @@ Implementation alignment updated in:
 - `crates/app/src/pty_runtime.rs`
 - `crates/app/src/gui_runtime.rs`
 
+## 2026-03-08 Runtime/CI Revalidation Snapshot
+
+- `winit` (`/websites/rs_winit_winit`):
+  - `WindowEvent::RedrawRequested` is emitted both for OS invalidation and explicit `request_redraw()`.
+  - duplicate redraw requests are coalesced by runtime contract; app-side in-flight redraw guard keeps scheduling deterministic and avoids redundant redraw churn.
+- `portable-pty` (`/websites/rs_portable-pty`):
+  - `Child::try_wait` is non-blocking (`Ok(None)` when still running), while `wait` remains blocking.
+  - runtime boundary classification can safely treat reader failures after `try_wait => Some(exit)` as post-exit drain path instead of fatal live-session failure.
+- `wgpu` (`/websites/rs_wgpu`):
+  - `SurfaceConfiguration::present_mode` fallback-safe auto modes and `desired_maximum_frame_latency` remain backend hints.
+  - low-latency interactive path keeps explicit frame-latency bias while preserving deterministic CPU fallback on GPU boundary failures.
+
 ## Policy Notes
 
 - Self-authored-first remains mandatory for runtime logic.
