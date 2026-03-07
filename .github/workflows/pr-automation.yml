@@ -17,44 +17,19 @@ jobs:
     timeout-minutes: 10
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
-      - name: Detect dependency graph availability
-        id: dependency-graph
+      - name: Verify dependency graph compare API is available
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           endpoint="repos/${{ github.repository }}/dependency-graph/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
-
-          # Probe the same endpoint used by dependency review with the current PR range.
-          # Repository metadata omits dependency_graph status in some contexts/tokens.
-          set +e
-          response="$(gh api --include "$endpoint" 2>&1)"
-          rc=$?
-          set -e
-
-          if [ "$rc" -eq 0 ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          elif printf '%s' "$response" | head -n1 | grep -Eq 'HTTP/[0-9.]+ 404'; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Dependency graph compare API returned 404; dependency review will be skipped."
-          else
-            echo "::error::Dependency graph probe failed unexpectedly."
-            echo "$response"
-            exit 1
-          fi
+          gh api "$endpoint" --silent >/dev/null
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        if: steps.dependency-graph.outputs.enabled == 'true'
         with:
           persist-credentials: false
 
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
-        if: steps.dependency-graph.outputs.enabled == 'true'
-
-      - name: Skip reason
-        if: steps.dependency-graph.outputs.enabled != 'true'
-        run: |
-          echo "Dependency review skipped because dependency graph is not enabled for this repository." >> "$GITHUB_STEP_SUMMARY"
 
   labeler:
     name: Label PR
