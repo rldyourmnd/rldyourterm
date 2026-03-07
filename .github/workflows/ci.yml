@@ -202,3 +202,36 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979
         with:
           command: check bans licenses advisories sources
+
+  # Branch protection expects a required check named exactly "CI".
+  ci-gate:
+    name: CI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [check, test, coverage, clippy, fmt, msrv, audit, deny]
+    steps:
+      - name: Validate fan-out job results
+        run: |
+          set -euo pipefail
+          results=(
+            "${{ needs.check.result }}"
+            "${{ needs.test.result }}"
+            "${{ needs.coverage.result }}"
+            "${{ needs.clippy.result }}"
+            "${{ needs.fmt.result }}"
+            "${{ needs.msrv.result }}"
+            "${{ needs.audit.result }}"
+            "${{ needs.deny.result }}"
+          )
+
+          for result in "${results[@]}"; do
+            case "${result}" in
+              success|skipped)
+                ;;
+              *)
+                echo "CI gate blocked by upstream job result: ${result}" >&2
+                exit 1
+                ;;
+            esac
+          done
