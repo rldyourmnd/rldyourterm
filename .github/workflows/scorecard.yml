@@ -87,7 +87,7 @@ jobs:
       - name: Validate scorecard job result
         run: |
           case "${{ needs.scorecard.result }}" in
-            success|skipped)
+            success)
               ;;
             *)
               echo "Scorecard gate blocked by upstream result: ${{ needs.scorecard.result }}" >&2
