@@ -78,6 +78,14 @@ jobs:
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo fmt --all -- --check
+      - name: Install security gate tools
+        uses: cargo-bins/cargo-binstall@bc432b49369a3f25c8c8b19578a82060c18a5dd6
+        with:
+          bins: cargo-audit,cargo-deny
+      - name: Security gates
+        run: |
+          cargo audit
+          cargo deny check bans licenses advisories sources
       - name: Compatibility gate
         run: bash scripts/mvp/run_matrix.sh 3
 
