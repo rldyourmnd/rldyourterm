@@ -6,11 +6,47 @@ use rldyourterm_services::render_mode::GpuFailureKind;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use tracing::{debug, info, warn};
 
 pub const DEFAULT_SURFACE_RETRY_BUDGET: u8 = 3;
 pub const DEFAULT_SURFACE_RECONFIGURE_RETRY_BUDGET: u8 = 2;
+const MAX_PIPELINE_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
+fn load_pipeline_cache(path: &Path) -> Option<Vec<u8>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return None,
+    };
+
+    let file_size = metadata.len();
+    if file_size == 0 {
+        return None;
+    }
+
+    if file_size > MAX_PIPELINE_CACHE_BYTES {
+        warn!(
+            bytes = file_size,
+            max_bytes = MAX_PIPELINE_CACHE_BYTES,
+            path = %path.display(),
+            "gpu init: skipped oversized pipeline cache file"
+        );
+        return None;
+    }
+
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return None,
+    };
+
+    let mut data = Vec::with_capacity(file_size as usize);
+    if file.read_to_end(&mut data).is_err() {
+        return None;
+    }
+    Some(data)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceErrorCategory {
@@ -755,17 +791,14 @@ impl GpuRenderer {
             let cache_data = cache_dir.and_then(|dir| {
                 let key = wgpu::util::pipeline_cache_key(&adapter_info)?;
                 let path = dir.join(key);
-                match std::fs::read(&path) {
-                    Ok(data) => {
-                        debug!(
-                            bytes = data.len(),
-                            path = %path.display(),
-                            "gpu init: loaded pipeline cache from disk"
-                        );
-                        Some(data)
-                    }
-                    Err(_) => None,
-                }
+                load_pipeline_cache(&path).map(|data| {
+                    debug!(
+                        bytes = data.len(),
+                        path = %path.display(),
+                        "gpu init: loaded pipeline cache from disk"
+                    );
+                    data
+                })
             });
 
             // SAFETY: data (if Some) was previously obtained from PipelineCache::get_data
