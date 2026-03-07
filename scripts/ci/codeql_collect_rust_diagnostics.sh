@@ -71,6 +71,46 @@ extract_metric_value() {
   fi
 }
 
+count_csv_rows() {
+  local csv_path="$1"
+  if [ ! -f "${csv_path}" ]; then
+    echo "0"
+    return 0
+  fi
+
+  awk 'NR > 1 && length($0) > 0 { c++ } END { print c + 0 }' "${csv_path}"
+}
+
+classify_extraction_warnings() {
+  local src_csv="$1"
+  local actionable_csv="$2"
+  local benign_csv="$3"
+
+  if [ ! -f "${src_csv}" ]; then
+    return 0
+  fi
+
+  local header
+  header="$(head -n 1 "${src_csv}" || true)"
+  printf '%s\n' "${header}" > "${actionable_csv}"
+  printf '%s\n' "${header}" > "${benign_csv}"
+
+  awk -v actionable="${actionable_csv}" -v benign="${benign_csv}" '
+    NR == 1 { next }
+    NF == 0 { next }
+    {
+      is_semantic = ($0 ~ /semantic analyzer unavailable \(not included in files loaded from manifest\)/)
+      is_generated = ($0 ~ /\/target\/[^"]*\/build\/[^"]*\/out\/[^"]*/)
+
+      if (is_semantic && is_generated) {
+        print >> benign
+      } else {
+        print >> actionable
+      }
+    }
+  ' "${src_csv}"
+}
+
 # Copy raw BQRS diagnostics for offline inspection.
 copy_if_exists "${RESULTS_ROOT}/summary/NumberOfFilesExtractedWithErrors.bqrs" "raw/summary/NumberOfFilesExtractedWithErrors.bqrs" || true
 copy_if_exists "${RESULTS_ROOT}/summary/NumberOfSuccessfullyExtractedFiles.bqrs" "raw/summary/NumberOfSuccessfullyExtractedFiles.bqrs" || true
@@ -96,6 +136,23 @@ fi
 
 errors_count="$(extract_metric_value "${OUT_DIR}/decoded/summary/NumberOfFilesExtractedWithErrors.csv")"
 success_count="$(extract_metric_value "${OUT_DIR}/decoded/summary/NumberOfSuccessfullyExtractedFiles.csv")"
+errors_rows="$(count_csv_rows "${OUT_DIR}/decoded/diagnostics/ExtractionErrors.csv")"
+warnings_rows="$(count_csv_rows "${OUT_DIR}/decoded/diagnostics/ExtractionWarnings.csv")"
+
+actionable_warnings_csv="${OUT_DIR}/decoded/diagnostics/ActionableExtractionWarnings.csv"
+benign_warnings_csv="${OUT_DIR}/decoded/diagnostics/BenignGeneratedExtractionWarnings.csv"
+classify_extraction_warnings "${OUT_DIR}/decoded/diagnostics/ExtractionWarnings.csv" "${actionable_warnings_csv}" "${benign_warnings_csv}"
+actionable_warnings_rows="$(count_csv_rows "${actionable_warnings_csv}")"
+benign_warnings_rows="$(count_csv_rows "${benign_warnings_csv}")"
+
+cat > "${OUT_DIR}/status.env" <<EOF
+CODEQL_EXTRACTED_WITH_ERRORS_METRIC=${errors_count}
+CODEQL_EXTRACTED_WITHOUT_ERRORS_METRIC=${success_count}
+CODEQL_EXTRACTION_ERROR_ROWS=${errors_rows}
+CODEQL_EXTRACTION_WARNING_ROWS=${warnings_rows}
+CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS=${actionable_warnings_rows}
+CODEQL_BENIGN_EXTRACTION_WARNING_ROWS=${benign_warnings_rows}
+EOF
 
 {
   echo "# CodeQL Rust Extraction Diagnostics"
@@ -106,17 +163,32 @@ success_count="$(extract_metric_value "${OUT_DIR}/decoded/summary/NumberOfSucces
   else
     echo "- CodeQL CLI: not found in PATH/toolcache (raw BQRS only)"
   fi
-  echo "- Extracted with errors: \`${errors_count}\`"
-  echo "- Extracted without error: \`${success_count}\`"
+  echo "- Extracted with errors (CodeQL metric): \`${errors_count}\`"
+  echo "- Extracted without error (CodeQL metric): \`${success_count}\`"
+  echo "- ExtractionErrors rows: \`${errors_rows}\`"
+  echo "- ExtractionWarnings rows: \`${warnings_rows}\`"
+  echo "- Actionable extraction warnings: \`${actionable_warnings_rows}\`"
+  echo "- Benign generated extraction warnings: \`${benign_warnings_rows}\`"
   echo
   echo "## Raw BQRS payloads"
   (find "${OUT_DIR}/raw" -type f 2>/dev/null || true) | sort | sed "s#^${OUT_DIR}/#- #"
   echo
   echo "## Decoded diagnostics"
   (find "${OUT_DIR}/decoded" -type f 2>/dev/null || true) | sort | sed "s#^${OUT_DIR}/#- #"
+  echo
+  echo "## Machine-readable status"
+  echo "- \`status.env\` is included in the artifact."
   if [ -f "${OUT_DIR}/decode.log" ]; then
     echo
     echo "## Decode log"
     echo "- \`decode.log\` is included in the artifact."
   fi
 } > "${OUT_DIR}/summary.md"
+
+if [ "${CODEQL_RUST_DIAGNOSTICS_ENFORCE:-0}" = "1" ] || [ "${CODEQL_RUST_DIAGNOSTICS_FAIL_ON_ACTIONABLE:-0}" = "1" ]; then
+  if [ "${errors_rows}" -gt 0 ] || [ "${actionable_warnings_rows}" -gt 0 ]; then
+    printf '::error::CodeQL actionable extraction diagnostics detected (errors=%s actionable_warnings=%s)\n' \
+      "${errors_rows}" "${actionable_warnings_rows}" >&2
+    exit 1
+  fi
+fi

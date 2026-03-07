@@ -90,3 +90,25 @@ jobs:
           else
             echo "CodeQL diagnostics summary was not generated." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Enforce actionable extraction diagnostics
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          status_file="codeql-rust-diagnostics/status.env"
+          if [ ! -f "${status_file}" ]; then
+            echo "::warning::CodeQL diagnostics status file is missing; enforcement skipped."
+            exit 0
+          fi
+
+          # shellcheck source=/dev/null
+          source "${status_file}"
+
+          errors="${CODEQL_EXTRACTION_ERROR_ROWS:-0}"
+          actionable="${CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS:-0}"
+
+          echo "CodeQL extraction diagnostics enforcement: errors=${errors}, actionable_warnings=${actionable}"
+          if [ "${errors}" -gt 0 ] || [ "${actionable}" -gt 0 ]; then
+            echo "::error::Actionable CodeQL extraction diagnostics detected."
+            exit 1
+          fi
