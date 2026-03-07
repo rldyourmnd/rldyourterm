@@ -791,13 +791,12 @@ impl GpuRenderer {
             let cache_data = cache_dir.and_then(|dir| {
                 let key = wgpu::util::pipeline_cache_key(&adapter_info)?;
                 let path = dir.join(key);
-                load_pipeline_cache(&path).map(|data| {
+                load_pipeline_cache(&path).inspect(|data| {
                     debug!(
                         bytes = data.len(),
                         path = %path.display(),
                         "gpu init: loaded pipeline cache from disk"
                     );
-                    data
                 })
             });
 
