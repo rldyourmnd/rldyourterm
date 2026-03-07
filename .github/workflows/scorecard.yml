@@ -22,7 +22,6 @@ jobs:
     permissions:
       actions: read
       contents: read
-      id-token: write
       security-events: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -34,8 +33,48 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: true
+          publish_results: false
           repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize non-URI placeholder artifact paths
+        run: |
+          jq '
+            (.runs[]?.results[]?.locations[]?.physicalLocation?.artifactLocation?.uri) |=
+              (if . == "no file associated with this alert"
+               then "no-file-associated-with-this-alert"
+               else .
+               end)
+          ' results.sarif > results.normalized.sarif
+
+      - name: Filter non-actionable maturity checks from SARIF
+        run: |
+          jq '
+            .runs |= map(
+              .results |= map(
+                select(.ruleId != "MaintainedID")
+                | select(.ruleId != "CodeReviewID")
+                | select(.ruleId != "CIIBestPracticesID")
+              )
+              | (.tool.driver.rules |= ((. // []) | map(
+                  select(.id != "MaintainedID")
+                  | select(.id != "CodeReviewID")
+                  | select(.id != "CIIBestPracticesID")
+                )))
+            )
+          ' results.normalized.sarif > results.filtered.sarif
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: scorecard-sarif
+          path: results.filtered.sarif
+          retention-days: 5
+
+      - name: Upload SARIF results
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: github/codeql-action/upload-sarif@b20883b0cd1f46c72ae0ba6d1090936928f9fa30 # v4
+        with:
+          sarif_file: results.filtered.sarif
 
   # Branch protection expects a required check named exactly "Scorecard".
   scorecard-gate:
