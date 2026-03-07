@@ -527,13 +527,14 @@ fn parse_gpu_failure_command(raw: &str) -> Result<UiRuntimeCommand> {
 
     let kind = match kind_token {
         "device-lost" => GpuFailureKind::DeviceLost,
+        "out-of-memory" => GpuFailureKind::OutOfMemory,
         "surface-error" => GpuFailureKind::SurfaceError,
         "submit-error" => GpuFailureKind::SubmitError,
         "swapchain-out-of-date" => GpuFailureKind::SwapchainOutOfDate,
         _ => {
             return Err(anyhow!(
                 "unsupported gpu failure kind `{kind_token}`; expected one of: \
-device-lost, surface-error, submit-error, swapchain-out-of-date"
+device-lost, out-of-memory, surface-error, submit-error, swapchain-out-of-date"
             ));
         }
     };
@@ -840,6 +841,7 @@ use shared::{render_mode_token, session_boundary_token as boundary_token};
 fn gpu_failure_kind_token(kind: GpuFailureKind) -> &'static str {
     match kind {
         GpuFailureKind::DeviceLost => "device-lost",
+        GpuFailureKind::OutOfMemory => "out-of-memory",
         GpuFailureKind::SurfaceError => "surface-error",
         GpuFailureKind::SubmitError => "submit-error",
         GpuFailureKind::SwapchainOutOfDate => "swapchain-out-of-date",

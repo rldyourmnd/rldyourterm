@@ -590,15 +590,47 @@ impl GuiRuntimeApp {
     /// is already closed and the compositor never learns the window is gone -
     /// leaving a ghost entry in the dock/taskbar.
     ///
-    fn dispatch_terminal_responses(&mut self, events: &[CoreEvent]) {
+    fn dispatch_terminal_responses(
+        &mut self,
+        events: &[CoreEvent],
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
+        let mut emitted_terminal_response = false;
+        let mut saw_write_error = false;
         for event in events {
             if let CoreEvent::TerminalResponse { data } = event {
+                emitted_terminal_response = true;
                 trace!(bytes = data.len(), "sending terminal response to PTY");
                 if let Err(error) = write_all_and_flush(&mut *self.writer, data) {
-                    warn!(%error, "failed to write terminal response to PTY");
+                    saw_write_error = true;
+                    match self.handle_pty_io_error(
+                        SessionBoundary::PtyWrite,
+                        error,
+                        "failed to write terminal response to PTY",
+                    ) {
+                        Ok(PtyBoundaryLoopAction::Continue) => {}
+                        Ok(PtyBoundaryLoopAction::ExitLoop) => {
+                            event_loop.exit();
+                            return false;
+                        }
+                        Err(policy_error) => {
+                            self.fatal_error = Some(policy_error);
+                            event_loop.exit();
+                            return false;
+                        }
+                    }
                 }
             }
         }
+        if emitted_terminal_response
+            && !saw_write_error
+            && let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite)
+        {
+            self.fatal_error = Some(error);
+            event_loop.exit();
+            return false;
+        }
+        true
     }
 
     /// Drop order matters: surface before context, context before window,
@@ -628,6 +660,12 @@ impl GuiRuntimeApp {
         debug!("window resources released");
     }
 
+    fn persist_gpu_pipeline_cache(&mut self) {
+        if let Some(cache_dir) = &self.gpu_cache_dir {
+            self.gpu_renderer.save_pipeline_cache(cache_dir);
+        }
+    }
+
     fn shutdown(&mut self) {
         debug!(
             exit_code = ?self.exit_code,
@@ -635,10 +673,7 @@ impl GuiRuntimeApp {
             "shutdown: beginning teardown"
         );
 
-        // Persist GPU pipeline cache before releasing resources.
-        if let Some(cache_dir) = &self.gpu_cache_dir {
-            self.gpu_renderer.save_pipeline_cache(cache_dir);
-        }
+        self.persist_gpu_pipeline_cache();
 
         if let Err(error) = self.pty.close() {
             warn!(error = %error, "failed to close PTY during GUI shutdown");
@@ -839,7 +874,6 @@ impl GuiRuntimeApp {
         line.push_str("\r\n");
         let mut events = std::mem::take(&mut self.feed_events_scratch);
         self.terminal.feed_into(line.as_bytes(), &mut events);
-        self.dispatch_terminal_responses(&events);
         self.feed_events_scratch = events;
         self.queue_redraw();
     }
@@ -899,34 +933,50 @@ impl GuiRuntimeApp {
         }
     }
 
-    fn apply_output_bytes(&mut self, data: &[u8]) {
+    fn apply_output_bytes(&mut self, data: &[u8], event_loop: &ActiveEventLoop) -> bool {
         trace!(bytes = data.len(), "pty output received");
         let mut events = std::mem::take(&mut self.feed_events_scratch);
         for chunk in terminal_feed_chunks(data) {
             self.terminal.feed_into(chunk, &mut events);
-            self.dispatch_terminal_responses(&events);
+            if !self.dispatch_terminal_responses(&events, event_loop) {
+                self.feed_events_scratch = events;
+                return false;
+            }
         }
         self.feed_events_scratch = events;
+        true
     }
 
-    fn flush_output_batch(&mut self, batch: &mut Vec<u8>) {
+    fn flush_output_batch(&mut self, batch: &mut Vec<u8>, event_loop: &ActiveEventLoop) -> bool {
         if batch.is_empty() {
-            return;
+            return true;
         }
-        self.apply_output_bytes(batch.as_slice());
+        if !self.apply_output_bytes(batch.as_slice(), event_loop) {
+            return false;
+        }
         batch.clear();
+        true
     }
 
-    fn append_output_chunk_to_batch(&mut self, batch: &mut Vec<u8>, data: &[u8]) {
+    fn append_output_chunk_to_batch(
+        &mut self,
+        batch: &mut Vec<u8>,
+        data: &[u8],
+        event_loop: &ActiveEventLoop,
+    ) -> bool {
         if data.len() >= OUTPUT_BATCH_MAX_BYTES {
-            self.flush_output_batch(batch);
-            self.apply_output_bytes(data);
-            return;
+            if !self.flush_output_batch(batch, event_loop) {
+                return false;
+            }
+            return self.apply_output_bytes(data, event_loop);
         }
-        if should_flush_output_batch(batch.len(), data.len()) {
-            self.flush_output_batch(batch);
+        if should_flush_output_batch(batch.len(), data.len())
+            && !self.flush_output_batch(batch, event_loop)
+        {
+            return false;
         }
         batch.extend_from_slice(data);
+        true
     }
 
     fn drain_output_queue(&mut self, event_loop: &ActiveEventLoop) {
@@ -940,7 +990,10 @@ impl GuiRuntimeApp {
             while let Ok(data) = self.output_rx.try_recv() {
                 drained_any = true;
                 drained_bytes = drained_bytes.saturating_add(data.len());
-                self.append_output_chunk_to_batch(&mut batch, &data);
+                if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
+                    self.output_batch = batch;
+                    return;
+                }
                 if output_drain_budget_exhausted(drained_bytes, drain_started.elapsed()) {
                     budget_exhausted = true;
                     break 'drain;
@@ -956,7 +1009,10 @@ impl GuiRuntimeApp {
                     self.output_event_pending.store(true, Ordering::Release);
                     drained_any = true;
                     drained_bytes = drained_bytes.saturating_add(data.len());
-                    self.append_output_chunk_to_batch(&mut batch, &data);
+                    if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
+                        self.output_batch = batch;
+                        return;
+                    }
                     if output_drain_budget_exhausted(drained_bytes, drain_started.elapsed()) {
                         budget_exhausted = true;
                         break;
@@ -967,7 +1023,10 @@ impl GuiRuntimeApp {
             }
         }
 
-        self.flush_output_batch(&mut batch);
+        if !self.flush_output_batch(&mut batch, event_loop) {
+            self.output_batch = batch;
+            return;
+        }
         if batch.capacity() > OUTPUT_BATCH_MAX_BYTES * 2 {
             batch.shrink_to(OUTPUT_BATCH_INITIAL_CAPACITY);
         }
@@ -1591,6 +1650,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             has_fatal_error = self.fatal_error.is_some(),
             "ApplicationHandler::exiting - event loop shutting down"
         );
+        self.persist_gpu_pipeline_cache();
         // Release window resources while the Wayland/X11 connection is still
         // alive.  This ensures the compositor receives surface-destroy and
         // removes the window from the dock/taskbar.
@@ -1610,6 +1670,13 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 ref message,
             } => {
                 warn!(?boundary, %message, "pty boundary failure event");
+                if *boundary == SessionBoundary::PtyRead {
+                    self.fatal_error = Some(anyhow!(
+                        "fatal PTY reader boundary failure: reader pump terminated and cannot be resumed safely: {message}"
+                    ));
+                    event_loop.exit();
+                    return;
+                }
                 match self.handle_pty_boundary_failure(*boundary, message) {
                     Ok(PtyBoundaryLoopAction::Continue) => {}
                     Ok(PtyBoundaryLoopAction::ExitLoop) => {

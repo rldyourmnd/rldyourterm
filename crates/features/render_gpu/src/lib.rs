@@ -317,8 +317,10 @@ impl GpuRenderError {
             | GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Lost) => {
                 GpuFailureKind::SwapchainOutOfDate
             }
+            GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::OutOfMemory) => {
+                GpuFailureKind::OutOfMemory
+            }
             GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Timeout)
-            | GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::OutOfMemory)
             | GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::Other) => {
                 GpuFailureKind::SurfaceError
             }
@@ -2050,7 +2052,7 @@ mod tests {
         );
         assert_eq!(
             GpuRenderError::SurfaceAcquire(wgpu::SurfaceError::OutOfMemory).failure_kind(),
-            GpuFailureKind::SurfaceError
+            GpuFailureKind::OutOfMemory
         );
         assert_eq!(
             GpuRenderError::SubmitFailed.failure_kind(),
