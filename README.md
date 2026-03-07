@@ -41,6 +41,17 @@ cargo check -p rldyourterm-ui
 cargo check -p rldyourterm-app
 ```
 
+## Fuzzing
+
+The repository includes `cargo-fuzz` targets and ClusterFuzzLite workflows.
+
+Local quick run:
+
+```bash
+cargo install cargo-fuzz
+cargo fuzz run parser_feed -- -max_total_time=30
+```
+
 ## Interactive Run
 
 Run the binary directly as the terminal runtime (outside the MVP harness):

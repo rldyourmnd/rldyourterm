@@ -7,6 +7,10 @@
 
 # Rust build artifacts
 target/
+fuzz/target/
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/coverage/
 
 # Orchestrator runtime outputs
 scripts/orchestrator/logs/

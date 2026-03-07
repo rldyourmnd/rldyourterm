@@ -1,0 +1,7 @@
+homepage: "https://github.com/rldyourmnd/rldyourterm"
+main_repo: "https://github.com/rldyourmnd/rldyourterm"
+language: rust
+fuzzing_engines:
+  - libfuzzer
+sanitizers:
+  - address
