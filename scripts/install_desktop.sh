@@ -62,7 +62,7 @@ if [ ! -x "$BINARY" ]; then
 fi
 
 escape_desktop_exec_arg() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+    printf '%s' "$1" | sed -e 's/%/%%/g' -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
 EXEC_BINARY="$(escape_desktop_exec_arg "$BINARY")"
