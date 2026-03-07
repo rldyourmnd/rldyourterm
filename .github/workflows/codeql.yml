@@ -52,7 +52,8 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Cache is authored by the main CI `check` job to avoid cross-workflow races.
+          save-if: "false"
 
       - name: Install system dependencies
         run: |
@@ -66,3 +67,24 @@ jobs:
         uses: github/codeql-action/analyze@0d579ffd059c29b07949a3cce3983f0780820c98
         with:
           category: "/language:rust"
+
+      - name: Collect Rust extraction diagnostics
+        if: ${{ always() }}
+        run: bash scripts/ci/codeql_collect_rust_diagnostics.sh codeql-rust-diagnostics
+
+      - name: Upload Rust extraction diagnostics artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: codeql-rust-diagnostics-${{ github.run_id }}
+          path: codeql-rust-diagnostics
+          if-no-files-found: warn
+
+      - name: Publish extraction diagnostics summary
+        if: ${{ always() }}
+        run: |
+          if [ -f codeql-rust-diagnostics/summary.md ]; then
+            cat codeql-rust-diagnostics/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "CodeQL diagnostics summary was not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
