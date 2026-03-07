@@ -7,11 +7,12 @@ fi
 
 cd "$SRC/rldyourterm"
 
-# ClusterFuzzLite sets RUSTUP_TOOLCHAIN in the runtime container and may pin
-# an older nightly than the repository MSRV. Force fresh nightly selection for
-# fuzz builds to keep CI aligned with workspace rust-version constraints.
-export RUSTUP_TOOLCHAIN="nightly"
-cargo +nightly fuzz build -O
+# ClusterFuzzLite may inject an outdated RUSTUP_TOOLCHAIN (seen in CI logs).
+# Use a pinned nightly by default for deterministic fuzz CI and MSRV alignment.
+# Override via CFLITE_RUST_TOOLCHAIN when intentionally updating the snapshot.
+CFLITE_RUST_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN:-nightly-2026-03-07}"
+export RUSTUP_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN}"
+cargo +"${CFLITE_RUST_TOOLCHAIN}" fuzz build -O
 
 FUZZ_OUTPUT_DIR="fuzz/target/x86_64-unknown-linux-gnu/release"
 for src in fuzz/fuzz_targets/*.rs; do
