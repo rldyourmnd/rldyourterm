@@ -15,6 +15,27 @@ pub const DEFAULT_SURFACE_RETRY_BUDGET: u8 = 3;
 pub const DEFAULT_SURFACE_RECONFIGURE_RETRY_BUDGET: u8 = 2;
 const MAX_PIPELINE_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelineCacheReadError {
+    Io,
+    TooLarge,
+}
+
+fn read_pipeline_cache_with_limit<R: Read>(
+    reader: &mut R,
+    capacity_hint: usize,
+) -> Result<Vec<u8>, PipelineCacheReadError> {
+    let mut limited_reader = reader.take(MAX_PIPELINE_CACHE_BYTES.saturating_add(1));
+    let mut data = Vec::with_capacity(capacity_hint.min(MAX_PIPELINE_CACHE_BYTES as usize));
+    if limited_reader.read_to_end(&mut data).is_err() {
+        return Err(PipelineCacheReadError::Io);
+    }
+    if data.len() as u64 > MAX_PIPELINE_CACHE_BYTES {
+        return Err(PipelineCacheReadError::TooLarge);
+    }
+    Ok(data)
+}
+
 fn load_pipeline_cache(path: &Path) -> Option<Vec<u8>> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -41,11 +62,18 @@ fn load_pipeline_cache(path: &Path) -> Option<Vec<u8>> {
         Err(_) => return None,
     };
 
-    let mut data = Vec::with_capacity(file_size as usize);
-    if file.read_to_end(&mut data).is_err() {
-        return None;
+    match read_pipeline_cache_with_limit(&mut file, file_size as usize) {
+        Ok(data) => Some(data),
+        Err(PipelineCacheReadError::Io) => None,
+        Err(PipelineCacheReadError::TooLarge) => {
+            warn!(
+                max_bytes = MAX_PIPELINE_CACHE_BYTES,
+                path = %path.display(),
+                "gpu init: skipped pipeline cache that exceeded read size limit"
+            );
+            None
+        }
     }
-    Some(data)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1633,6 +1661,24 @@ mod tests {
         assert_eq!(
             classify_surface_error(&wgpu::SurfaceError::Timeout),
             SurfaceErrorCategory::Retryable
+        );
+    }
+
+    #[test]
+    fn pipeline_cache_reader_accepts_payload_at_cap() {
+        let payload = vec![0_u8; MAX_PIPELINE_CACHE_BYTES as usize];
+        let mut cursor = std::io::Cursor::new(payload.clone());
+        let loaded = read_pipeline_cache_with_limit(&mut cursor, payload.len())
+            .expect("payload at cap must load");
+        assert_eq!(loaded.len(), payload.len());
+    }
+
+    #[test]
+    fn pipeline_cache_reader_rejects_payload_above_cap() {
+        let mut cursor = std::io::Cursor::new(vec![0_u8; MAX_PIPELINE_CACHE_BYTES as usize + 1]);
+        assert_eq!(
+            read_pipeline_cache_with_limit(&mut cursor, 0),
+            Err(PipelineCacheReadError::TooLarge)
         );
     }
 
