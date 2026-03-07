@@ -80,7 +80,7 @@ jobs:
         with:
           name: codeql-rust-diagnostics-${{ github.run_id }}
           path: codeql-rust-diagnostics
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Publish extraction diagnostics summary
         if: ${{ always() }}
@@ -97,8 +97,8 @@ jobs:
           set -euo pipefail
           status_file="codeql-rust-diagnostics/status.env"
           if [ ! -f "${status_file}" ]; then
-            echo "::warning::CodeQL diagnostics status file is missing; enforcement skipped."
-            exit 0
+            echo "::error::CodeQL diagnostics status file is missing; enforcement cannot continue."
+            exit 1
           fi
 
           # shellcheck source=/dev/null
@@ -106,6 +106,18 @@ jobs:
 
           errors="${CODEQL_EXTRACTION_ERROR_ROWS:-0}"
           actionable="${CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS:-0}"
+          case "${errors}" in
+            ''|*[!0-9]*)
+              echo "::error::Invalid CODEQL_EXTRACTION_ERROR_ROWS='${errors}' in ${status_file}."
+              exit 1
+              ;;
+          esac
+          case "${actionable}" in
+            ''|*[!0-9]*)
+              echo "::error::Invalid CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS='${actionable}' in ${status_file}."
+              exit 1
+              ;;
+          esac
 
           echo "CodeQL extraction diagnostics enforcement: errors=${errors}, actionable_warnings=${actionable}"
           if [ "${errors}" -gt 0 ] || [ "${actionable}" -gt 0 ]; then
