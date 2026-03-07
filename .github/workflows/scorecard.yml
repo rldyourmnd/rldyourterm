@@ -35,3 +35,22 @@ jobs:
           results_format: sarif
           publish_results: true
           repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Branch protection expects a required check named exactly "Scorecard".
+  scorecard-gate:
+    name: Scorecard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [scorecard]
+    steps:
+      - name: Validate scorecard job result
+        run: |
+          case "${{ needs.scorecard.result }}" in
+            success|skipped)
+              ;;
+            *)
+              echo "Scorecard gate blocked by upstream result: ${{ needs.scorecard.result }}" >&2
+              exit 1
+              ;;
+          esac
