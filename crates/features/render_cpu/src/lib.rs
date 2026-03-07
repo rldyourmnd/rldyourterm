@@ -2,7 +2,7 @@ use rldyourterm_services::render_mode::RenderMode;
 use rldyourterm_services::{Cursor, Grid, TerminalState};
 use tracing::warn;
 
-pub const DEFAULT_SCROLLBACK_CAP: usize = 50_000;
+pub const DEFAULT_SCROLLBACK_CAP: usize = rldyourterm_services::DEFAULT_SCROLLBACK_CAP;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuRendererConfig {

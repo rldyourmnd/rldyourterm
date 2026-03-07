@@ -6,6 +6,7 @@ use tracing::{info, warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFailureKind {
     DeviceLost,
+    OutOfMemory,
     SurfaceError,
     SubmitError,
     SwapchainOutOfDate,
@@ -14,7 +15,7 @@ pub enum GpuFailureKind {
 impl GpuFailureKind {
     #[must_use]
     pub const fn is_immediate_fallback(self) -> bool {
-        matches!(self, Self::DeviceLost)
+        matches!(self, Self::DeviceLost | Self::OutOfMemory)
     }
 }
 
@@ -396,6 +397,27 @@ mod tests {
                     transition.reason,
                     RenderTransitionReason::AutoGpuFallback {
                         metadata: default_metadata(GpuFailureKind::DeviceLost, at(0), 1),
+                    }
+                );
+            }
+            other => panic!("unexpected decision: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn out_of_memory_forces_immediate_fallback_in_auto_mode() {
+        let mut controller = RenderModeController::new(RenderMode::Auto);
+
+        match controller.on_gpu_failure(GpuFailureKind::OutOfMemory, at(0)) {
+            FallbackDecision::SwitchToCpu(transition) => {
+                assert_eq!(transition.from_mode, RenderMode::Auto);
+                assert_eq!(transition.to_mode, RenderMode::Auto);
+                assert_eq!(transition.from, ActiveRenderPath::Gpu);
+                assert_eq!(transition.to, ActiveRenderPath::Cpu);
+                assert_eq!(
+                    transition.reason,
+                    RenderTransitionReason::AutoGpuFallback {
+                        metadata: default_metadata(GpuFailureKind::OutOfMemory, at(0), 1),
                     }
                 );
             }
