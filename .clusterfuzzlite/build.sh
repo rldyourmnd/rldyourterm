@@ -7,7 +7,11 @@ fi
 
 cd "$SRC/rldyourterm"
 
-cargo fuzz build -O
+# ClusterFuzzLite sets RUSTUP_TOOLCHAIN in the runtime container and may pin
+# an older nightly than the repository MSRV. Force fresh nightly selection for
+# fuzz builds to keep CI aligned with workspace rust-version constraints.
+export RUSTUP_TOOLCHAIN="nightly"
+cargo +nightly fuzz build -O
 
 FUZZ_OUTPUT_DIR="fuzz/target/x86_64-unknown-linux-gnu/release"
 for src in fuzz/fuzz_targets/*.rs; do
