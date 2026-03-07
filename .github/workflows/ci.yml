@@ -59,7 +59,8 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Linux cache is authored by `check`; only macOS test persists its own cache.
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.os == 'macos-14' }}
       - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-24.04'
         run: |
@@ -123,7 +124,8 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Avoid parallel cache write races; this job only restores cache.
+          save-if: "false"
       - name: Install system dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update
@@ -179,7 +181,8 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Avoid parallel cache write races; this job only restores cache.
+          save-if: "false"
           cache-targets: false
       - name: Install cargo-audit
         uses: taiki-e/install-action@c05f3b579dc4e021a32e3f90a4ac41e0ce8a9035
