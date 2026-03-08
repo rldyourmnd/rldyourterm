@@ -11,7 +11,7 @@ use rldyourterm_services::render_mode::GpuFailureKind;
 #[cfg(test)]
 use rldyourterm_services::terminal::ANSI_PALETTE;
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, TerminalState, color_to_u32,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, DEFAULT_BG, DEFAULT_FG, TerminalState, color_to_u32,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -92,9 +92,6 @@ impl fmt::Display for GpuRenderError {
 
 impl Error for GpuRenderError {}
 
-// Default terminal colors (must match gui_runtime)
-const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
-
 // Attribute flag bits packed in upper bits of CellInstance::atlas_and_flags.
 // Lower 16 bits = atlas slot index (supports 65536 glyphs).
 const ATTR_BOLD: u32 = 1 << 16;
@@ -106,7 +103,7 @@ const ATTR_INVERSE: u32 = 1 << 21;
 
 // Sentinel value indicating no active selection (u32::MAX).
 const SELECTION_NONE: u32 = u32::MAX;
-const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
+// Matches ui::DEFAULT_TERMINAL_COLS * ui::DEFAULT_TERMINAL_ROWS for initial buffer sizing.
 const INITIAL_CELL_BUFFER_CAPACITY: usize = 120 * 32;
 const CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR: usize = 4;
 const CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD: u16 = 120;

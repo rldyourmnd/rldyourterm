@@ -14,7 +14,10 @@ impl GpuRenderer {
             if backend.config.width == clamped_width && backend.config.height == clamped_height {
                 return;
             }
-            let _ = update_surface_extent(&mut backend.config, width, height, max_dim);
+            if let Err(err) = update_surface_extent(&mut backend.config, width, height, max_dim) {
+                debug!(%err, width, height, max_dim, "surface extent rejected after zero-dimension guard");
+                return;
+            }
             backend.surface.configure(&backend.device, &backend.config);
             self.policy
                 .on_reconfigure_success(&mut backend.surface_state);
