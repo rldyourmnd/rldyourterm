@@ -41,7 +41,8 @@ use crate::runtime_shared::pty_boundary::{
 };
 use crate::runtime_shared::runtime_config::frame_budget_millis as shared_frame_budget_millis;
 use crate::runtime_shared::shutdown::{
-    JoinThreadOutcome, join_thread_with_timeout as shared_join_thread_with_timeout,
+    JoinThreadOutcome, SHUTDOWN_JOIN_POLL_INTERVAL, SHUTDOWN_JOIN_TIMEOUT,
+    join_thread_with_timeout as shared_join_thread_with_timeout,
 };
 use crate::runtime_shared::spawn_env::ai_cli_spawn_env_overrides;
 use anyhow::{Context, Result, anyhow};
@@ -59,8 +60,6 @@ const MIN_EVENT_POLL_TIMEOUT_MILLIS: u64 = 1;
 const MAX_EVENT_POLL_TIMEOUT_MILLIS: u64 = 200;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
-const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READ_PUMP_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const READ_PUMP_FLUSH_MAX_BYTES: usize = 32 * 1024;
 const READ_PUMP_SIGNAL_STDOUT_DISCONNECTED: &str = "stdout-disconnected";

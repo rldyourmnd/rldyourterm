@@ -58,7 +58,8 @@ use crate::runtime_shared::pty_boundary::{
     resolve_live_pty_read_failure, runtime_boundary_notice,
 };
 use crate::runtime_shared::shutdown::{
-    JoinThreadOutcome, child_exit_drain_timed_out as shared_child_exit_drain_timed_out,
+    JoinThreadOutcome, SHUTDOWN_JOIN_POLL_INTERVAL, SHUTDOWN_JOIN_TIMEOUT,
+    child_exit_drain_timed_out as shared_child_exit_drain_timed_out,
     join_thread_with_timeout as shared_join_thread_with_timeout,
 };
 use crate::runtime_shared::terminal::{
@@ -104,8 +105,6 @@ const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
-const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CHILD_EXIT_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_EXIT_DRAIN_MAX_WAIT: Duration = Duration::from_millis(750);
 #[cfg(test)]
