@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use rldyourterm_foundation::api::pty::PtyIo;
 use rldyourterm_services::session::{
     FatalBoundaryReason, SessionBoundary, SessionController, SessionState,
 };
@@ -19,6 +20,11 @@ pub(crate) struct BoundaryRecovery {
     pub from: SessionState,
     pub to: SessionState,
     pub notice: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtyReadFailureResolution {
+    ChildExited(i32),
 }
 
 pub(crate) fn apply_pty_boundary_failure(
@@ -79,6 +85,48 @@ pub(crate) fn fatal_pty_boundary_failure(
     }
 }
 
+pub(crate) fn force_fatal_pty_boundary_failure(
+    session_policy: &mut SessionController,
+    boundary: SessionBoundary,
+    detail: &str,
+) -> anyhow::Error {
+    match session_policy.handle_fatal_boundary(boundary) {
+        Ok(_) => anyhow!(
+            "fatal PTY boundary failure boundary={} reason={} detail={detail}",
+            session_boundary_token(boundary),
+            fatal_boundary_reason_token(FatalBoundaryReason::BoundaryFatal),
+        ),
+        Err(error) => anyhow!(
+            "failed to force fatal PTY boundary failure boundary={}: {error}",
+            session_boundary_token(boundary),
+        ),
+    }
+}
+
+pub(crate) fn resolve_live_pty_read_failure(
+    pty: &dyn PtyIo,
+    session_policy: &mut SessionController,
+    detail: &str,
+    poll_context: &'static str,
+) -> Result<PtyReadFailureResolution, anyhow::Error> {
+    match pty.try_wait() {
+        Ok(Some(code)) => Ok(PtyReadFailureResolution::ChildExited(code)),
+        Ok(None) => Err(force_fatal_pty_boundary_failure(
+            session_policy,
+            SessionBoundary::PtyRead,
+            detail,
+        )),
+        Err(error) => {
+            let detail = format!("{poll_context}: {error}");
+            Err(fatal_pty_boundary_failure(
+                session_policy,
+                SessionBoundary::PtyWait,
+                &detail,
+            ))
+        }
+    }
+}
+
 pub(crate) fn mark_pty_boundary_recovered(
     session_policy: &mut SessionController,
     boundary: SessionBoundary,
@@ -106,8 +154,71 @@ pub(crate) fn mark_pty_boundary_recovered(
 
 #[cfg(test)]
 mod tests {
-    use super::fatal_pty_boundary_failure;
+    use super::{
+        PtyReadFailureResolution, fatal_pty_boundary_failure, force_fatal_pty_boundary_failure,
+        resolve_live_pty_read_failure,
+    };
+    use rldyourterm_foundation::api::{
+        common::ContractResult,
+        pty::{PtyIo, PtySize},
+    };
+    use rldyourterm_foundation::error::{
+        FoundationError, PtyFailureCode, PtyOperation, Recoverability,
+    };
     use rldyourterm_services::session::{SessionBoundary, SessionController};
+    use std::io::{Read, Write};
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    enum StubTryWaitResult {
+        Running,
+        Exited(i32),
+        Error(&'static str),
+    }
+
+    struct StubPtyIo {
+        try_wait_result: Mutex<StubTryWaitResult>,
+    }
+
+    impl PtyIo for StubPtyIo {
+        fn take_reader(&self) -> ContractResult<Box<dyn Read + Send>> {
+            unreachable!("reader access is not part of this test")
+        }
+
+        fn take_writer(&self) -> ContractResult<Box<dyn Write + Send>> {
+            unreachable!("writer access is not part of this test")
+        }
+
+        fn resize(&self, _size: PtySize) -> ContractResult<()> {
+            unreachable!("resize is not part of this test")
+        }
+
+        fn kill(&self) -> ContractResult<()> {
+            unreachable!("kill is not part of this test")
+        }
+
+        fn wait(&self) -> ContractResult<i32> {
+            unreachable!("wait is not part of this test")
+        }
+
+        fn try_wait(&self) -> ContractResult<Option<i32>> {
+            match &*self.try_wait_result.lock().expect("stub lock") {
+                StubTryWaitResult::Running => Ok(None),
+                StubTryWaitResult::Exited(code) => Ok(Some(*code)),
+                StubTryWaitResult::Error(message) => Err(FoundationError::pty(
+                    PtyOperation::TryWait,
+                    PtyFailureCode::BoundaryFault,
+                    Recoverability::Fatal,
+                    *message,
+                    None,
+                )),
+            }
+        }
+
+        fn close(&self) -> ContractResult<()> {
+            unreachable!("close is not part of this test")
+        }
+    }
 
     #[test]
     fn fatal_pty_boundary_failure_uses_explicit_error_path() {
@@ -123,6 +234,98 @@ mod tests {
         );
 
         assert!(error.to_string().contains("fatal PTY boundary failure"));
+        assert!(error.to_string().contains("boundary=pty-wait"));
+    }
+
+    #[test]
+    fn force_fatal_pty_boundary_failure_overrides_recoverable_classification() {
+        let mut session_policy = SessionController::with_recoverable_budget(3);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let error = force_fatal_pty_boundary_failure(
+            &mut session_policy,
+            SessionBoundary::PtyRead,
+            "reader lost",
+        );
+
+        assert!(error.to_string().contains("fatal PTY boundary failure"));
+        assert!(error.to_string().contains("boundary=pty-read"));
+        assert_eq!(
+            session_policy.state(),
+            rldyourterm_services::session::SessionState::Stopping
+        );
+    }
+
+    #[test]
+    fn resolve_live_pty_read_failure_is_fatal_while_child_is_running() {
+        let pty = StubPtyIo {
+            try_wait_result: Mutex::new(StubTryWaitResult::Running),
+        };
+        let mut session_policy = SessionController::with_recoverable_budget(3);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let error = resolve_live_pty_read_failure(
+            &pty,
+            &mut session_policy,
+            "reader pump failed",
+            "failed to poll PTY after reader failure",
+        )
+        .expect_err("live reader loss must be fatal under single-reader PTY contract");
+
+        assert!(error.to_string().contains("boundary=pty-read"));
+        assert_eq!(
+            session_policy.state(),
+            rldyourterm_services::session::SessionState::Stopping
+        );
+    }
+
+    #[test]
+    fn resolve_live_pty_read_failure_preserves_post_exit_handling() {
+        let pty = StubPtyIo {
+            try_wait_result: Mutex::new(StubTryWaitResult::Exited(17)),
+        };
+        let mut session_policy = SessionController::with_recoverable_budget(3);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let resolution = resolve_live_pty_read_failure(
+            &pty,
+            &mut session_policy,
+            "reader pump failed",
+            "failed to poll PTY after reader failure",
+        )
+        .expect("post-exit reader failure should not escalate");
+
+        assert_eq!(resolution, PtyReadFailureResolution::ChildExited(17));
+        assert_eq!(
+            session_policy.state(),
+            rldyourterm_services::session::SessionState::Running
+        );
+    }
+
+    #[test]
+    fn resolve_live_pty_read_failure_promotes_try_wait_errors_to_fatal_wait_boundary() {
+        let pty = StubPtyIo {
+            try_wait_result: Mutex::new(StubTryWaitResult::Error("wait poll broke")),
+        };
+        let mut session_policy = SessionController::with_recoverable_budget(3);
+        session_policy
+            .mark_running()
+            .expect("session should enter running state");
+
+        let error = resolve_live_pty_read_failure(
+            &pty,
+            &mut session_policy,
+            "reader pump failed",
+            "failed to poll PTY after reader failure",
+        )
+        .expect_err("try_wait failure should escalate as fatal wait boundary");
+
         assert!(error.to_string().contains("boundary=pty-wait"));
     }
 }

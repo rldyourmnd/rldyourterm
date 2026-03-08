@@ -53,8 +53,9 @@ use crate::runtime_shared::palette::{
     runtime_palette_status_line as shared_runtime_palette_status_line, toggle_runtime_palette,
 };
 use crate::runtime_shared::pty_boundary::{
-    BoundaryFailureOutcome, apply_pty_boundary_failure, fatal_pty_boundary_failure,
-    mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered, runtime_boundary_notice,
+    BoundaryFailureOutcome, PtyReadFailureResolution, apply_pty_boundary_failure,
+    fatal_pty_boundary_failure, mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered,
+    resolve_live_pty_read_failure, runtime_boundary_notice,
 };
 use crate::runtime_shared::shutdown::{
     JoinThreadOutcome, child_exit_drain_timed_out as shared_child_exit_drain_timed_out,
@@ -526,12 +527,13 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                         self.begin_child_exit_drain(event_loop);
                         return;
                     }
-                    match self
-                        .pty
-                        .try_wait()
-                        .context("failed to poll PTY after reader boundary failure")
-                    {
-                        Ok(Some(code)) => {
+                    match resolve_live_pty_read_failure(
+                        &*self.pty,
+                        &mut self.session_policy,
+                        message,
+                        "failed to poll PTY after reader boundary failure",
+                    ) {
+                        Ok(PtyReadFailureResolution::ChildExited(code)) => {
                             self.exit_code = Some(code);
                             info!(
                                 exit_code = code,
@@ -540,7 +542,6 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                             self.begin_child_exit_drain(event_loop);
                             return;
                         }
-                        Ok(None) => {}
                         Err(error) => {
                             self.fatal_error = Some(error);
                             event_loop.exit();

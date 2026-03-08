@@ -33,8 +33,9 @@ use crate::runtime_shared::palette::{
     RuntimePaletteView, handle_runtime_palette_key_input, toggle_runtime_palette,
 };
 use crate::runtime_shared::pty_boundary::{
-    BoundaryFailureOutcome, apply_pty_boundary_failure, fatal_pty_boundary_failure,
-    mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered, runtime_boundary_notice,
+    BoundaryFailureOutcome, PtyReadFailureResolution, apply_pty_boundary_failure,
+    fatal_pty_boundary_failure, mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered,
+    resolve_live_pty_read_failure, runtime_boundary_notice,
 };
 use crate::runtime_shared::runtime_config::frame_budget_millis as shared_frame_budget_millis;
 use crate::runtime_shared::shutdown::{
@@ -128,8 +129,6 @@ pub fn run_interactive_pty(
     let mut exit_code: Option<i32> = None;
     let mut requested_local_exit = false;
     let mut fatal_error: Option<anyhow::Error> = None;
-    let mut read_pump_monitoring_active = true;
-
     loop {
         match pty.try_wait().context("failed to poll PTY child status") {
             Ok(Some(code)) => {
@@ -165,83 +164,38 @@ pub fn run_interactive_pty(
                     }
                     break;
                 }
-                match pty
-                    .try_wait()
-                    .context("failed to poll PTY after read pump failure")
-                {
-                    Ok(Some(code)) => {
+                let detail = format!("TTY read pump failure detail={detail}");
+                match resolve_live_pty_read_failure(
+                    &*pty,
+                    &mut session_policy,
+                    &detail,
+                    "failed to poll PTY after read pump failure",
+                ) {
+                    Ok(PtyReadFailureResolution::ChildExited(code)) => {
                         exit_code = Some(code);
                         info!(
                             exit_code = code,
                             "TTY read pump failure observed after child exit; stopping without fatal escalation"
                         );
-                        break;
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let detail = format!("failed to poll PTY after read pump failure: {error}");
-                        fatal_error = Some(fatal_pty_boundary_failure(
-                            &mut session_policy,
-                            SessionBoundary::PtyWait,
-                            &detail,
-                        ));
-                        break;
-                    }
+                    Err(policy_error) => fatal_error = Some(policy_error),
                 }
-                let detail = format!("TTY read pump failure detail={detail}");
-                match handle_pty_boundary_failure(
-                    &mut session_policy,
-                    SessionBoundary::PtyRead,
-                    &detail,
-                ) {
-                    Ok(()) => {
-                        read_pump_monitoring_active = false;
-                    }
-                    Err(policy_error) => {
-                        fatal_error = Some(policy_error);
-                        break;
-                    }
-                }
+                break;
             }
             Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected)
-                if read_pump.is_finished() && read_pump_monitoring_active =>
-            {
-                match pty
-                    .try_wait()
-                    .context("failed to poll PTY after read pump disconnect")
-                {
-                    Ok(Some(code)) => {
-                        exit_code = Some(code);
-                    }
-                    Ok(None) => {
-                        if requested_local_exit {
-                            exit_code.get_or_insert(0);
-                        } else {
-                            let detail =
-                                "PTY read pump terminated unexpectedly while child is running";
-                            match handle_pty_boundary_failure(
-                                &mut session_policy,
-                                SessionBoundary::PtyRead,
-                                detail,
-                            ) {
-                                Ok(()) => {
-                                    read_pump_monitoring_active = false;
-                                    continue;
-                                }
-                                Err(policy_error) => fatal_error = Some(policy_error),
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let detail =
-                            format!("failed to poll PTY after read pump disconnect: {error}");
-                        fatal_error = Some(fatal_pty_boundary_failure(
-                            &mut session_policy,
-                            SessionBoundary::PtyWait,
-                            &detail,
-                        ));
-                    }
+            Err(TryRecvError::Disconnected) if read_pump.is_finished() => {
+                if requested_local_exit {
+                    exit_code.get_or_insert(0);
+                    break;
+                }
+                match resolve_live_pty_read_failure(
+                    &*pty,
+                    &mut session_policy,
+                    "PTY read pump terminated unexpectedly while child is running",
+                    "failed to poll PTY after read pump disconnect",
+                ) {
+                    Ok(PtyReadFailureResolution::ChildExited(code)) => exit_code = Some(code),
+                    Err(policy_error) => fatal_error = Some(policy_error),
                 }
                 break;
             }
