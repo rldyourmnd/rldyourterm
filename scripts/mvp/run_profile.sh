@@ -62,16 +62,16 @@ if ! (cd "$ROOT_DIR" && cargo check -q -p rldyourterm-app >/dev/null); then
   exit 1
 fi
 
-echo "MVP_PROFILE_START profile=$profile repeat=$repeat extra_commands=$extra_command_count single_window_required=$single_window_required release_governance=$release_governance log=$log_file"
+echo "MVP_PROFILE_START profile=$profile repeat=$repeat extra_commands=$extra_command_count repo_head_sha=$REPO_HEAD_SHA single_window_required=$single_window_required release_governance=$release_governance log=$log_file"
 
 if ! run_app_capture "$profile" "$repeat" "$log_file" "$@"; then
-  echo "MVP_PROFILE_RESULT profile=$profile status=fail reason=app-run-failed repeat=$repeat extra_commands=$extra_command_count single_window_required=$single_window_required release_governance=$release_governance log=$log_file" >&2
+  echo "MVP_PROFILE_RESULT profile=$profile status=fail reason=app-run-failed repeat=$repeat extra_commands=$extra_command_count repo_head_sha=$REPO_HEAD_SHA single_window_required=$single_window_required release_governance=$release_governance log=$log_file" >&2
   exit 1
 fi
 
 if ! assert_result_line "$profile" "$log_file"; then
-  echo "MVP_PROFILE_RESULT profile=$profile status=fail reason=gate-assertion-failed repeat=$repeat extra_commands=$extra_command_count single_window_required=$single_window_required release_governance=$release_governance log=$log_file" >&2
+  echo "MVP_PROFILE_RESULT profile=$profile status=fail reason=gate-assertion-failed repeat=$repeat extra_commands=$extra_command_count repo_head_sha=$REPO_HEAD_SHA single_window_required=$single_window_required release_governance=$release_governance log=$log_file" >&2
   exit 1
 fi
 
-echo "MVP_PROFILE_RESULT profile=$profile status=pass reason=gate-pass repeat=$repeat extra_commands=$extra_command_count single_window_required=$single_window_required release_governance=$release_governance log=$log_file"
+echo "MVP_PROFILE_RESULT profile=$profile status=pass reason=gate-pass repeat=$repeat extra_commands=$extra_command_count repo_head_sha=$REPO_HEAD_SHA single_window_required=$single_window_required release_governance=$release_governance log=$log_file"

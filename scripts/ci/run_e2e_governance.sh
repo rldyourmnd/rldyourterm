@@ -70,17 +70,21 @@ bash planning/system/validate_planning.sh
 echo "GOVERNANCE_E2E_STEP step=vsa-dependency-graph"
 bash scripts/ci/validate_vsa_dependency_graph.sh
 
+if [[ "$with_matrix" == "1" ]]; then
+  echo "GOVERNANCE_E2E_STEP step=compatibility-matrix repeat=3"
+  bash scripts/mvp/run_matrix.sh 3
+  if [[ "$mode" == "release" ]]; then
+    echo "GOVERNANCE_E2E_STEP step=refresh-evidence-manifest"
+    python3 scripts/ci/refresh_release_evidence_manifest.py --output "$manifest_path"
+  fi
+fi
+
 if [[ "$mode" == "release" ]]; then
   echo "GOVERNANCE_E2E_STEP step=evidence-freshness mode=strict"
   bash scripts/ci/validate_release_evidence_freshness.sh --manifest "$manifest_path" --mode strict
 else
   echo "GOVERNANCE_E2E_STEP step=evidence-freshness mode=policy"
   bash scripts/ci/validate_release_evidence_freshness.sh --manifest "$manifest_path" --mode policy
-fi
-
-if [[ "$with_matrix" == "1" ]]; then
-  echo "GOVERNANCE_E2E_STEP step=compatibility-matrix repeat=3"
-  bash scripts/mvp/run_matrix.sh 3
 fi
 
 echo "GOVERNANCE_E2E_RESULT status=pass mode=$mode manifest=$manifest_path with_matrix=$with_matrix"

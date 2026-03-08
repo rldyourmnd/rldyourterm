@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/output"
+REPO_HEAD_SHA="$(cd "$ROOT_DIR" && git rev-parse HEAD)"
 
 ensure_output_dir() {
   mkdir -p "$OUTPUT_DIR"
@@ -43,7 +44,7 @@ run_app_capture() {
 
   (
     cd "$ROOT_DIR"
-    echo "MVP_HARNESS profile=$profile repeat=$repeat started_at_utc=$started_at_utc single_window_required=1 release_governance=manual-only"
+    echo "MVP_HARNESS profile=$profile repeat=$repeat started_at_utc=$started_at_utc repo_head_sha=$REPO_HEAD_SHA single_window_required=1 release_governance=manual-only"
     echo "MVP_HARNESS_CMD $command_line"
     "${cmd[@]}"
   ) | tee "$log_file"

@@ -171,6 +171,13 @@ else
   fail "G-010 must be closed with explicit evidence in gap register"
 fi
 
+if search_pattern "refresh_release_evidence_manifest.py --output" .github/workflows/release.yml >/dev/null 2>&1 \
+  && search_pattern "run_e2e_governance.sh --mode release --manifest" .github/workflows/release.yml >/dev/null 2>&1; then
+  pass "release workflow uses refreshed preview manifest for strict governance validation"
+else
+  fail "release workflow must refresh a preview manifest and pass it to strict governance validation"
+fi
+
 if search_pattern "No free-form command-line input inside GUI/TTY palette UI" planning/settings/settings_palette.md >/dev/null 2>&1; then
   pass "settings palette scope explicitly forbids free-form UI command line"
 else

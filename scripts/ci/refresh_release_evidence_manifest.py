@@ -72,11 +72,16 @@ def git_head_sha(root: Path) -> str:
     )
 
 
-def latest_matching_log(artifacts_dir: Path, prefix: str) -> Path:
-    matches = sorted(artifacts_dir.glob(f"{prefix}*.log"))
+def latest_matching_log(artifacts_dir: Path, prefix: str, required_markers: list[str]) -> Path:
+    matches: list[Path] = []
+    for candidate in sorted(artifacts_dir.glob(f"{prefix}*.log")):
+        content = candidate.read_text(encoding="utf-8", errors="replace")
+        if all(marker in content for marker in required_markers):
+            matches.append(candidate)
     if not matches:
+        marker_text = ", ".join(required_markers)
         raise FileNotFoundError(
-            f"no artifact logs matching {prefix}*.log in {artifacts_dir}"
+            f"no artifact logs matching {prefix}*.log in {artifacts_dir} with markers [{marker_text}]"
         )
     return matches[-1]
 
@@ -101,11 +106,6 @@ def main() -> int:
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
-    repo = manifest.setdefault("repo", {})
-    repo["head_sha"] = head_sha
-    repo["head_short"] = head_sha[:7]
-    manifest["generated_at_utc"] = generated_at
-
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
         print("manifest.artifacts must be a list", file=sys.stderr)
@@ -126,12 +126,27 @@ def main() -> int:
         )
         return 1
 
+    provenance_marker = f"repo_head_sha={head_sha}"
     for name, prefix in ARTIFACT_PREFIXES.items():
-        latest = latest_matching_log(artifacts_dir, prefix)
+        latest = latest_matching_log(artifacts_dir, prefix, [provenance_marker])
         try:
             artifact_map[name]["path"] = latest.relative_to(root).as_posix()
         except ValueError:
             artifact_map[name]["path"] = latest.as_posix()
+        required_patterns = artifact_map[name].get("required_patterns")
+        if not isinstance(required_patterns, list):
+            print(
+                f"manifest artifact entry {name} must have list required_patterns",
+                file=sys.stderr,
+            )
+            return 1
+        if provenance_marker not in required_patterns:
+            required_patterns.append(provenance_marker)
+
+    repo = manifest.setdefault("repo", {})
+    repo["head_sha"] = head_sha
+    repo["head_short"] = head_sha[:7]
+    manifest["generated_at_utc"] = generated_at
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
