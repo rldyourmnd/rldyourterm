@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-pub use rldyourterm_core::render_mode::RenderMode;
+pub use rldyourterm_core::RenderMode;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

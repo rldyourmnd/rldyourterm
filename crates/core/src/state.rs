@@ -9,6 +9,7 @@ use crate::{
 pub const MAX_FEED_BYTES_PER_CALL: usize = 64 * 1024;
 const FEED_CHUNK_BYTES: usize = 4 * 1024;
 const PARSER_ACTIONS_SCRATCH_INITIAL_CAPACITY: usize = FEED_CHUNK_BYTES / 2;
+const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 8;
 
 #[derive(Debug)]
 struct AlternateScreenState {
@@ -27,15 +28,16 @@ pub struct TerminalState {
     pub scrollback: Scrollback,
     parser: Parser,
     parser_actions_scratch: Vec<ParserAction>,
-    pub pen: Attrs,
+    feed_events_scratch: Vec<CoreEvent>,
+    pen: Attrs,
     saved_cursor: Option<(Cursor, Attrs)>,
     scroll_region: Option<(u16, u16)>,
     alternate_screen: Option<Box<AlternateScreenState>>,
     window_title: String,
-    pub bracketed_paste: bool,
-    pub application_keypad_mode: bool,
-    pub application_cursor_keys: bool,
-    pub auto_wrap: bool,
+    bracketed_paste: bool,
+    application_keypad_mode: bool,
+    application_cursor_keys: bool,
+    auto_wrap: bool,
 }
 
 impl TerminalState {
@@ -46,6 +48,7 @@ impl TerminalState {
             scrollback: Scrollback::new(scrollback_cap),
             parser: Parser::default(),
             parser_actions_scratch: Vec::with_capacity(PARSER_ACTIONS_SCRATCH_INITIAL_CAPACITY),
+            feed_events_scratch: Vec::with_capacity(FEED_EVENTS_SCRATCH_INITIAL_CAPACITY),
             pen: Attrs::default(),
             saved_cursor: None,
             scroll_region: None,
@@ -66,15 +69,18 @@ impl TerminalState {
         self.bracketed_paste
     }
 
-    pub fn application_cursor_keys_enabled(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn application_cursor_keys_enabled(&self) -> bool {
         self.application_cursor_keys
     }
 
-    pub fn application_keypad_mode_enabled(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn application_keypad_mode_enabled(&self) -> bool {
         self.application_keypad_mode
     }
 
-    pub fn auto_wrap_enabled(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn auto_wrap_enabled(&self) -> bool {
         self.auto_wrap
     }
 
@@ -93,7 +99,8 @@ impl TerminalState {
         }
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) -> Vec<CoreEvent> {
+    #[cfg(test)]
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<CoreEvent> {
         let mut events = Vec::new();
         self.feed_into(bytes, &mut events);
         events
@@ -101,7 +108,7 @@ impl TerminalState {
 
     /// Feed terminal bytes while reusing a caller-provided event buffer.
     /// This avoids per-call `Vec<CoreEvent>` allocations on hot ingest paths.
-    pub fn feed_into(&mut self, bytes: &[u8], events: &mut Vec<CoreEvent>) {
+    pub(crate) fn feed_into(&mut self, bytes: &[u8], events: &mut Vec<CoreEvent>) {
         events.clear();
         if bytes.is_empty() {
             return;
@@ -135,18 +142,26 @@ impl TerminalState {
         }
     }
 
-    pub fn apply_actions<I>(&mut self, actions: I) -> Vec<CoreEvent>
-    where
-        I: IntoIterator<Item = ParserAction>,
-    {
-        let mut events = Vec::new();
-        for action in actions {
-            self.apply_action_into(action, &mut events);
+    /// Feed terminal bytes and expose only terminal-response payloads.
+    /// Runtime callers use this to avoid depending on the broader core event model.
+    pub fn feed_terminal_responses_into(&mut self, bytes: &[u8], responses: &mut Vec<Vec<u8>>) {
+        responses.clear();
+        if bytes.is_empty() {
+            return;
         }
-        events
+
+        let mut events = std::mem::take(&mut self.feed_events_scratch);
+        self.feed_into(bytes, &mut events);
+        for event in events.drain(..) {
+            if let CoreEvent::TerminalResponse { data } = event {
+                responses.push(data);
+            }
+        }
+        self.feed_events_scratch = events;
     }
 
-    pub fn apply_action(&mut self, action: ParserAction) -> Vec<CoreEvent> {
+    #[cfg(test)]
+    pub(crate) fn apply_action(&mut self, action: ParserAction) -> Vec<CoreEvent> {
         let mut events = Vec::new();
         self.apply_action_into(action, &mut events);
         events
@@ -830,6 +845,20 @@ mod tests {
 
         state.feed_into(b"B", &mut events);
         assert_eq!(events.capacity(), reused_capacity);
+    }
+
+    #[test]
+    fn feed_terminal_responses_into_exposes_only_response_payloads() {
+        let mut state = TerminalState::new(4, 1, 4);
+        let mut responses = vec![b"stale".to_vec()];
+
+        state.feed_terminal_responses_into(b"\x1b[5nplain", &mut responses);
+        assert_eq!(responses, vec![b"\x1b[0n".to_vec()]);
+
+        let reused_capacity = responses.capacity();
+        state.feed_terminal_responses_into(b"plain text", &mut responses);
+        assert!(responses.is_empty());
+        assert_eq!(responses.capacity(), reused_capacity);
     }
 
     #[test]

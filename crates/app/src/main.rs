@@ -1,16 +1,17 @@
 use std::{io::IsTerminal, sync::Arc};
 
+use crate::runtime_shared::runtime_config::DEFAULT_REFRESH_RATE_MILLIHZ;
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, ValueEnum};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation_platform::clipboard::PlatformClipboard;
 use rldyourterm_render_cpu::CpuRenderer;
-use rldyourterm_services::TerminalState;
 use rldyourterm_services::render_mode::{
     ActiveRenderPath, GpuFailureKind, RenderMode, RenderTransitionReason,
 };
 use rldyourterm_services::session::{SessionBoundary, SessionState};
+use rldyourterm_services::terminal::TerminalState;
 use rldyourterm_settings::{
     SettingsApplyOutcome, SettingsCommand, SettingsPaletteApplyOutcome, SettingsService,
 };
@@ -24,7 +25,6 @@ use rldyourterm_ui::{
 };
 use tracing::{info, warn};
 
-const DEFAULT_REFRESH_RATE_MILLIHZ: u32 = 60_000;
 const HIGH_REFRESH_RATE_MILLIHZ: u32 = 144_000;
 const MVP_STEP_LABEL: &str = "MVP_STEP";
 const MVP_RESULT_LABEL: &str = "MVP_RESULT";
@@ -178,6 +178,9 @@ fn run(cli: Cli) -> Result<RunOutcome> {
     let render_mode: RenderMode = cli.mode.into();
     let preferred_shell: ShellTarget = cli.shell.into();
     let selected_shell = resolve_startup_shell(preferred_shell)?;
+    let refresh_rate_millihz = crate::runtime_shared::runtime_config::sanitize_refresh_rate_millihz(
+        cli.refresh_rate_millihz,
+    );
 
     let diagnostics = DiagnosticsSink::default();
     diagnostics.emit_kind(EventKind::SessionStarted, "app bootstrap start");
@@ -194,7 +197,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
         let (ui, command_receipts) = UiRuntime::bootstrap_with_hooks(
             UiBootstrapConfig {
                 render_mode,
-                refresh_rate_millihz: cli.refresh_rate_millihz,
+                refresh_rate_millihz,
                 window_count: cli.window_count,
                 scrollback_cap: DEFAULT_SCROLLBACK_CAP,
             },
@@ -241,7 +244,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
     let tty_stdio_snapshot = TtyStdioSnapshot::capture();
     let tty_runtime_config = pty_runtime::TtyRuntimeConfig {
         initial_mode: render_mode,
-        refresh_rate_millihz: cli.refresh_rate_millihz,
+        refresh_rate_millihz,
         window_count: cli.window_count,
     };
     let exit_code = if cli.tty {
@@ -260,7 +263,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             &launch_plan.executable,
             &launch_plan.args,
             render_mode,
-            cli.refresh_rate_millihz,
+            refresh_rate_millihz,
             cli.window_count,
             clipboard,
         ) {
@@ -948,5 +951,7 @@ mod tests {
 }
 
 mod gui_runtime;
+mod gui_runtime_backend;
 mod pty_runtime;
+mod runtime_shared;
 mod shared;

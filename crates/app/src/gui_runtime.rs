@@ -1,32 +1,82 @@
-use std::io::{self, ErrorKind, Read, Write};
+#[path = "gui_runtime_output.rs"]
+mod output;
+#[path = "gui_runtime_render.rs"]
+mod rendering;
+#[path = "gui_runtime_terminal_io.rs"]
+mod terminal_io;
+#[path = "gui_runtime_window.rs"]
+mod windowing;
+
+use std::io::{self, Read, Write};
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
-use std::thread::{self, JoinHandle};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use self::output::{
+    OutputDrainBudget, OutputDrainPressure, OutputQueueSnapshot, take_output_chunk_buffer,
+};
+use self::output::{
+    OutputQueueBackpressure, output_drain_budget, output_drain_budget_exhausted,
+    recycle_output_chunk_buffer, should_flush_output_batch, spawn_reader_pump, spawn_wait_pump,
+    warm_output_chunk_pool,
+};
+#[cfg(test)]
+use self::terminal_io::{
+    cap_paste_text, dispatch_runtime_palette_command, read_clipboard_text_for_paste,
+};
+use self::windowing::cap_framebuffer_extent;
+#[cfg(test)]
+use self::windowing::{
+    ViewportGeometry, cadence_resync_command_for_monitor_event, cap_terminal_geometry,
+    sample_monitor_refresh_rate_millihz, viewport_geometry_changed,
+};
+use crate::gui_runtime_backend::{
+    BackendSyncAction, DEFERRED_GPU_INIT_RETRY_BUDGET, GpuFailureHandling,
+    RenderBackendCoordinator, deferred_gpu_init_backoff, dispatch_gpu_failure_command,
+    emit_gpu_auto_fallback_observability,
+};
+#[cfg(test)]
+use crate::gui_runtime_backend::{DeferredGpuInitState, RenderWaitPolicy, render_wait_policy};
+use crate::runtime_shared::input::{
+    encode_winit_key_event as shared_encode_winit_key_event, is_local_shutdown_key_winit,
+    is_runtime_palette_shortcut_winit, runtime_key_from_winit_borrowed,
+};
+use crate::runtime_shared::palette::{
+    RuntimePaletteView, handle_runtime_palette_key_input,
+    runtime_palette_status_line as shared_runtime_palette_status_line, toggle_runtime_palette,
+};
+use crate::runtime_shared::pty_boundary::{
+    BoundaryFailureOutcome, apply_pty_boundary_failure, fatal_pty_boundary_failure,
+    mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered, runtime_boundary_notice,
+};
+use crate::runtime_shared::shutdown::{
+    JoinThreadOutcome, child_exit_drain_timed_out as shared_child_exit_drain_timed_out,
+    join_thread_with_timeout as shared_join_thread_with_timeout,
+};
+use crate::runtime_shared::terminal::{
+    TerminalResponseBuffer, terminal_feed_chunks, terminal_feed_max_bytes_per_call,
+};
 use anyhow::{Context, Result, anyhow};
-use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
+use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_font::GlyphCache;
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation::api::window::{
-    MonitorTiming, WindowConfig as FoundationWindowConfig, WindowControl,
-    WindowEvent as FoundationWindowEvent, WindowEventSink as FoundationWindowEventSink,
-    WindowFactory,
+    MonitorTiming, WindowConfig as FoundationWindowConfig, WindowControl, WindowFactory,
 };
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_foundation_platform::window::PlatformWindowFactory;
+use rldyourterm_render_cpu::render_terminal_buffer;
 use rldyourterm_render_gpu::GpuRenderer;
-use rldyourterm_services::CoreEvent;
-use rldyourterm_services::MAX_FEED_BYTES_PER_CALL;
-use rldyourterm_services::TerminalState;
-use rldyourterm_services::grid::{self, CELL_HEIGHT, CELL_WIDTH};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
-use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
+use rldyourterm_services::terminal::{CELL_HEIGHT, CELL_WIDTH, TerminalState};
+use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use tracing::{debug, info, trace, warn};
@@ -34,7 +84,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, ModifiersState};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -50,22 +100,20 @@ const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
-const DEFERRED_GPU_INIT_RETRY_BUDGET: u8 = 3;
-const DEFERRED_GPU_INIT_MIN_BACKOFF: Duration = Duration::from_millis(50);
-const DEFERRED_GPU_INIT_MAX_BACKOFF: Duration = Duration::from_millis(400);
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
 const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CHILD_EXIT_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_EXIT_DRAIN_MAX_WAIT: Duration = Duration::from_millis(750);
-const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
-const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
-const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
 #[cfg(test)]
-const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
+use rldyourterm_render_cpu::{DEFAULT_FG, DEFAULT_FG_U32, resolve_cell_colors};
 const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
 const PTY_OUTPUT_QUEUE_CAPACITY: usize = 256;
+const PTY_OUTPUT_CHUNK_BYTES: usize = 64 * 1024;
+const PTY_OUTPUT_RECYCLE_POOL_CAPACITY: usize = PTY_OUTPUT_QUEUE_CAPACITY / 4;
+const PTY_OUTPUT_RECYCLE_POOL_WARMUP: usize = 8;
 const OUTPUT_BATCH_INITIAL_CAPACITY: usize = 64 * 1024;
+const MAX_FEED_BYTES_PER_CALL: usize = terminal_feed_max_bytes_per_call();
 const OUTPUT_BATCH_MAX_BYTES: usize = MAX_FEED_BYTES_PER_CALL * 4;
 const OUTPUT_DRAIN_MAX_BYTES_PER_TICK: usize = 4 * 1024 * 1024;
 const OUTPUT_DRAIN_MAX_LATENCY: Duration = Duration::from_millis(8);
@@ -85,10 +133,6 @@ const MAX_VIEWPORT_CELLS: usize = 1_000_000;
 const MAX_FRAMEBUFFER_WIDTH: u32 = 16_384;
 const MAX_FRAMEBUFFER_HEIGHT: u32 = 16_384;
 const MAX_FRAMEBUFFER_PIXELS: u64 = 67_108_864; // 8192 * 8192
-const RUNTIME_PALETTE_HELP_LINE: &str =
-    "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
-const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
-
 #[derive(Debug)]
 enum GuiEvent {
     OutputReady,
@@ -99,80 +143,7 @@ enum GuiEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OutputQueueSnapshot {
-    queued_bytes: usize,
-    queued_chunks: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputDrainPressure {
-    Normal,
-    Elevated,
-    Critical,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OutputDrainBudget {
-    pressure: OutputDrainPressure,
-    max_bytes_per_tick: usize,
-    max_latency: Duration,
-}
-
-#[derive(Debug, Default)]
-struct OutputQueueBackpressure {
-    queued_bytes: AtomicUsize,
-    queued_chunks: AtomicUsize,
-}
-
-impl OutputQueueBackpressure {
-    fn note_enqueue(&self, bytes: usize) {
-        self.queued_bytes.fetch_add(bytes, Ordering::AcqRel);
-        self.queued_chunks.fetch_add(1, Ordering::AcqRel);
-    }
-
-    fn note_dequeue(&self, bytes: usize) {
-        let _ = self
-            .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
-                Some(current.saturating_sub(bytes))
-            });
-        let _ = self
-            .queued_chunks
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
-                Some(current.saturating_sub(1))
-            });
-    }
-
-    fn snapshot(&self) -> OutputQueueSnapshot {
-        OutputQueueSnapshot {
-            queued_bytes: self.queued_bytes.load(Ordering::Acquire),
-            queued_chunks: self.queued_chunks.load(Ordering::Acquire),
-        }
-    }
-}
-
 type SpawnedPty = (Arc<dyn PtyIo>, Box<dyn Write + Send>, Box<dyn Read + Send>);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GpuFailureHandling {
-    RetryScheduled {
-        failure_streak: u8,
-        retry_budget_remaining: u8,
-    },
-    FallbackToCpu {
-        transition_sequence: u64,
-    },
-    FatalForcedGpu,
-    Ignored,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimePaletteAction {
-    ApplyCommand(&'static str),
-    ShowInfo,
-    Close,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MonitorAffectingWindowEvent {
@@ -182,10 +153,8 @@ enum MonitorAffectingWindowEvent {
 }
 
 use crate::shared::{
-    PtyBoundaryPolicyDecision, ai_cli_spawn_env_overrides, classify_pty_boundary_failure,
-    csi_modified, encode_ctrl_letter, fatal_boundary_reason_token, fkey_ss3_modified,
-    is_disconnect_error, on_off_token, render_mode_token, session_boundary_token, tilde_modified,
-    write_all_and_flush, xterm_modifier_param,
+    ai_cli_spawn_env_overrides, fatal_boundary_reason_token, is_disconnect_error,
+    session_boundary_token, write_all_and_flush,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,48 +163,14 @@ enum PtyBoundaryLoopAction {
     ExitLoop,
 }
 
-fn dispatch_gpu_failure_command(
-    ui_runtime: &mut UiRuntime,
-    failure_kind: GpuFailureKind,
-    observed_at_millis: u64,
-) -> Result<GpuFailureHandling> {
-    let receipt = ui_runtime
-        .handle_command(UiRuntimeCommand::GpuFailure {
-            kind: failure_kind,
-            observed_at_millis,
-        })
-        .context("failed to dispatch UiRuntimeCommand::GpuFailure")?;
-
-    match receipt.outcome {
-        UiCommandOutcome::GpuRetryScheduled {
-            failure_streak,
-            retry_budget_remaining,
-            ..
-        } => Ok(GpuFailureHandling::RetryScheduled {
-            failure_streak,
-            retry_budget_remaining,
-        }),
-        UiCommandOutcome::RenderModeTransition(transition) => {
-            Ok(GpuFailureHandling::FallbackToCpu {
-                transition_sequence: transition.sequence,
-            })
-        }
-        UiCommandOutcome::Noop
-            if ui_runtime.render_mode() == RenderMode::Gpu
-                && ui_runtime.active_render_path() == ActiveRenderPath::Gpu =>
-        {
-            Ok(GpuFailureHandling::FatalForcedGpu)
-        }
-        UiCommandOutcome::Noop => Ok(GpuFailureHandling::Ignored),
-        outcome @ (UiCommandOutcome::SessionTransition(_)
-        | UiCommandOutcome::CadenceResynced { .. }
-        | UiCommandOutcome::SingleWindowConfirmed { .. }) => Err(anyhow!(
-            "unexpected UI outcome for GPU failure command: {outcome:?}"
-        )),
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyWriteOutcome {
+    Written,
+    RecoverableFailure,
+    ExitLoop,
 }
 
-pub fn run_interactive_gui_pty(
+pub(crate) fn run_interactive_gui_pty(
     shell_executable: &str,
     shell_args: &[String],
     initial_mode: RenderMode,
@@ -255,12 +190,16 @@ pub fn run_interactive_gui_pty(
     let proxy = event_loop.create_proxy();
 
     let (output_tx, output_rx) = sync_channel::<Vec<u8>>(PTY_OUTPUT_QUEUE_CAPACITY);
+    let (output_recycle_tx, output_recycle_rx) =
+        sync_channel::<Vec<u8>>(PTY_OUTPUT_RECYCLE_POOL_CAPACITY);
+    warm_output_chunk_pool(&output_recycle_tx);
     let output_event_pending = Arc::new(AtomicBool::new(false));
     let output_backpressure = Arc::new(OutputQueueBackpressure::default());
     let reader_pump = spawn_reader_pump(
         reader,
         proxy.clone(),
         output_tx,
+        output_recycle_rx,
         Arc::clone(&output_event_pending),
         Arc::clone(&output_backpressure),
     );
@@ -277,10 +216,13 @@ pub fn run_interactive_gui_pty(
     let mut app = GuiRuntimeApp::new(
         pty,
         writer,
-        output_rx,
-        output_event_pending,
-        reader_pump,
-        wait_pump,
+        GuiRuntimeChannels {
+            output_rx,
+            output_recycle_tx,
+            output_event_pending,
+            reader_pump,
+            wait_pump,
+        },
         bootstrap,
     )
     .context("failed to initialize GUI runtime app")?;
@@ -369,63 +311,12 @@ fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty
     Ok((pty, writer, reader))
 }
 
-fn spawn_reader_pump(
-    mut reader: Box<dyn Read + Send>,
-    proxy: EventLoopProxy<GuiEvent>,
-    output_tx: SyncSender<Vec<u8>>,
-    output_event_pending: Arc<AtomicBool>,
-    output_backpressure: Arc<OutputQueueBackpressure>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let mut buffer = [0_u8; 65536];
-
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read_bytes) => {
-                    output_backpressure.note_enqueue(read_bytes);
-                    if output_tx.send(buffer[..read_bytes].to_vec()).is_err() {
-                        output_backpressure.note_dequeue(read_bytes);
-                        break;
-                    }
-                    if !output_event_pending.swap(true, Ordering::AcqRel)
-                        && proxy.send_event(GuiEvent::OutputReady).is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    let _ = proxy.send_event(GuiEvent::PtyFailure {
-                        boundary: SessionBoundary::PtyRead,
-                        message: format!("PTY reader pump failed: {error}"),
-                    });
-                    break;
-                }
-            }
-        }
-    })
-}
-
-fn spawn_wait_pump(pty: Arc<dyn PtyIo>, proxy: EventLoopProxy<GuiEvent>) -> JoinHandle<()> {
-    thread::spawn(move || match pty.wait() {
-        Ok(code) => {
-            let _ = proxy.send_event(GuiEvent::Exited(code));
-        }
-        Err(error) => {
-            let _ = proxy.send_event(GuiEvent::PtyFailure {
-                boundary: SessionBoundary::PtyWait,
-                message: format!("PTY wait failed: {error}"),
-            });
-        }
-    })
-}
-
 struct GuiRuntimeApp {
     event_proxy: EventLoopProxy<GuiEvent>,
     pty: Arc<dyn PtyIo>,
     writer: Box<dyn Write + Send>,
     output_rx: Receiver<Vec<u8>>,
+    output_recycle_tx: SyncSender<Vec<u8>>,
     output_event_pending: Arc<AtomicBool>,
     output_backpressure: Arc<OutputQueueBackpressure>,
     clipboard: Arc<dyn ClipboardAdapter>,
@@ -437,8 +328,7 @@ struct GuiRuntimeApp {
     gpu_renderer: GpuRenderer,
     gpu_cache_dir: Option<PathBuf>,
     started_at: Instant,
-    render_attempt_sequence: u64,
-    gpu_failure_sequence: u64,
+    render_backend: RenderBackendCoordinator,
 
     window: Option<Arc<Window>>,
     window_control: Option<Box<dyn WindowControl>>,
@@ -455,15 +345,14 @@ struct GuiRuntimeApp {
     redraw_in_flight: bool,
     child_exit_pending: bool,
     child_exit_drain_started_at: Option<Instant>,
-    gpu_init_pending: bool,
-    deferred_gpu_init_failures: u8,
-    next_gpu_init_retry_at: Option<Instant>,
     last_rendered_cursor_row: Option<u16>,
     last_softbuffer_size: Option<PhysicalSize<u32>>,
     last_viewport_cols: u16,
     last_viewport_rows: u16,
+    last_viewport_pixel_width: u16,
+    last_viewport_pixel_height: u16,
     output_batch: Vec<u8>,
-    feed_events_scratch: Vec<CoreEvent>,
+    response_buffer_scratch: TerminalResponseBuffer,
     dirty_rows_scratch: Vec<u16>,
 
     exit_code: Option<i32>,
@@ -479,21 +368,19 @@ struct GuiRuntimeBootstrap {
     clipboard: Arc<dyn ClipboardAdapter>,
 }
 
-#[derive(Debug, Default)]
-struct NoopFoundationWindowEventSink;
-
-impl FoundationWindowEventSink for NoopFoundationWindowEventSink {
-    fn on_event(&self, _event: FoundationWindowEvent) {}
+struct GuiRuntimeChannels {
+    output_rx: Receiver<Vec<u8>>,
+    output_recycle_tx: SyncSender<Vec<u8>>,
+    output_event_pending: Arc<AtomicBool>,
+    reader_pump: JoinHandle<()>,
+    wait_pump: JoinHandle<()>,
 }
 
 impl GuiRuntimeApp {
     fn new(
         pty: Arc<dyn PtyIo>,
         writer: Box<dyn Write + Send>,
-        output_rx: Receiver<Vec<u8>>,
-        output_event_pending: Arc<AtomicBool>,
-        reader_pump: JoinHandle<()>,
-        wait_pump: JoinHandle<()>,
+        channels: GuiRuntimeChannels,
         bootstrap: GuiRuntimeBootstrap,
     ) -> Result<Self> {
         let GuiRuntimeBootstrap {
@@ -504,6 +391,13 @@ impl GuiRuntimeApp {
             output_backpressure,
             clipboard,
         } = bootstrap;
+        let GuiRuntimeChannels {
+            output_rx,
+            output_recycle_tx,
+            output_event_pending,
+            reader_pump,
+            wait_pump,
+        } = channels;
 
         let ui_runtime = UiRuntime::bootstrap(UiBootstrapConfig {
             render_mode: initial_mode,
@@ -522,6 +416,7 @@ impl GuiRuntimeApp {
             pty,
             writer,
             output_rx,
+            output_recycle_tx,
             output_event_pending,
             output_backpressure,
             clipboard,
@@ -533,8 +428,7 @@ impl GuiRuntimeApp {
             gpu_renderer: GpuRenderer::default(),
             gpu_cache_dir: resolve_gpu_cache_dir(),
             started_at: Instant::now(),
-            render_attempt_sequence: 0,
-            gpu_failure_sequence: 0,
+            render_backend: RenderBackendCoordinator::new(initial_mode),
             window: None,
             window_control: None,
             window_id: None,
@@ -550,202 +444,51 @@ impl GuiRuntimeApp {
             redraw_in_flight: false,
             child_exit_pending: false,
             child_exit_drain_started_at: None,
-            gpu_init_pending: initial_mode != RenderMode::Cpu,
-            deferred_gpu_init_failures: 0,
-            next_gpu_init_retry_at: None,
             last_rendered_cursor_row: None,
             last_softbuffer_size: None,
             last_viewport_cols: DEFAULT_COLS,
             last_viewport_rows: DEFAULT_ROWS,
+            last_viewport_pixel_width: DEFAULT_GUI_WIDTH.min(u16::MAX as u32) as u16,
+            last_viewport_pixel_height: DEFAULT_GUI_HEIGHT.min(u16::MAX as u32) as u16,
             output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
-            feed_events_scratch: Vec::with_capacity(FEED_EVENTS_SCRATCH_INITIAL_CAPACITY),
+            response_buffer_scratch: TerminalResponseBuffer::with_capacity(
+                FEED_EVENTS_SCRATCH_INITIAL_CAPACITY,
+            ),
             dirty_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
             exit_code: None,
             fatal_error: None,
         })
     }
 
-    fn bootstrap_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if self.window.is_some() {
-            return Ok(());
-        }
-
-        // `mut` needed on Linux/FreeBSD for platform-specific window attributes,
-        // but triggers unused_mut warning on macOS where those blocks don't compile.
-        #[allow(unused_mut)]
-        let mut attributes = Window::default_attributes()
-            .with_title("rldyourterm")
-            .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT))
-            .with_visible(true)
-            .with_active(true)
-            .with_window_icon(load_app_icon());
-
-        // Set Wayland app_id and X11 WM_CLASS so the compositor identifies the window.
-        // Both traits define `with_name` — fully-qualified calls avoid method ambiguity.
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            attributes =
-                WindowAttributesExtWayland::with_name(attributes, "rldyourterm", "rldyourterm");
-        }
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            use winit::platform::x11::WindowAttributesExtX11;
-            attributes =
-                WindowAttributesExtX11::with_name(attributes, "rldyourterm", "rldyourterm");
-        }
-
-        // Activation token for Wayland/X11 focus handoff
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        if let Some(token) = event_loop.read_token_from_env() {
-            attributes = attributes.with_activation_token(token);
-        }
-
-        let window = Arc::new(
-            event_loop
-                .create_window(attributes)
-                .context("failed to create GUI window")?,
-        );
-        // IME is intentionally disabled for terminal emulators. On Wayland,
-        // enabling IME activates zwp_text_input_v3 alongside wl_keyboard (xkb),
-        // causing every keypress to be delivered twice (KeyboardInput.text + Ime::Commit).
-        // Terminal emulators (Alacritty, foot) rely solely on wl_keyboard for input.
-        window.set_ime_allowed(false);
-
-        let window_control = PlatformWindowFactory::from_winit_window(window.clone())
-            .init(
-                FoundationWindowConfig {
-                    title: "rldyourterm".to_owned(),
-                    width: DEFAULT_GUI_WIDTH,
-                    height: DEFAULT_GUI_HEIGHT,
-                    min_width: 1,
-                    min_height: 1,
-                    high_dpi: true,
-                },
-                Box::new(NoopFoundationWindowEventSink),
-            )
-            .context("failed to initialize foundation window control from winit window")?;
-
-        // GPU initialization is deferred to about_to_wait() so the event loop
-        // can process time-sensitive terminal queries (e.g. fish DA1) before the
-        // blocking GPU init (~1-2s). Always start with softbuffer for immediate
-        // CPU rendering; the deferred path will drop it before GPU init (Wayland
-        // surface exclusivity).
-        let context = SoftbufferContext::new(window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
-        let surface = SoftbufferSurface::new(&context, window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-        self._context = Some(context);
-        self.surface = Some(surface);
-        debug!(
-            gpu_deferred = self.gpu_init_pending,
-            "bootstrap: softbuffer context created, GPU init deferred to event loop"
-        );
-
-        self.window_size = cap_framebuffer_extent(window.inner_size());
-        self.window_id = Some(window.id());
-        self.window_control = Some(window_control);
-        self.window = Some(window);
-
-        debug!("bootstrap: updating viewport geometry");
-        self.update_viewport_geometry(event_loop);
-
-        // Draw the first frame synchronously before returning.
-        // On Wayland, the compositor will not map (show) the window until content
-        // is committed to its surface. Deferring to RedrawRequested is unreliable
-        // because ControlFlow::Wait may not deliver it before entering sleep.
-        debug!("bootstrap: drawing initial frame");
-        self.draw_frame()
-            .context("failed to draw initial frame during bootstrap")?;
-
-        debug!("bootstrap: applying visibility handshake");
-        self.apply_post_draw_visibility_handshake();
-        debug!("bootstrap: complete");
-        Ok(())
-    }
-
-    /// Release all window-bound graphics resources while the Wayland/X11
-    /// connection is still alive. On Wayland the compositor only receives the
-    /// surface-destroy protocol message when the `Arc<Window>` refcount reaches
-    /// zero.  If resources are dropped after `run_app()` returns, the connection
-    /// is already closed and the compositor never learns the window is gone -
-    /// leaving a ghost entry in the dock/taskbar.
-    ///
     fn dispatch_terminal_responses(
         &mut self,
-        events: &[CoreEvent],
+        responses: &TerminalResponseBuffer,
         event_loop: &ActiveEventLoop,
     ) -> bool {
         let mut emitted_terminal_response = false;
         let mut saw_write_error = false;
-        for event in events {
-            if let CoreEvent::TerminalResponse { data } = event {
-                emitted_terminal_response = true;
-                trace!(bytes = data.len(), "sending terminal response to PTY");
-                if let Err(error) = write_all_and_flush(&mut *self.writer, data) {
+        let mut should_exit = false;
+        responses.for_each_terminal_response(|data| {
+            if should_exit {
+                return;
+            }
+            emitted_terminal_response = true;
+            trace!(bytes = data.len(), "sending terminal response to PTY");
+            match self.write_pty_chunk(data, event_loop, "failed to write terminal response to PTY")
+            {
+                PtyWriteOutcome::Written => {}
+                PtyWriteOutcome::RecoverableFailure => {
                     saw_write_error = true;
-                    match self.handle_pty_io_error(
-                        SessionBoundary::PtyWrite,
-                        error,
-                        "failed to write terminal response to PTY",
-                    ) {
-                        Ok(PtyBoundaryLoopAction::Continue) => {}
-                        Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                            event_loop.exit();
-                            return false;
-                        }
-                        Err(policy_error) => {
-                            self.fatal_error = Some(policy_error);
-                            event_loop.exit();
-                            return false;
-                        }
-                    }
+                }
+                PtyWriteOutcome::ExitLoop => {
+                    should_exit = true;
                 }
             }
-        }
-        if emitted_terminal_response
-            && !saw_write_error
-            && let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite)
-        {
-            self.fatal_error = Some(error);
-            event_loop.exit();
+        });
+        if should_exit {
             return false;
         }
-        true
-    }
-
-    /// Drop order matters: surface before context, context before window,
-    /// GPU backend (which holds `wgpu::Surface<'static>` -> `Arc<Window>`)
-    /// before the window itself.
-    fn release_window_resources(&mut self) {
-        debug!(
-            window_exists = self.window.is_some(),
-            gpu_initialized = self.gpu_renderer.is_initialized(),
-            has_surface = self.surface.is_some(),
-            "releasing window resources"
-        );
-        // 1. Drop softbuffer surface (holds Arc<Window>)
-        self.surface = None;
-        self.last_softbuffer_size = None;
-        // 2. Drop softbuffer context (holds Arc<Window>)
-        self._context = None;
-        // 3. Drop GPU backend which holds wgpu::Surface<'static> -> Arc<Window>
-        self.gpu_renderer = GpuRenderer::default();
-        // 4. Drop foundation control (holds Arc<Window>)
-        self.window_control = None;
-        // 5. Drop the window itself (final Arc<Window> reference)
-        self.window_id = None;
-        self.window = None;
-        self.redraw_in_flight = false;
-        self.sync_deferred_gpu_init_state();
-        self.next_gpu_init_retry_at = None;
-        debug!("window resources released");
-    }
-
-    fn persist_gpu_pipeline_cache(&mut self) {
-        if let Some(cache_dir) = &self.gpu_cache_dir {
-            self.gpu_renderer.save_pipeline_cache(cache_dir);
-        }
+        !emitted_terminal_response || saw_write_error || self.finish_pty_write(event_loop)
     }
 
     fn reader_pump_finished(&self) -> bool {
@@ -815,236 +558,17 @@ impl GuiRuntimeApp {
         }
     }
 
-    fn ensure_softbuffer_surface(&mut self) -> Result<()> {
-        if self.surface.is_some() {
-            return Ok(());
-        }
-        let window = self
-            .window
-            .as_ref()
-            .ok_or_else(|| anyhow!("no window for softbuffer initialization"))?;
-        let context = SoftbufferContext::new(window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
-        let surface = SoftbufferSurface::new(&context, window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-        self._context = Some(context);
-        self.surface = Some(surface);
-        info!("lazily initialized softbuffer surface for CPU fallback");
-        Ok(())
-    }
-
-    fn try_deferred_gpu_init(&mut self, event_loop: &ActiveEventLoop) {
-        if self.ui_runtime.active_render_path() == ActiveRenderPath::Cpu {
-            self.gpu_init_pending = false;
-            self.next_gpu_init_retry_at = None;
-            return;
-        }
-        if let Some(retry_at) = self.next_gpu_init_retry_at
-            && Instant::now() < retry_at
-        {
-            return;
-        }
-        self.next_gpu_init_retry_at = None;
-
-        let Some(window) = self.window.clone() else {
-            return;
-        };
-        let size = cap_framebuffer_extent(window.inner_size());
-        let w = size.width;
-        let h = size.height;
-
-        debug!("deferred GPU init: dropping softbuffer for Wayland surface exclusivity");
-        self.surface = None;
-        self.last_softbuffer_size = None;
-        self._context = None;
-
-        let attempt = self.deferred_gpu_init_failures.saturating_add(1);
-        debug!("deferred GPU init: attempting GPU initialization");
-        match self
-            .gpu_renderer
-            .initialize(window, w, h, self.gpu_cache_dir.as_deref())
-        {
-            Ok(()) => {
-                self.gpu_init_pending = false;
-                self.deferred_gpu_init_failures = 0;
-                info!("GPU backend initialized successfully");
-                self.terminal.grid.mark_all_dirty();
-                self.queue_redraw();
-            }
-            Err(e) => {
-                self.deferred_gpu_init_failures = attempt;
-                self.gpu_failure_sequence = self.gpu_failure_sequence.saturating_add(1);
-                let gpu_failure_sequence = self.gpu_failure_sequence;
-                let remaining = DEFERRED_GPU_INIT_RETRY_BUDGET.saturating_sub(attempt);
-                warn!(
-                    error = ?e,
-                    attempt,
-                    retry_budget = DEFERRED_GPU_INIT_RETRY_BUDGET,
-                    retries_remaining = remaining,
-                    mode = ?self.ui_runtime.render_mode(),
-                    active_path = ?self.ui_runtime.active_render_path(),
-                    "deferred GPU init failed"
-                );
-
-                if attempt < DEFERRED_GPU_INIT_RETRY_BUDGET {
-                    self.gpu_init_pending = true;
-                    let backoff = deferred_gpu_init_backoff(attempt);
-                    self.next_gpu_init_retry_at = Some(Instant::now() + backoff);
-                    self.queue_redraw();
-                    return;
-                }
-
-                self.gpu_init_pending = false;
-                self.next_gpu_init_retry_at = None;
-                let observed_at_millis = self
-                    .started_at
-                    .elapsed()
-                    .as_millis()
-                    .min(u128::from(u64::MAX)) as u64;
-                let failure_kind = GpuFailureKind::DeviceLost;
-
-                match dispatch_gpu_failure_command(
-                    &mut self.ui_runtime,
-                    failure_kind,
-                    observed_at_millis,
-                ) {
-                    Ok(GpuFailureHandling::FallbackToCpu {
-                        transition_sequence,
-                    }) => {
-                        self.gpu_renderer.release_backend();
-                        self.sync_deferred_gpu_init_state();
-                        self.terminal.grid.mark_all_dirty();
-                        let (diagnostics_event, fallback_notice) =
-                            emit_gpu_auto_fallback_observability(
-                                &self.diagnostics,
-                                transition_sequence,
-                                gpu_failure_sequence,
-                                self.render_attempt_sequence,
-                                failure_kind,
-                                observed_at_millis,
-                            );
-                        warn!(
-                            transition_sequence,
-                            diagnostics_event_id = %diagnostics_event.event_id,
-                            diagnostics_correlation = ?diagnostics_event.correlation_id,
-                            "deferred GPU init exhausted retry budget; applying deterministic CPU fallback"
-                        );
-                        self.emit_runtime_notice(&fallback_notice);
-                        self.queue_redraw();
-
-                        if self.session_policy.state() == SessionState::Degraded
-                            && let Err(error) = self.session_policy.mark_running()
-                        {
-                            warn!(%error, "session mark_running after deferred GPU fallback failed");
-                        }
-                    }
-                    Ok(GpuFailureHandling::RetryScheduled { .. } | GpuFailureHandling::Ignored) => {
-                        self.queue_redraw();
-                    }
-                    Ok(GpuFailureHandling::FatalForcedGpu) => {
-                        let message = format!(
-                            "forced GPU mode initialization failed after {} attempts: {:?}",
-                            attempt, e
-                        );
-                        self.diagnostics
-                            .emit_kind(EventKind::SessionError, message.clone());
-                        self.fatal_error = Some(anyhow!(message));
-                        event_loop.exit();
-                    }
-                    Err(dispatch_error) => {
-                        self.fatal_error = Some(dispatch_error);
-                        event_loop.exit();
-                    }
-                }
-            }
-        }
-    }
-
-    fn apply_post_draw_visibility_handshake(&self) {
-        if let Some(window) = self.window.as_ref() {
-            window.set_visible(true);
-            window.focus_window();
-            let _ = self.request_window_redraw();
-            info!("applied visibility handshake after first frame commit");
-        }
-    }
-
     fn queue_redraw(&mut self) {
         self.redraw_pending = true;
-    }
-
-    fn sync_deferred_gpu_init_state(&mut self) {
-        let target_path = self.ui_runtime.active_render_path();
-        if target_path == ActiveRenderPath::Cpu {
-            if self.gpu_renderer.is_initialized() {
-                self.gpu_renderer.release_backend();
-            }
-            self.gpu_init_pending = false;
-            self.deferred_gpu_init_failures = 0;
-            self.next_gpu_init_retry_at = None;
-            return;
-        }
-
-        self.gpu_init_pending = !self.gpu_renderer.is_initialized();
-        if !self.gpu_init_pending {
-            self.next_gpu_init_retry_at = None;
-            self.deferred_gpu_init_failures = 0;
-        }
     }
 
     fn emit_runtime_notice(&mut self, message: &str) {
         let mut line = String::from("\r\n");
         line.push_str(message);
         line.push_str("\r\n");
-        let mut events = std::mem::take(&mut self.feed_events_scratch);
-        self.terminal.feed_into(line.as_bytes(), &mut events);
-        self.feed_events_scratch = events;
+        self.response_buffer_scratch
+            .feed_terminal(&mut self.terminal, line.as_bytes());
         self.queue_redraw();
-    }
-
-    fn toggle_palette(&mut self) {
-        self.palette_open = !self.palette_open;
-        if self.palette_open {
-            self.emit_runtime_notice(RUNTIME_PALETTE_HELP_LINE);
-        } else {
-            self.emit_runtime_notice(RUNTIME_PALETTE_CLOSED_LINE);
-        }
-    }
-
-    fn handle_palette_action(&mut self, event: &WinitKeyEvent) -> Result<bool> {
-        if !self.palette_open {
-            return Ok(false);
-        }
-
-        let Some(action) = runtime_palette_action_for_winit_key(
-            event.logical_key.as_ref(),
-            self.settings.state().debug_mode,
-        ) else {
-            return Ok(true);
-        };
-
-        match action {
-            RuntimePaletteAction::Close => {
-                self.palette_open = false;
-                self.emit_runtime_notice(RUNTIME_PALETTE_CLOSED_LINE);
-            }
-            RuntimePaletteAction::ShowInfo => {
-                let info_line = runtime_palette_info_line(&self.ui_runtime, &self.settings);
-                self.emit_runtime_notice(&info_line);
-            }
-            RuntimePaletteAction::ApplyCommand(command) => {
-                let result_line = dispatch_runtime_palette_command(
-                    &mut self.ui_runtime,
-                    &mut self.settings,
-                    command,
-                )?;
-                self.sync_deferred_gpu_init_state();
-                self.palette_open = false;
-                self.emit_runtime_notice(&result_line);
-            }
-        }
-
-        Ok(true)
     }
 
     fn request_redraw_if_needed(&mut self) {
@@ -1060,15 +584,15 @@ impl GuiRuntimeApp {
 
     fn apply_output_bytes(&mut self, data: &[u8], event_loop: &ActiveEventLoop) -> bool {
         trace!(bytes = data.len(), "pty output received");
-        let mut events = std::mem::take(&mut self.feed_events_scratch);
+        let mut response_buffer = std::mem::take(&mut self.response_buffer_scratch);
         for chunk in terminal_feed_chunks(data) {
-            self.terminal.feed_into(chunk, &mut events);
-            if !self.dispatch_terminal_responses(&events, event_loop) {
-                self.feed_events_scratch = events;
+            response_buffer.feed_terminal(&mut self.terminal, chunk);
+            if !self.dispatch_terminal_responses(&response_buffer, event_loop) {
+                self.response_buffer_scratch = response_buffer;
                 return false;
             }
         }
-        self.feed_events_scratch = events;
+        self.response_buffer_scratch = response_buffer;
         true
     }
 
@@ -1104,6 +628,10 @@ impl GuiRuntimeApp {
         true
     }
 
+    fn recycle_output_chunk(&self, chunk: Vec<u8>) {
+        recycle_output_chunk_buffer(&self.output_recycle_tx, chunk);
+    }
+
     fn drain_output_queue(&mut self, event_loop: &ActiveEventLoop) {
         let mut drained_any = false;
         let mut batch = std::mem::take(&mut self.output_batch);
@@ -1118,9 +646,11 @@ impl GuiRuntimeApp {
                 drained_any = true;
                 drained_bytes = drained_bytes.saturating_add(data.len());
                 if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
+                    self.recycle_output_chunk(data);
                     self.output_batch = batch;
                     return;
                 }
+                self.recycle_output_chunk(data);
                 active_budget = output_drain_budget(self.output_backpressure.snapshot());
                 if output_drain_budget_exhausted(
                     drained_bytes,
@@ -1143,9 +673,11 @@ impl GuiRuntimeApp {
                     drained_any = true;
                     drained_bytes = drained_bytes.saturating_add(data.len());
                     if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
+                        self.recycle_output_chunk(data);
                         self.output_batch = batch;
                         return;
                     }
+                    self.recycle_output_chunk(data);
                     active_budget = output_drain_budget(self.output_backpressure.snapshot());
                     if output_drain_budget_exhausted(
                         drained_bytes,
@@ -1201,577 +733,6 @@ impl GuiRuntimeApp {
         }
         self.queue_redraw();
     }
-
-    fn update_viewport_geometry(&mut self, event_loop: &ActiveEventLoop) {
-        let raw_cols = ((self.window_size.width as usize) / CELL_WIDTH).max(1);
-        let raw_rows = ((self.window_size.height as usize) / CELL_HEIGHT).max(1);
-        let (cols, rows) = cap_terminal_geometry(raw_cols, raw_rows);
-        if cols as usize != raw_cols || rows as usize != raw_rows {
-            warn!(
-                raw_cols,
-                raw_rows,
-                cols,
-                rows,
-                max_cols = MAX_VIEWPORT_COLS,
-                max_rows = MAX_VIEWPORT_ROWS,
-                max_cells = MAX_VIEWPORT_CELLS,
-                "viewport geometry exceeded runtime safety limits; dimensions were clamped"
-            );
-        }
-
-        // Skip PTY resize when terminal dimensions are unchanged to avoid
-        // redundant SIGWINCH delivery during Wayland startup event bursts.
-        if cols == self.last_viewport_cols && rows == self.last_viewport_rows {
-            trace!(cols, rows, "viewport: skipped (dimensions unchanged)");
-            return;
-        }
-
-        debug!(
-            cols,
-            rows,
-            width = self.window_size.width,
-            height = self.window_size.height,
-            "viewport: resizing"
-        );
-
-        self.terminal.resize(cols, rows);
-        self.last_viewport_cols = cols;
-        self.last_viewport_rows = rows;
-
-        if let Err(error) = self.pty.resize(PtySize {
-            cols,
-            rows,
-            pixel_width: self.window_size.width.min(u16::MAX as u32) as u16,
-            pixel_height: self.window_size.height.min(u16::MAX as u32) as u16,
-        }) {
-            let detail = format!("failed to resize PTY to viewport: {error}");
-            match self.handle_pty_boundary_failure(SessionBoundary::PtyResize, &detail) {
-                Ok(PtyBoundaryLoopAction::Continue) => {}
-                Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                    event_loop.exit();
-                }
-                Err(policy_error) => {
-                    self.fatal_error = Some(policy_error);
-                    event_loop.exit();
-                }
-            }
-            return;
-        }
-
-        debug!("viewport: pty resize complete");
-
-        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyResize) {
-            self.fatal_error = Some(error);
-            event_loop.exit();
-        }
-    }
-
-    fn handle_close_requested(&mut self, event_loop: &ActiveEventLoop) {
-        debug!("window close requested by user or compositor");
-        self.emit_close_intent();
-        self.exit_code.get_or_insert(0);
-        event_loop.exit();
-    }
-
-    fn handle_monitor_affecting_event(&mut self, monitor_event: MonitorAffectingWindowEvent) {
-        let sampled_refresh_rate_millihz =
-            sample_monitor_refresh_rate_millihz(self.window_control.as_deref());
-        let command =
-            cadence_resync_command_for_monitor_event(monitor_event, sampled_refresh_rate_millihz);
-
-        match self.ui_runtime.handle_command(command) {
-            Ok(receipt) => match receipt.outcome {
-                UiCommandOutcome::CadenceResynced {
-                    previous_refresh_rate_millihz,
-                    current_refresh_rate_millihz,
-                    generation,
-                    monitor_transfer,
-                    ..
-                } => {
-                    info!(
-                        monitor_event = monitor_affecting_event_token(monitor_event),
-                        sampled_refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0),
-                        previous_refresh_rate_millihz = ?previous_refresh_rate_millihz,
-                        current_refresh_rate_millihz = ?current_refresh_rate_millihz,
-                        generation,
-                        monitor_transfer,
-                        "GUI runtime re-synced cadence after monitor-affecting event"
-                    );
-                }
-                UiCommandOutcome::Noop => {}
-                other => {
-                    warn!(
-                        monitor_event = monitor_affecting_event_token(monitor_event),
-                        sampled_refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0),
-                        outcome = ?other,
-                        "unexpected UI outcome while processing monitor-affecting cadence event"
-                    );
-                }
-            },
-            Err(error) => {
-                warn!(
-                    monitor_event = monitor_affecting_event_token(monitor_event),
-                    sampled_refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0),
-                    error = %error,
-                    "failed to dispatch cadence re-sync command after monitor-affecting event"
-                );
-                self.emit_runtime_notice(&format!(
-                    "[runtime] cadence-resync dispatch failed event={} sampled-refresh-millihz={} detail={error}",
-                    monitor_affecting_event_token(monitor_event),
-                    sampled_refresh_rate_millihz.unwrap_or(0),
-                ));
-            }
-        }
-    }
-
-    fn handle_keyboard_input(&mut self, event: &WinitKeyEvent, event_loop: &ActiveEventLoop) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
-
-        if is_local_shutdown_key(event, self.modifiers) {
-            self.emit_close_intent();
-            self.exit_code.get_or_insert(0);
-            event_loop.exit();
-            return;
-        }
-
-        if is_runtime_palette_shortcut(event, self.modifiers) {
-            self.toggle_palette();
-            return;
-        }
-
-        match self.handle_palette_action(event) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(error) => {
-                self.fatal_error = Some(error);
-                event_loop.exit();
-                return;
-            }
-        }
-
-        if is_paste_shortcut(&event.logical_key, self.modifiers) {
-            self.handle_clipboard_paste(event_loop);
-            return;
-        }
-
-        // Determine bytes to send to PTY. Priority:
-        // 1. Alt+text: ESC prefix + text (terminal alt-key convention)
-        // 2. Plain text (no Ctrl/Alt/Super): event.text directly
-        // 3. Named keys + Ctrl combos: encode_winit_key_event for escape sequences
-        let bytes = if self.modifiers.alt_key()
-            && !self.modifiers.control_key()
-            && !self.modifiers.super_key()
-        {
-            event.text.as_ref().filter(|t| !t.is_empty()).map(|text| {
-                let mut b = vec![0x1b];
-                b.extend_from_slice(text.as_bytes());
-                b
-            })
-        } else if !self.modifiers.control_key()
-            && !self.modifiers.alt_key()
-            && !self.modifiers.super_key()
-        {
-            event
-                .text
-                .as_ref()
-                .filter(|t| !t.is_empty())
-                .map(|text| text.as_bytes().to_vec())
-        } else {
-            None
-        }
-        .or_else(|| encode_winit_key_event(&event.logical_key, self.modifiers));
-
-        if let Some(ref bytes) = bytes {
-            trace!(key = ?event.logical_key, len = bytes.len(), "keyboard input to PTY");
-            if let Err(error) = write_all_and_flush(&mut *self.writer, bytes) {
-                match self.handle_pty_io_error(
-                    SessionBoundary::PtyWrite,
-                    error,
-                    "failed to write keyboard input to PTY",
-                ) {
-                    Ok(PtyBoundaryLoopAction::Continue) => {}
-                    Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                        event_loop.exit();
-                    }
-                    Err(policy_error) => {
-                        self.fatal_error = Some(policy_error);
-                        event_loop.exit();
-                    }
-                }
-                return;
-            }
-        }
-
-        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
-            self.fatal_error = Some(error);
-            event_loop.exit();
-        }
-    }
-
-    fn handle_text_commit(&mut self, text: &str, event_loop: &ActiveEventLoop) {
-        warn!(
-            len = text.len(),
-            "IME commit received unexpectedly (IME should be disabled)"
-        );
-        if text.is_empty() {
-            return;
-        }
-
-        if let Err(error) = write_all_and_flush(&mut *self.writer, text.as_bytes()) {
-            match self.handle_pty_io_error(
-                SessionBoundary::PtyWrite,
-                error,
-                "failed to write IME text to PTY",
-            ) {
-                Ok(PtyBoundaryLoopAction::Continue) => {}
-                Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                    event_loop.exit();
-                }
-                Err(policy_error) => {
-                    self.fatal_error = Some(policy_error);
-                    event_loop.exit();
-                }
-            }
-            return;
-        }
-
-        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
-            self.fatal_error = Some(error);
-            event_loop.exit();
-        }
-    }
-
-    fn handle_pty_io_error(
-        &mut self,
-        boundary: SessionBoundary,
-        error: io::Error,
-        error_context: &'static str,
-    ) -> Result<PtyBoundaryLoopAction> {
-        if is_disconnect_error(&error)
-            && let Some(code) = self
-                .pty
-                .try_wait()
-                .context("failed to poll PTY after disconnecting GUI I/O failure")?
-        {
-            self.exit_code = Some(code);
-            info!(
-                boundary = session_boundary_token(boundary),
-                code, "PTY child already exited after disconnecting GUI I/O failure"
-            );
-            return Ok(PtyBoundaryLoopAction::ExitLoop);
-        }
-
-        let detail = format!("{error_context}: {error}");
-        self.handle_pty_boundary_failure(boundary, &detail)
-    }
-
-    fn handle_pty_boundary_failure(
-        &mut self,
-        boundary: SessionBoundary,
-        detail: &str,
-    ) -> Result<PtyBoundaryLoopAction> {
-        match classify_pty_boundary_failure(&mut self.session_policy, boundary)? {
-            PtyBoundaryPolicyDecision::Continue {
-                attempt,
-                remaining_budget,
-            } => {
-                warn!(
-                    boundary = session_boundary_token(boundary),
-                    attempt,
-                    remaining_budget,
-                    state = self.session_policy.state().as_str(),
-                    detail,
-                    "recoverable PTY boundary failure in GUI runtime; continuing in degraded mode"
-                );
-                self.emit_runtime_notice(&format!(
-                    "[runtime] recoverable pty-boundary={} attempt={} remaining-budget={} detail={detail}",
-                    session_boundary_token(boundary),
-                    attempt,
-                    remaining_budget,
-                ));
-                Ok(PtyBoundaryLoopAction::Continue)
-            }
-            PtyBoundaryPolicyDecision::Fatal { reason } => Err(anyhow!(
-                "fatal PTY boundary failure boundary={} reason={} detail={detail}",
-                session_boundary_token(boundary),
-                fatal_boundary_reason_token(reason),
-            )),
-        }
-    }
-
-    fn mark_pty_boundary_recovered(&mut self, boundary: SessionBoundary) -> Result<()> {
-        if self.session_policy.state() != SessionState::Degraded {
-            return Ok(());
-        }
-
-        let transition = self.session_policy.mark_running().map_err(|error| {
-            anyhow!(
-                "failed to mark PTY boundary recovery boundary={}: {error}",
-                session_boundary_token(boundary),
-            )
-        })?;
-
-        info!(
-            boundary = session_boundary_token(boundary),
-            from = transition.from.as_str(),
-            to = transition.to.as_str(),
-            "PTY boundary recovered; GUI runtime returned to running state"
-        );
-        self.emit_runtime_notice(&format!(
-            "[runtime] recovered pty-boundary={}",
-            session_boundary_token(boundary),
-        ));
-        Ok(())
-    }
-
-    fn handle_clipboard_paste(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(text) = read_clipboard_text_for_paste(self.clipboard.as_ref()) else {
-            return;
-        };
-        debug!(bytes = text.len(), "clipboard paste");
-        let text = cap_paste_text(&text);
-        let paste_result = if self.terminal.bracketed_paste_enabled() {
-            write_all_and_flush(&mut *self.writer, b"\x1b[200~")
-                .and_then(|()| write_all_and_flush(&mut *self.writer, text.as_bytes()))
-                .and_then(|()| write_all_and_flush(&mut *self.writer, b"\x1b[201~"))
-        } else {
-            write_all_and_flush(&mut *self.writer, text.as_bytes())
-        };
-        if let Err(error) = paste_result {
-            match self.handle_pty_io_error(
-                SessionBoundary::PtyWrite,
-                error,
-                "failed to write clipboard paste to PTY",
-            ) {
-                Ok(PtyBoundaryLoopAction::Continue) => {}
-                Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                    event_loop.exit();
-                }
-                Err(policy_error) => {
-                    self.fatal_error = Some(policy_error);
-                    event_loop.exit();
-                }
-            }
-            return;
-        }
-        if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyWrite) {
-            self.fatal_error = Some(error);
-            event_loop.exit();
-        }
-    }
-
-    fn request_window_redraw(&self) -> bool {
-        if let Some(window_control) = self.window_control.as_ref() {
-            if let Err(error) = window_control.request_redraw() {
-                warn!(
-                    error = %error,
-                    "failed to request redraw via window control"
-                );
-                return false;
-            }
-            return true;
-        }
-        warn!("window control unavailable while requesting redraw");
-        false
-    }
-
-    fn set_window_title(&self, title: &str) {
-        if let Some(window_control) = self.window_control.as_ref() {
-            if let Err(error) = window_control.set_title(title) {
-                warn!(
-                    error = %error,
-                    "failed to set title via window control"
-                );
-            }
-            return;
-        }
-        warn!("window control unavailable while setting title");
-    }
-
-    fn emit_close_intent(&self) {
-        if let Some(window_control) = self.window_control.as_ref()
-            && let Err(error) = window_control.close()
-        {
-            warn!(
-                error = %error,
-                "failed to propagate close intent via window control"
-            );
-        }
-    }
-
-    fn draw_frame(&mut self) -> Result<()> {
-        self.render_attempt_sequence = self.render_attempt_sequence.saturating_add(1);
-        let render_attempt_sequence = self.render_attempt_sequence;
-
-        trace!(
-            render_path = ?self.ui_runtime.active_render_path(),
-            gpu_initialized = self.gpu_renderer.is_initialized(),
-            render_attempt_sequence,
-            "draw_frame: begin"
-        );
-
-        if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
-            && self.gpu_renderer.is_initialized()
-        {
-            let dirty_rows = self.terminal.grid.dirty_rows();
-            let scroll_count = self.terminal.grid.scroll_count();
-            match self
-                .gpu_renderer
-                .render_frame(&self.terminal, dirty_rows, scroll_count)
-            {
-                Ok(()) => {
-                    self.terminal.grid.clear_dirty_rows();
-                    let _ = self
-                        .ui_runtime
-                        .handle_command(UiRuntimeCommand::GpuFramePresented)
-                        .context("failed to dispatch UiRuntimeCommand::GpuFramePresented")?;
-                    trace!("draw_frame: presented (GPU)");
-                    return Ok(());
-                }
-                Err(error) => {
-                    self.gpu_failure_sequence = self.gpu_failure_sequence.saturating_add(1);
-                    let gpu_failure_sequence = self.gpu_failure_sequence;
-                    let observed_at_millis =
-                        self.started_at
-                            .elapsed()
-                            .as_millis()
-                            .min(u128::from(u64::MAX)) as u64;
-                    let failure_kind = error.failure_kind();
-
-                    warn!(
-                        gpu_failure_sequence,
-                        render_attempt_sequence,
-                        failure_kind = ?failure_kind,
-                        gpu_error = ?error,
-                        observed_at_millis,
-                        mode = ?self.ui_runtime.render_mode(),
-                        active_path = ?self.ui_runtime.active_render_path(),
-                        "gpu render failed; routing through ui runtime command path"
-                    );
-
-                    match dispatch_gpu_failure_command(
-                        &mut self.ui_runtime,
-                        failure_kind,
-                        observed_at_millis,
-                    )? {
-                        GpuFailureHandling::RetryScheduled {
-                            failure_streak,
-                            retry_budget_remaining,
-                        } => {
-                            warn!(
-                                gpu_failure_sequence,
-                                render_attempt_sequence,
-                                failure_kind = ?failure_kind,
-                                failure_streak,
-                                retry_budget_remaining,
-                                mode = ?self.ui_runtime.render_mode(),
-                                active_path = ?self.ui_runtime.active_render_path(),
-                                "gpu retry scheduled; session remains active"
-                            );
-                            self.queue_redraw();
-                            return Ok(());
-                        }
-                        GpuFailureHandling::FallbackToCpu {
-                            transition_sequence,
-                        } => {
-                            self.gpu_renderer.release_backend();
-                            self.sync_deferred_gpu_init_state();
-                            // Force full redraw on CPU path: GPU previously cleared dirty
-                            // flags via take_dirty_rows, so the CPU softbuffer has no valid
-                            // content and needs every row repainted.
-                            self.terminal.grid.mark_all_dirty();
-                            let (diagnostics_event, fallback_notice) =
-                                emit_gpu_auto_fallback_observability(
-                                    &self.diagnostics,
-                                    transition_sequence,
-                                    gpu_failure_sequence,
-                                    render_attempt_sequence,
-                                    failure_kind,
-                                    observed_at_millis,
-                                );
-                            warn!(
-                                gpu_failure_sequence,
-                                render_attempt_sequence,
-                                transition_sequence,
-                                diagnostics_event_id = %diagnostics_event.event_id,
-                                diagnostics_correlation = ?diagnostics_event.correlation_id,
-                                mode = ?self.ui_runtime.render_mode(),
-                                active_path = ?self.ui_runtime.active_render_path(),
-                                "gpu failure applied deterministic cpu fallback; session remains active"
-                            );
-                            self.emit_runtime_notice(&fallback_notice);
-
-                            // Defensive: if session was degraded from prior PTY boundary issue,
-                            // re-mark as running since terminal is operational on CPU path
-                            if self.session_policy.state() == SessionState::Degraded
-                                && let Err(error) = self.session_policy.mark_running()
-                            {
-                                tracing::warn!(%error, "session mark_running after CPU fallback failed");
-                            }
-                        }
-                        GpuFailureHandling::FatalForcedGpu => {
-                            return Err(anyhow!(
-                                "forced gpu mode render failure: kind={failure_kind:?} observed_at_millis={observed_at_millis} render_attempt_sequence={render_attempt_sequence} gpu_failure_sequence={gpu_failure_sequence}"
-                            ));
-                        }
-                        GpuFailureHandling::Ignored => {
-                            trace!(
-                                "draw_frame: gpu failure handling ignored (already on CPU path)"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        let width = self.window_size.width;
-        let height = self.window_size.height;
-        if width == 0 || height == 0 {
-            debug!(width, height, "draw_frame: skipped, zero window dimensions");
-            return Ok(());
-        }
-
-        // Lazily create softbuffer surface on first CPU render (e.g. after GPU fallback).
-        // Cannot create at bootstrap when GPU surface already owns the Wayland buffer queue.
-        self.ensure_softbuffer_surface()
-            .context("failed to initialize softbuffer for CPU render")?;
-
-        let surface = self
-            .surface
-            .as_mut()
-            .ok_or_else(|| anyhow!("softbuffer surface is not initialized"))?;
-
-        let nz_width = NonZeroU32::new(width).ok_or_else(|| anyhow!("zero width is invalid"))?;
-        let nz_height = NonZeroU32::new(height).ok_or_else(|| anyhow!("zero height is invalid"))?;
-        let target_size = PhysicalSize::new(width, height);
-        if self.last_softbuffer_size != Some(target_size) {
-            surface
-                .resize(nz_width, nz_height)
-                .map_err(|error| anyhow!("failed to resize softbuffer surface: {error}"))?;
-            self.last_softbuffer_size = Some(target_size);
-        }
-
-        let mut buffer = surface
-            .buffer_mut()
-            .map_err(|error| anyhow!("failed to acquire softbuffer frame: {error}"))?;
-        render_terminal(
-            &mut buffer,
-            width as usize,
-            height as usize,
-            &mut self.terminal,
-            &mut self.glyph_cache,
-            self.last_rendered_cursor_row,
-            &mut self.dirty_rows_scratch,
-        );
-        self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
-        buffer
-            .present()
-            .map_err(|error| anyhow!("failed to present GUI frame: {error}"))?;
-        trace!("draw_frame: presented (CPU)");
-        Ok(())
-    }
 }
 
 impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
@@ -1819,6 +780,15 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 ref message,
             } => {
                 warn!(?boundary, %message, "pty boundary failure event");
+                if *boundary == SessionBoundary::PtyWait {
+                    self.fatal_error = Some(fatal_pty_boundary_failure(
+                        &mut self.session_policy,
+                        *boundary,
+                        message,
+                    ));
+                    event_loop.exit();
+                    return;
+                }
                 if *boundary == SessionBoundary::PtyRead {
                     if self.exit_code.is_some() {
                         self.begin_child_exit_drain(event_loop);
@@ -1883,58 +853,23 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Moved);
             }
             WindowEvent::Resized(size) => {
-                let capped_size = cap_framebuffer_extent(size);
-                if capped_size != size {
-                    warn!(
-                        requested_width = size.width,
-                        requested_height = size.height,
-                        capped_width = capped_size.width,
-                        capped_height = capped_size.height,
-                        max_width = MAX_FRAMEBUFFER_WIDTH,
-                        max_height = MAX_FRAMEBUFFER_HEIGHT,
-                        max_pixels = MAX_FRAMEBUFFER_PIXELS,
-                        "window framebuffer exceeded runtime safety limits; dimensions were clamped"
-                    );
-                }
-                self.window_size = capped_size;
-                if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
-                    && self.gpu_renderer.is_initialized()
-                {
-                    self.gpu_renderer
-                        .resize(self.window_size.width, self.window_size.height);
-                }
-                self.update_viewport_geometry(event_loop);
-                self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Resized);
-                self.queue_redraw();
+                self.apply_window_extent_change(
+                    event_loop,
+                    size,
+                    "ignoring zero-sized resize event to avoid synthetic PTY geometry",
+                    "window framebuffer exceeded runtime safety limits; dimensions were clamped",
+                    MonitorAffectingWindowEvent::Resized,
+                );
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
-                    let raw_size = window.inner_size();
-                    let capped_size = cap_framebuffer_extent(raw_size);
-                    if capped_size != raw_size {
-                        warn!(
-                            requested_width = raw_size.width,
-                            requested_height = raw_size.height,
-                            capped_width = capped_size.width,
-                            capped_height = capped_size.height,
-                            max_width = MAX_FRAMEBUFFER_WIDTH,
-                            max_height = MAX_FRAMEBUFFER_HEIGHT,
-                            max_pixels = MAX_FRAMEBUFFER_PIXELS,
-                            "scale-factor framebuffer exceeded runtime safety limits; dimensions were clamped"
-                        );
-                    }
-                    self.window_size = capped_size;
-                    if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
-                        && self.gpu_renderer.is_initialized()
-                    {
-                        self.gpu_renderer
-                            .resize(self.window_size.width, self.window_size.height);
-                    }
-                    self.update_viewport_geometry(event_loop);
-                    self.handle_monitor_affecting_event(
+                    self.apply_window_extent_change(
+                        event_loop,
+                        window.inner_size(),
+                        "ignoring zero-sized scale-factor resize event to avoid synthetic PTY geometry",
+                        "scale-factor framebuffer exceeded runtime safety limits; dimensions were clamped",
                         MonitorAffectingWindowEvent::ScaleFactorChanged,
                     );
-                    self.queue_redraw();
                 }
             }
             WindowEvent::KeyboardInput {
@@ -1962,7 +897,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gpu_init_pending {
+        if self.render_backend.deferred_gpu_init_pending() {
             self.try_deferred_gpu_init(event_loop);
         }
         if self.fatal_error.is_some() {
@@ -1999,8 +934,8 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             }
             return;
         }
-        if self.gpu_init_pending
-            && let Some(retry_at) = self.next_gpu_init_retry_at
+        if self.render_backend.deferred_gpu_init_pending()
+            && let Some(retry_at) = self.render_backend.deferred_retry_deadline()
             && Instant::now() < retry_at
         {
             event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
@@ -2008,531 +943,50 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         }
 
         self.request_redraw_if_needed();
+        let wait_policy = self.render_backend.wait_policy(
+            self.ui_runtime.active_render_path(),
+            self.gpu_renderer.is_initialized(),
+            self.redraw_pending,
+            self.ui_runtime.cadence().frame_interval(),
+        );
 
         trace!(
             render_path = ?self.ui_runtime.active_render_path(),
             gpu_initialized = self.gpu_renderer.is_initialized(),
+            wait_policy = ?wait_policy,
             "about_to_wait: selecting control flow"
         );
-
-        if self.ui_runtime.active_render_path() == ActiveRenderPath::Gpu
-            && self.gpu_renderer.is_initialized()
-        {
-            // GPU: VSync drives frame pacing via PresentMode::AutoVsync.
-            // Wait sleeps until the next event (PTY data, input, resize).
-            // PTY proxy wakes the loop via EventLoopProxy — no busy-spin needed.
-            event_loop.set_control_flow(ControlFlow::Wait);
-        } else {
-            // CPU: software timer for frame pacing (no VSync via softbuffer).
-            if self.redraw_pending {
-                let cadence = self.ui_runtime.cadence();
-                match cadence.frame_interval() {
-                    Some(interval) => {
-                        event_loop
-                            .set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
-                    }
-                    None => {
-                        // No cadence available (headless, VNC, or monitor detection failed).
-                        // Wait for events to avoid busy-spin.
-                        event_loop.set_control_flow(ControlFlow::Wait);
-                    }
-                }
-            } else {
-                // Nothing dirty in CPU fallback path: sleep until external input/PTY events.
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
-        }
-    }
-}
-
-fn render_terminal(
-    buffer: &mut [u32],
-    width: usize,
-    height: usize,
-    terminal: &mut TerminalState,
-    glyph_cache: &mut GlyphCache,
-    prev_cursor_row: Option<u16>,
-    dirty_rows_scratch: &mut Vec<u16>,
-) {
-    if width == 0 || height == 0 {
-        return;
-    }
-
-    let grid_rows = terminal.grid.height() as usize;
-    let grid_cols = terminal.grid.width() as usize;
-    let visible_rows = (height / CELL_HEIGHT).max(1).min(grid_rows);
-    let visible_cols = (width / CELL_WIDTH).max(1).min(grid_cols);
-
-    // Build dirty set: grid dirty rows + cursor rows (current and previous)
-    // Using dirty_rows() &[bool] for O(1) lookup instead of Vec::contains O(n)
-    let dirty_flags = terminal.grid.dirty_rows();
-    let cursor_row = terminal.cursor.row;
-
-    let mut dirty = std::mem::take(dirty_rows_scratch);
-    dirty.clear();
-    if dirty.capacity() < (visible_rows / 4 + 2) {
-        dirty.reserve((visible_rows / 4 + 2) - dirty.capacity());
-    }
-    for row in 0..visible_rows {
-        let r = row as u16;
-        if dirty_flags.get(row).copied().unwrap_or(false)
-            || r == cursor_row
-            || prev_cursor_row == Some(r)
-        {
-            dirty.push(r);
-        }
-    }
-    terminal.grid.clear_dirty_rows();
-
-    if dirty.is_empty() {
-        *dirty_rows_scratch = dirty;
-        return;
-    }
-
-    // Render only dirty rows
-    for &row in &dirty {
-        let row_idx = row as usize;
-        if row_idx >= visible_rows {
-            continue;
-        }
-        let base_y = row_idx * CELL_HEIGHT;
-        let clear_end_y = (base_y + CELL_HEIGHT).min(height);
-
-        // Clear row band to default background
-        for py in base_y..clear_end_y {
-            let start = py * width;
-            buffer[start..start + width].fill(DEFAULT_BG_U32);
-        }
-
-        // Redraw cells for this row
-        if let Ok(cells) = terminal.grid.row_cells(row) {
-            for (col, cell) in cells.iter().take(visible_cols).enumerate() {
-                let x = col * CELL_WIDTH;
-                let (fg, bg) = resolve_cell_colors(&cell.attrs);
-
-                if bg != DEFAULT_BG_U32 {
-                    draw_cell_bg(buffer, width, height, x, base_y, bg);
-                }
-
-                if cell.ch != ' ' {
-                    let glyph = glyph_cache.get(cell.ch);
-                    draw_glyph_blended(
-                        buffer,
-                        width,
-                        height,
-                        x,
-                        base_y,
-                        glyph,
-                        fg,
-                        cell.attrs.bold,
-                    );
-                }
-
-                if cell.attrs.underline {
-                    draw_underline(buffer, width, height, x, base_y, fg);
-                }
-
-                if cell.attrs.strikethrough {
-                    draw_strikethrough(buffer, width, height, x, base_y, fg);
-                }
-            }
-        }
-    }
-
-    // Clear area below the grid (handles first frame and resize)
-    let grid_pixel_height = visible_rows * CELL_HEIGHT;
-    if grid_pixel_height < height {
-        let any_bottom_dirty = dirty.iter().any(|&r| (r as usize) + 1 >= visible_rows);
-        if any_bottom_dirty {
-            for py in grid_pixel_height..height {
-                let start = py * width;
-                buffer[start..start + width].fill(DEFAULT_BG_U32);
-            }
-        }
-    }
-
-    // Draw cursor
-    if terminal.cursor.visible {
-        let crow = terminal.cursor.row as usize;
-        let ccol = terminal.cursor.col as usize;
-        if crow < visible_rows && ccol < visible_cols {
-            draw_cursor(buffer, width, height, ccol * CELL_WIDTH, crow * CELL_HEIGHT);
-        }
-    }
-
-    *dirty_rows_scratch = dirty;
-}
-
-fn resolve_cell_colors(attrs: &grid::Attrs) -> (u32, u32) {
-    let mut fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
-    let mut bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
-
-    if attrs.dim {
-        let (r, g, b) = u32_to_rgb(fg);
-        fg = rgb_to_u32(r / 2, g / 2, b / 2);
-    }
-
-    if attrs.inverse {
-        std::mem::swap(&mut fg, &mut bg);
-    }
-
-    (fg, bg)
-}
-
-const fn rgb_to_u32(r: u8, g: u8, b: u8) -> u32 {
-    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-}
-
-fn u32_to_rgb(c: u32) -> (u8, u8, u8) {
-    ((c >> 16) as u8, (c >> 8) as u8, c as u8)
-}
-
-fn draw_cell_bg(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, bg: u32) {
-    for py in y..(y + CELL_HEIGHT).min(height) {
-        let row_start = py * width;
-        for px in x..(x + CELL_WIDTH).min(width) {
-            buffer[row_start + px] = bg;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_glyph_blended(
-    buffer: &mut [u32],
-    width: usize,
-    height: usize,
-    cell_x: usize,
-    cell_y: usize,
-    glyph: &rldyourterm_font::GlyphBitmap,
-    fg: u32,
-    bold: bool,
-) {
-    if glyph.glyph_width == 0 || glyph.glyph_height == 0 {
-        return;
-    }
-
-    let (fg_r, fg_g, fg_b) = u32_to_rgb(fg);
-
-    for gy in 0..glyph.glyph_height {
-        for gx in 0..glyph.glyph_width {
-            let coverage = glyph.data[gy * glyph.glyph_width + gx];
-            if coverage == 0 {
-                continue;
-            }
-
-            let px = cell_x as i32 + glyph.x_offset + gx as i32;
-            let py = cell_y as i32 + glyph.y_offset + gy as i32;
-            if px < 0 || py < 0 {
-                continue;
-            }
-            let px = px as usize;
-            let py = py as usize;
-            if px >= width || py >= height {
-                continue;
-            }
-
-            let idx = py * width + px;
-            let (bg_r, bg_g, bg_b) = u32_to_rgb(buffer[idx]);
-
-            // Alpha blend (expanded form, no subtraction to avoid u32 underflow):
-            // result = bg * (255 - a) / 255 + fg * a / 255
-            let a = coverage as u32;
-            let inv_a = 255 - a;
-            let r = (bg_r as u32 * inv_a + fg_r as u32 * a) / 255;
-            let g = (bg_g as u32 * inv_a + fg_g as u32 * a) / 255;
-            let b = (bg_b as u32 * inv_a + fg_b as u32 * a) / 255;
-            buffer[idx] = rgb_to_u32(r as u8, g as u8, b as u8);
-
-            // Bold via double-strike (1px right shift)
-            if bold && px + 1 < width {
-                let bold_idx = py * width + px + 1;
-                let (bbg_r, bbg_g, bbg_b) = u32_to_rgb(buffer[bold_idx]);
-                let br = (bbg_r as u32 * inv_a + fg_r as u32 * a) / 255;
-                let bg_val = (bbg_g as u32 * inv_a + fg_g as u32 * a) / 255;
-                let bb = (bbg_b as u32 * inv_a + fg_b as u32 * a) / 255;
-                buffer[bold_idx] = rgb_to_u32(br as u8, bg_val as u8, bb as u8);
-            }
-        }
-    }
-}
-
-fn draw_underline(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, fg: u32) {
-    let line_y = y + CELL_HEIGHT - 1;
-    if line_y >= height {
-        return;
-    }
-    let row_start = line_y * width;
-    for px in x..(x + CELL_WIDTH).min(width) {
-        buffer[row_start + px] = fg;
-    }
-}
-
-fn draw_strikethrough(
-    buffer: &mut [u32],
-    width: usize,
-    height: usize,
-    x: usize,
-    y: usize,
-    fg: u32,
-) {
-    let line_y = y + CELL_HEIGHT / 2;
-    if line_y >= height {
-        return;
-    }
-    let row_start = line_y * width;
-    for px in x..(x + CELL_WIDTH).min(width) {
-        buffer[row_start + px] = fg;
-    }
-}
-
-fn draw_cursor(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
-    for glyph_y in 0..CELL_HEIGHT {
-        let pixel_y = y + glyph_y;
-        if pixel_y >= height {
-            break;
-        }
-        for glyph_x in 0..CELL_WIDTH {
-            let pixel_x = x + glyph_x;
-            if pixel_x >= width {
-                break;
-            }
-            let index = pixel_y * width + pixel_x;
-            buffer[index] ^= 0x00FF_FFFF;
-        }
+        event_loop.set_control_flow(wait_policy.control_flow(Instant::now()));
     }
 }
 
 fn join_pump_thread_with_timeout(handle: JoinHandle<()>, thread_label: &'static str) {
-    let deadline = Instant::now() + SHUTDOWN_JOIN_TIMEOUT;
-    while !handle.is_finished() && Instant::now() < deadline {
-        thread::sleep(SHUTDOWN_JOIN_POLL_INTERVAL);
+    if matches!(
+        shared_join_thread_with_timeout(
+            handle,
+            SHUTDOWN_JOIN_TIMEOUT,
+            SHUTDOWN_JOIN_POLL_INTERVAL,
+            thread_label,
+        ),
+        JoinThreadOutcome::TimedOut
+    ) {
+        warn!(
+            thread_label,
+            timeout_ms = SHUTDOWN_JOIN_TIMEOUT.as_millis(),
+            "GUI shutdown thread join timed out; detaching thread to avoid shutdown hang"
+        );
     }
-
-    if handle.is_finished() {
-        if let Err(join_error) = handle.join() {
-            warn!(?join_error, thread_label, "GUI shutdown thread join failed");
-        }
-        return;
-    }
-
-    // One final immediate check reduces false timeout logs in the race window
-    // where the worker finishes right after the bounded polling loop exits.
-    if handle.is_finished() {
-        if let Err(join_error) = handle.join() {
-            warn!(?join_error, thread_label, "GUI shutdown thread join failed");
-        }
-        return;
-    }
-
-    warn!(
-        thread_label,
-        timeout_ms = SHUTDOWN_JOIN_TIMEOUT.as_millis(),
-        "GUI shutdown thread join timed out; detaching thread to avoid shutdown hang"
-    );
 }
 
-fn is_runtime_palette_shortcut(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
-    is_runtime_palette_shortcut_key(event.logical_key.as_ref(), modifiers)
-}
-
+#[cfg(test)]
 fn is_runtime_palette_shortcut_key(key: Key<&str>, modifiers: ModifiersState) -> bool {
-    if !modifiers.shift_key() || !(modifiers.control_key() || modifiers.super_key()) {
-        return false;
-    }
-
-    match key {
-        Key::Character(text) => text.eq_ignore_ascii_case("p"),
-        _ => false,
-    }
+    is_runtime_palette_shortcut_winit(key, modifiers)
 }
 
-fn runtime_palette_action_for_winit_key(
-    key: Key<&str>,
-    diagnostics_enabled: bool,
-) -> Option<RuntimePaletteAction> {
-    match key {
-        Key::Named(NamedKey::Escape) => Some(RuntimePaletteAction::Close),
-        Key::Character("1") => Some(RuntimePaletteAction::ApplyCommand("mode cpu")),
-        Key::Character("2") => Some(RuntimePaletteAction::ApplyCommand("mode gpu")),
-        Key::Character("3") => Some(RuntimePaletteAction::ApplyCommand("mode auto")),
-        Key::Character(text) if text.eq_ignore_ascii_case("d") => {
-            if diagnostics_enabled {
-                Some(RuntimePaletteAction::ApplyCommand("debug off"))
-            } else {
-                Some(RuntimePaletteAction::ApplyCommand("debug on"))
-            }
-        }
-        Key::Character(text) if text.eq_ignore_ascii_case("i") => {
-            Some(RuntimePaletteAction::ShowInfo)
-        }
-        _ => None,
-    }
-}
-
-fn dispatch_runtime_palette_command(
-    ui_runtime: &mut UiRuntime,
-    settings: &mut SettingsService,
-    input: &str,
-) -> Result<String> {
-    match settings.apply_palette_command(input) {
-        SettingsPaletteApplyOutcome::Applied {
-            command, current, ..
-        } => {
-            apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
-            Ok(runtime_palette_status_line(
-                command,
-                current.mode,
-                current.debug_mode,
-                ui_runtime.active_render_path(),
-            ))
-        }
-        SettingsPaletteApplyOutcome::Noop { command, state, .. } => {
-            apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
-            Ok(runtime_palette_status_line(
-                command,
-                state.mode,
-                state.debug_mode,
-                ui_runtime.active_render_path(),
-            ))
-        }
-        SettingsPaletteApplyOutcome::Rejected { reason, .. } => {
-            warn!(?reason, input = input, "runtime palette command rejected");
-            Ok(format!(
-                "[palette] rejected input={input} reason={reason:?}"
-            ))
-        }
-    }
-}
-
-fn apply_palette_settings_command_to_ui_runtime(
-    ui_runtime: &mut UiRuntime,
-    command: SettingsCommand,
-) -> Result<()> {
-    if let SettingsCommand::SetMode(mode) = command {
-        let _ = ui_runtime
-            .handle_command(UiRuntimeCommand::SetRenderMode(mode))
-            .context("failed to dispatch UiRuntimeCommand::SetRenderMode from runtime palette")?;
-    }
-    Ok(())
-}
-
-fn runtime_palette_status_line(
-    command: SettingsCommand,
-    mode: RenderMode,
-    diagnostics_enabled: bool,
-    active_render_path: ActiveRenderPath,
-) -> String {
-    match command {
-        SettingsCommand::SetMode(_) => format!(
-            "[palette] mode={} active-path={}",
-            render_mode_token(mode),
-            active_render_path_token(active_render_path),
-        ),
-        SettingsCommand::SetDebugMode(_) => format!(
-            "[palette] diagnostics={} mode={} active-path={}",
-            on_off_token(diagnostics_enabled),
-            render_mode_token(mode),
-            active_render_path_token(active_render_path),
-        ),
-        SettingsCommand::SetShellTarget(_)
-        | SettingsCommand::SetShellAutoInit(_)
-        | SettingsCommand::SetRenderCadencePolicy(_)
-        | SettingsCommand::SetTheme(_)
-        | SettingsCommand::SetRuntimeProfile(_) => {
-            format!("[palette] saved (restart required) input={command:?}")
-        }
-    }
-}
-
-fn runtime_palette_info_line(ui_runtime: &UiRuntime, settings: &SettingsService) -> String {
-    format!(
-        "[palette] info mode={} active-path={} diagnostics={}",
-        render_mode_token(ui_runtime.render_mode()),
-        active_render_path_token(ui_runtime.active_render_path()),
-        on_off_token(settings.state().debug_mode),
-    )
-}
-
-fn active_render_path_token(path: ActiveRenderPath) -> &'static str {
-    match path {
-        ActiveRenderPath::Cpu => "cpu",
-        ActiveRenderPath::Gpu => "gpu",
-    }
-}
-
-fn sample_monitor_refresh_rate_millihz(window_control: Option<&dyn WindowControl>) -> Option<u32> {
-    let window_control = window_control?;
-
-    match window_control.current_monitor_timing() {
-        Ok(MonitorTiming {
-            refresh_rate_millihz,
-            ..
-        }) => refresh_rate_millihz,
-        Err(error) => {
-            warn!(
-                error = %error,
-                "failed to sample monitor timing via window control"
-            );
-            None
-        }
-    }
-}
-
-fn cadence_resync_command_for_monitor_event(
-    monitor_event: MonitorAffectingWindowEvent,
-    sampled_refresh_rate_millihz: Option<u32>,
-) -> UiRuntimeCommand {
-    let refresh_rate_millihz = sampled_refresh_rate_millihz.unwrap_or(0);
-    match monitor_event {
-        MonitorAffectingWindowEvent::Moved | MonitorAffectingWindowEvent::ScaleFactorChanged => {
-            UiRuntimeCommand::ResyncCadenceAfterTransfer {
-                refresh_rate_millihz,
-            }
-        }
-        MonitorAffectingWindowEvent::Resized => UiRuntimeCommand::ResyncCadence {
-            refresh_rate_millihz,
-        },
-    }
-}
-
-fn monitor_affecting_event_token(event: MonitorAffectingWindowEvent) -> &'static str {
-    match event {
-        MonitorAffectingWindowEvent::Moved => "moved",
-        MonitorAffectingWindowEvent::Resized => "resized",
-        MonitorAffectingWindowEvent::ScaleFactorChanged => "scale-factor-changed",
-    }
-}
-
-fn gpu_auto_fallback_correlation_id(
-    transition_sequence: u64,
-    gpu_failure_sequence: u64,
-) -> CorrelationId {
-    CorrelationId::new(format!(
-        "gpu-auto-fallback-transition-{transition_sequence}-failure-{gpu_failure_sequence}"
-    ))
-}
-
-fn emit_gpu_auto_fallback_observability(
-    diagnostics: &DiagnosticsSink,
-    transition_sequence: u64,
-    gpu_failure_sequence: u64,
-    render_attempt_sequence: u64,
-    failure_kind: GpuFailureKind,
-    observed_at_millis: u64,
-) -> (Event, String) {
-    let correlation_id =
-        gpu_auto_fallback_correlation_id(transition_sequence, gpu_failure_sequence);
-    let diagnostics_message = format!(
-        "gpu auto-fallback applied transition-seq={transition_sequence} failure-seq={gpu_failure_sequence} render-attempt-seq={render_attempt_sequence} failure-kind={failure_kind:?} observed-ms={observed_at_millis}"
-    );
-    let event = diagnostics
-        .with_correlation(correlation_id.clone())
-        .emit_kind(EventKind::RenderModeTransition, diagnostics_message);
-    let notice = format!(
-        "[runtime] gpu auto-fallback transition-seq={transition_sequence} failure-seq={gpu_failure_sequence} render-attempt-seq={render_attempt_sequence} failure={failure_kind:?} observed-ms={observed_at_millis} correlation-id={}",
-        correlation_id.as_str()
-    );
-    (event, notice)
+#[cfg(test)]
+fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+    crate::runtime_shared::input::runtime_key_event_from_winit(key, modifiers)
+        .and_then(crate::runtime_shared::input::encode_runtime_key_event)
 }
 
 fn resolve_gpu_cache_dir() -> Option<PathBuf> {
@@ -2550,243 +1004,37 @@ fn resolve_gpu_cache_dir() -> Option<PathBuf> {
     }
 }
 
-fn is_local_shutdown_key(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
-    if !modifiers.control_key() {
-        return false;
-    }
-
-    match event.logical_key.as_ref() {
-        Key::Character(text) => text.eq_ignore_ascii_case("q"),
-        _ => false,
-    }
-}
-
-fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
-    let mod_param = xterm_modifier_param(
-        modifiers.shift_key(),
-        modifiers.alt_key(),
-        modifiers.control_key(),
-    );
-    let has_mod = mod_param > 1;
-
-    match key.as_ref() {
-        Key::Named(NamedKey::Enter) => Some(vec![b'\r']),
-        Key::Named(NamedKey::Tab) if modifiers.shift_key() => Some(b"\x1b[Z".to_vec()),
-        Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
-        Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
-        Key::Named(NamedKey::Backspace) if modifiers.alt_key() => Some(b"\x1b\x7f".to_vec()),
-        Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
-        Key::Named(NamedKey::ArrowUp) => Some(csi_modified(b'A', mod_param, has_mod)),
-        Key::Named(NamedKey::ArrowDown) => Some(csi_modified(b'B', mod_param, has_mod)),
-        Key::Named(NamedKey::ArrowRight) => Some(csi_modified(b'C', mod_param, has_mod)),
-        Key::Named(NamedKey::ArrowLeft) => Some(csi_modified(b'D', mod_param, has_mod)),
-        Key::Named(NamedKey::Home) => Some(csi_modified(b'H', mod_param, has_mod)),
-        Key::Named(NamedKey::End) => Some(csi_modified(b'F', mod_param, has_mod)),
-        Key::Named(NamedKey::Delete) => Some(tilde_modified(3, mod_param, has_mod)),
-        Key::Named(NamedKey::Insert) => Some(tilde_modified(2, mod_param, has_mod)),
-        Key::Named(NamedKey::PageUp) => Some(tilde_modified(5, mod_param, has_mod)),
-        Key::Named(NamedKey::PageDown) => Some(tilde_modified(6, mod_param, has_mod)),
-        Key::Named(NamedKey::F1) => Some(fkey_ss3_modified(b'P', mod_param, has_mod)),
-        Key::Named(NamedKey::F2) => Some(fkey_ss3_modified(b'Q', mod_param, has_mod)),
-        Key::Named(NamedKey::F3) => Some(fkey_ss3_modified(b'R', mod_param, has_mod)),
-        Key::Named(NamedKey::F4) => Some(fkey_ss3_modified(b'S', mod_param, has_mod)),
-        Key::Named(NamedKey::F5) => Some(tilde_modified(15, mod_param, has_mod)),
-        Key::Named(NamedKey::F6) => Some(tilde_modified(17, mod_param, has_mod)),
-        Key::Named(NamedKey::F7) => Some(tilde_modified(18, mod_param, has_mod)),
-        Key::Named(NamedKey::F8) => Some(tilde_modified(19, mod_param, has_mod)),
-        Key::Named(NamedKey::F9) => Some(tilde_modified(20, mod_param, has_mod)),
-        Key::Named(NamedKey::F10) => Some(tilde_modified(21, mod_param, has_mod)),
-        Key::Named(NamedKey::F11) => Some(tilde_modified(23, mod_param, has_mod)),
-        Key::Named(NamedKey::F12) => Some(tilde_modified(24, mod_param, has_mod)),
-        Key::Character(text) if modifiers.control_key() => {
-            let mut chars = text.chars();
-            let ch = chars.next()?;
-            if chars.next().is_some() {
-                return None;
-            }
-            encode_ctrl_letter(ch).map(|code| vec![code])
-        }
-        _ => None,
-    }
-}
-
-fn is_paste_shortcut(key: &Key, modifiers: ModifiersState) -> bool {
-    let is_v = match key.as_ref() {
-        Key::Character(text) => text.eq_ignore_ascii_case("v"),
-        _ => false,
-    };
-    if !is_v {
-        return false;
-    }
-
-    // macOS: Cmd+V, Linux: Ctrl+Shift+V
-    #[cfg(target_os = "macos")]
-    {
-        modifiers.super_key()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        modifiers.control_key() && modifiers.shift_key()
-    }
-}
-
-fn read_clipboard_text_for_paste(clipboard: &dyn ClipboardAdapter) -> Option<String> {
-    match clipboard.get_text() {
-        Ok(Some(text)) if !text.is_empty() => Some(text),
-        Ok(_) | Err(_) => {
-            debug!("clipboard paste: empty or unavailable");
-            None
-        }
-    }
-}
-
-fn cap_paste_text(text: &str) -> &str {
-    if text.len() <= CLIPBOARD_PASTE_CAP_BYTES {
-        text
-    } else {
-        let mut end = CLIPBOARD_PASTE_CAP_BYTES;
-        while end > 0 && !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        &text[..end]
-    }
-}
-
-fn cap_terminal_geometry(raw_cols: usize, raw_rows: usize) -> (u16, u16) {
-    let cols = raw_cols.clamp(1, MAX_VIEWPORT_COLS);
-    let mut rows = raw_rows.clamp(1, MAX_VIEWPORT_ROWS);
-
-    if cols.saturating_mul(rows) > MAX_VIEWPORT_CELLS {
-        rows = (MAX_VIEWPORT_CELLS / cols.max(1)).max(1);
-    }
-
-    (cols as u16, rows as u16)
-}
-
-fn cap_framebuffer_extent(size: PhysicalSize<u32>) -> PhysicalSize<u32> {
-    let mut width = size.width.clamp(1, MAX_FRAMEBUFFER_WIDTH);
-    let mut height = size.height.clamp(1, MAX_FRAMEBUFFER_HEIGHT);
-
-    let pixels = u64::from(width) * u64::from(height);
-    if pixels > MAX_FRAMEBUFFER_PIXELS {
-        let scale = ((MAX_FRAMEBUFFER_PIXELS as f64) / (pixels as f64)).sqrt();
-        width = ((width as f64 * scale).floor() as u32).clamp(1, MAX_FRAMEBUFFER_WIDTH);
-        height = ((height as f64 * scale).floor() as u32).clamp(1, MAX_FRAMEBUFFER_HEIGHT);
-
-        while u64::from(width) * u64::from(height) > MAX_FRAMEBUFFER_PIXELS {
-            if width >= height && width > 1 {
-                width = width.saturating_sub(1);
-            } else if height > 1 {
-                height = height.saturating_sub(1);
-            } else {
-                break;
-            }
-        }
-    }
-
-    PhysicalSize::new(width, height)
-}
-
-fn deferred_gpu_init_backoff(attempt: u8) -> Duration {
-    let exponent = attempt.saturating_sub(1).min(3);
-    let multiplier = 1_u32 << exponent;
-    DEFERRED_GPU_INIT_MIN_BACKOFF
-        .saturating_mul(multiplier)
-        .min(DEFERRED_GPU_INIT_MAX_BACKOFF)
-}
-
-fn should_flush_output_batch(current_batch_len: usize, incoming_chunk_len: usize) -> bool {
-    current_batch_len > 0
-        && current_batch_len.saturating_add(incoming_chunk_len) > OUTPUT_BATCH_MAX_BYTES
-}
-
-fn output_drain_budget(snapshot: OutputQueueSnapshot) -> OutputDrainBudget {
-    if snapshot.queued_bytes >= OUTPUT_DRAIN_CRITICAL_QUEUE_BYTES
-        || snapshot.queued_chunks >= OUTPUT_DRAIN_CRITICAL_QUEUE_CHUNKS
-    {
-        return OutputDrainBudget {
-            pressure: OutputDrainPressure::Critical,
-            max_bytes_per_tick: OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK,
-            max_latency: OUTPUT_DRAIN_CRITICAL_MAX_LATENCY,
-        };
-    }
-
-    if snapshot.queued_bytes >= OUTPUT_DRAIN_ELEVATED_QUEUE_BYTES
-        || snapshot.queued_chunks >= OUTPUT_DRAIN_ELEVATED_QUEUE_CHUNKS
-    {
-        return OutputDrainBudget {
-            pressure: OutputDrainPressure::Elevated,
-            max_bytes_per_tick: OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK,
-            max_latency: OUTPUT_DRAIN_ELEVATED_MAX_LATENCY,
-        };
-    }
-
-    OutputDrainBudget {
-        pressure: OutputDrainPressure::Normal,
-        max_bytes_per_tick: OUTPUT_DRAIN_MAX_BYTES_PER_TICK,
-        max_latency: OUTPUT_DRAIN_MAX_LATENCY,
-    }
-}
-
-fn output_drain_budget_exhausted(
-    drained_bytes: usize,
-    elapsed: Duration,
-    budget: OutputDrainBudget,
-) -> bool {
-    drained_bytes >= budget.max_bytes_per_tick || elapsed >= budget.max_latency
-}
-
 fn child_exit_drain_timed_out(started_at: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(started_at) >= CHILD_EXIT_DRAIN_MAX_WAIT
-}
-
-fn terminal_feed_chunks(data: &[u8]) -> impl Iterator<Item = &[u8]> {
-    data.chunks(MAX_FEED_BYTES_PER_CALL)
-}
-
-/// Generates a 32x32 RGBA programmatic icon: dark background with a cyan terminal cursor.
-fn load_app_icon() -> Option<Icon> {
-    let img = match image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png) {
-        Ok(img) => img,
-        Err(e) => {
-            warn!(error = ?e, "failed to decode embedded LOGO.png");
-            return None;
-        }
-    };
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    match Icon::from_rgba(rgba.into_raw(), width, height) {
-        Ok(icon) => Some(icon),
-        Err(e) => {
-            warn!(error = ?e, "failed to construct window icon from RGBA data");
-            None
-        }
-    }
+    shared_child_exit_drain_timed_out(started_at, now, CHILD_EXIT_DRAIN_MAX_WAIT)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CHILD_EXIT_DRAIN_MAX_WAIT, CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG, DEFAULT_FG_U32,
-        GpuFailureHandling, MAX_FEED_BYTES_PER_CALL, MAX_FRAMEBUFFER_HEIGHT,
-        MAX_FRAMEBUFFER_PIXELS, MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS, MAX_VIEWPORT_COLS,
-        MAX_VIEWPORT_ROWS, MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES,
+        BackendSyncAction, CHILD_EXIT_DRAIN_MAX_WAIT, CLIPBOARD_PASTE_CAP_BYTES, DEFAULT_FG,
+        DEFAULT_FG_U32, DeferredGpuInitState, GpuFailureHandling, MAX_FEED_BYTES_PER_CALL,
+        MAX_FRAMEBUFFER_HEIGHT, MAX_FRAMEBUFFER_PIXELS, MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS,
+        MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS, MonitorAffectingWindowEvent, OUTPUT_BATCH_MAX_BYTES,
         OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK,
         OUTPUT_DRAIN_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_MAX_LATENCY, OutputDrainBudget,
-        OutputDrainPressure, OutputQueueSnapshot, PtyBoundaryPolicyDecision,
-        cadence_resync_command_for_monitor_event, cap_framebuffer_extent, cap_paste_text,
-        cap_terminal_geometry, child_exit_drain_timed_out, classify_pty_boundary_failure,
+        OutputDrainPressure, OutputQueueSnapshot, PTY_OUTPUT_CHUNK_BYTES,
+        PTY_OUTPUT_RECYCLE_POOL_WARMUP, RenderBackendCoordinator, RenderWaitPolicy,
+        ViewportGeometry, cadence_resync_command_for_monitor_event, cap_framebuffer_extent,
+        cap_paste_text, cap_terminal_geometry, child_exit_drain_timed_out,
         deferred_gpu_init_backoff, dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-        emit_gpu_auto_fallback_observability, encode_winit_key_event, grid,
+        emit_gpu_auto_fallback_observability, encode_winit_key_event,
         is_runtime_palette_shortcut_key, output_drain_budget, output_drain_budget_exhausted,
-        read_clipboard_text_for_paste, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
-        should_flush_output_batch, terminal_feed_chunks,
+        read_clipboard_text_for_paste, recycle_output_chunk_buffer, render_wait_policy,
+        resolve_cell_colors, sample_monitor_refresh_rate_millihz, should_flush_output_batch,
+        take_output_chunk_buffer, terminal_feed_chunks, viewport_geometry_changed,
+        warm_output_chunk_pool,
     };
+    use crate::shared::{PtyBoundaryPolicyDecision, classify_pty_boundary_failure};
     use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
     use rldyourterm_foundation::api::{
         clipboard::ClipboardAdapter,
         common::{ContractResult, MonitorTiming},
-        window::{WindowControl, WindowEvent as FoundationWindowEvent},
+        window::WindowControl,
     };
     use rldyourterm_foundation::error::{
         ClipboardFailureCode, ClipboardOperation, FoundationError, Recoverability,
@@ -2794,8 +1042,10 @@ mod tests {
     };
     use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
     use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
+    use rldyourterm_services::terminal::{ANSI_PALETTE, Attrs, Color, color_to_u32};
     use rldyourterm_settings::SettingsService;
     use rldyourterm_ui::{UiBootstrapConfig, UiRuntime, UiRuntimeCommand};
+    use std::sync::mpsc::sync_channel;
     use std::time::{Duration, Instant};
     use winit::dpi::PhysicalSize;
     use winit::keyboard::{Key, ModifiersState};
@@ -2870,20 +1120,8 @@ mod tests {
             }
         }
 
-        fn clipboard_text(&self) -> ContractResult<String> {
-            Ok(String::new())
-        }
-
-        fn set_clipboard_text(&self, _text: &str) -> ContractResult<()> {
-            Ok(())
-        }
-
         fn close(&self) -> ContractResult<()> {
             Ok(())
-        }
-
-        fn poll_events(&self) -> ContractResult<Vec<FoundationWindowEvent>> {
-            Ok(Vec::new())
         }
     }
 
@@ -2934,6 +1172,38 @@ mod tests {
     }
 
     #[test]
+    fn viewport_geometry_change_detects_pixel_only_updates() {
+        assert!(viewport_geometry_changed(
+            ViewportGeometry {
+                cols: 120,
+                rows: 32,
+                pixel_width: 1280,
+                pixel_height: 800,
+            },
+            ViewportGeometry {
+                cols: 120,
+                rows: 32,
+                pixel_width: 1400,
+                pixel_height: 800,
+            }
+        ));
+        assert!(!viewport_geometry_changed(
+            ViewportGeometry {
+                cols: 120,
+                rows: 32,
+                pixel_width: 1280,
+                pixel_height: 800,
+            },
+            ViewportGeometry {
+                cols: 120,
+                rows: 32,
+                pixel_width: 1280,
+                pixel_height: 800,
+            }
+        ));
+    }
+
+    #[test]
     fn viewport_geometry_cap_enforces_axis_and_cell_limits() {
         let (cols, rows) = cap_terminal_geometry(20_000, 20_000);
         assert!(cols as usize <= MAX_VIEWPORT_COLS);
@@ -2970,10 +1240,136 @@ mod tests {
     }
 
     #[test]
+    fn deferred_gpu_init_state_transitions_are_consistent() {
+        let mut state = DeferredGpuInitState::new(true);
+        assert!(state.is_pending());
+        assert_eq!(state.next_attempt(), 1);
+        assert_eq!(state.begin_attempt(), 1);
+        assert_eq!(state.retry_deadline(), None);
+
+        state.schedule_retry(1, Duration::from_millis(10));
+        assert!(state.is_pending());
+        assert_eq!(state.next_attempt(), 2);
+        assert!(state.retry_deadline().is_some());
+
+        state.record_failure_attempt(2);
+        assert_eq!(state.next_attempt(), 3);
+
+        state.mark_exhausted(2);
+        assert!(!state.is_pending());
+        assert_eq!(state.retry_deadline(), None);
+        assert_eq!(state.next_attempt(), 3);
+
+        state.sync_with_target_path(ActiveRenderPath::Gpu, false);
+        assert!(state.is_pending());
+        assert_eq!(state.next_attempt(), 3);
+
+        state.mark_ready();
+        assert!(!state.is_pending());
+        assert_eq!(state.next_attempt(), 1);
+
+        state.sync_with_target_path(ActiveRenderPath::Cpu, false);
+        assert!(!state.is_pending());
+        assert_eq!(state.next_attempt(), 1);
+        assert_eq!(state.retry_deadline(), None);
+    }
+
+    #[test]
+    fn render_backend_coordinator_tracks_sequences_and_sync_policy() {
+        let mut coordinator = RenderBackendCoordinator::new(RenderMode::Auto);
+
+        assert!(coordinator.deferred_gpu_init_pending());
+        assert_eq!(coordinator.begin_render_attempt(), 1);
+        assert_eq!(coordinator.begin_render_attempt(), 2);
+        assert_eq!(coordinator.current_render_attempt_sequence(), 2);
+        assert_eq!(coordinator.next_gpu_failure_sequence(), 1);
+        assert_eq!(coordinator.next_gpu_failure_sequence(), 2);
+
+        assert_eq!(
+            coordinator.sync_with_target_path(ActiveRenderPath::Cpu, true),
+            BackendSyncAction::ReleaseGpuBackend
+        );
+        assert!(!coordinator.deferred_gpu_init_pending());
+
+        coordinator.mark_deferred_ready();
+        assert_eq!(
+            coordinator.wait_policy(
+                ActiveRenderPath::Gpu,
+                true,
+                true,
+                Some(Duration::from_millis(16))
+            ),
+            RenderWaitPolicy::EventDriven
+        );
+    }
+
+    #[test]
+    fn render_wait_policy_uses_event_driven_gpu_lane() {
+        assert_eq!(
+            render_wait_policy(true, true, Some(Duration::from_millis(8))),
+            RenderWaitPolicy::EventDriven
+        );
+    }
+
+    #[test]
+    fn render_wait_policy_uses_cpu_cadence_when_dirty() {
+        assert_eq!(
+            render_wait_policy(false, true, Some(Duration::from_millis(16))),
+            RenderWaitPolicy::CadenceTimed(Duration::from_millis(16))
+        );
+    }
+
+    #[test]
+    fn render_wait_policy_falls_back_to_event_driven_without_cadence() {
+        assert_eq!(
+            render_wait_policy(false, true, None),
+            RenderWaitPolicy::EventDriven
+        );
+        assert_eq!(
+            render_wait_policy(false, false, Some(Duration::from_millis(16))),
+            RenderWaitPolicy::EventDriven
+        );
+    }
+
+    #[test]
     fn output_batch_flush_policy_only_triggers_on_overflow_with_existing_batch() {
         assert!(!should_flush_output_batch(0, 32));
         assert!(!should_flush_output_batch(128, 256));
         assert!(should_flush_output_batch(OUTPUT_BATCH_MAX_BYTES - 64, 128));
+    }
+
+    #[test]
+    fn output_chunk_pool_warmup_stops_at_channel_capacity() {
+        let (recycle_tx, recycle_rx) = sync_channel::<Vec<u8>>(2);
+        warm_output_chunk_pool(&recycle_tx);
+        let chunk_count = recycle_rx.try_iter().count();
+        assert_eq!(chunk_count, PTY_OUTPUT_RECYCLE_POOL_WARMUP.min(2));
+    }
+
+    #[test]
+    fn output_chunk_take_reuses_preallocated_buffer_when_available() {
+        let (recycle_tx, recycle_rx) = sync_channel::<Vec<u8>>(1);
+        let mut seeded = vec![0_u8; PTY_OUTPUT_CHUNK_BYTES];
+        let seeded_ptr = seeded.as_ptr();
+        seeded.truncate(32);
+        recycle_tx.send(seeded).expect("seed recycle buffer");
+
+        let reused = take_output_chunk_buffer(&recycle_rx);
+        assert_eq!(reused.len(), PTY_OUTPUT_CHUNK_BYTES);
+        assert_eq!(reused.as_ptr(), seeded_ptr);
+    }
+
+    #[test]
+    fn output_chunk_recycle_roundtrip_preserves_allocation() {
+        let (recycle_tx, recycle_rx) = sync_channel::<Vec<u8>>(1);
+        let mut chunk = vec![0_u8; PTY_OUTPUT_CHUNK_BYTES];
+        let ptr = chunk.as_ptr();
+        chunk.truncate(777);
+        recycle_output_chunk_buffer(&recycle_tx, chunk);
+
+        let roundtrip = take_output_chunk_buffer(&recycle_rx);
+        assert_eq!(roundtrip.len(), PTY_OUTPUT_CHUNK_BYTES);
+        assert_eq!(roundtrip.as_ptr(), ptr);
     }
 
     #[test]
@@ -3330,44 +1726,44 @@ mod tests {
 
     #[test]
     fn color_to_u32_default_uses_default_color() {
-        let default_fg = grid::color_to_u32(grid::Color::Default, DEFAULT_FG);
+        let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
         assert_eq!(default_fg, DEFAULT_FG_U32);
     }
 
     #[test]
     fn color_to_u32_indexed_looks_up_palette() {
-        let red = grid::color_to_u32(grid::Color::Indexed(1), DEFAULT_FG);
-        assert_eq!(red, grid::ANSI_PALETTE[1]);
+        let red = color_to_u32(Color::Indexed(1), DEFAULT_FG);
+        assert_eq!(red, ANSI_PALETTE[1]);
     }
 
     #[test]
     fn color_to_u32_rgb_constructs_correctly() {
-        let c = grid::color_to_u32(grid::Color::Rgb(0xFF, 0x80, 0x00), DEFAULT_FG);
+        let c = color_to_u32(Color::Rgb(0xFF, 0x80, 0x00), DEFAULT_FG);
         assert_eq!(c, 0x00FF_8000);
     }
 
     #[test]
     fn resolve_cell_colors_inverse_swaps_fg_bg() {
-        let attrs = grid::Attrs {
-            fg: grid::Color::Indexed(1),
-            bg: grid::Color::Indexed(2),
+        let attrs = Attrs {
+            fg: Color::Indexed(1),
+            bg: Color::Indexed(2),
             inverse: true,
-            ..grid::Attrs::default()
+            ..Attrs::default()
         };
         let (fg, bg) = resolve_cell_colors(&attrs);
-        assert_eq!(fg, grid::ANSI_PALETTE[2]);
-        assert_eq!(bg, grid::ANSI_PALETTE[1]);
+        assert_eq!(fg, ANSI_PALETTE[2]);
+        assert_eq!(bg, ANSI_PALETTE[1]);
     }
 
     #[test]
     fn resolve_cell_colors_dim_halves_fg() {
-        let attrs = grid::Attrs {
-            fg: grid::Color::Rgb(200, 100, 50),
+        let attrs = Attrs {
+            fg: Color::Rgb(200, 100, 50),
             dim: true,
-            ..grid::Attrs::default()
+            ..Attrs::default()
         };
         let (fg, _bg) = resolve_cell_colors(&attrs);
-        assert_eq!(fg, super::rgb_to_u32(100, 50, 25));
+        assert_eq!(fg, rldyourterm_render_cpu::rgb_to_u32(100, 50, 25));
     }
 
     #[test]

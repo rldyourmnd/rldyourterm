@@ -17,7 +17,7 @@ use rldyourterm_services::session::{
 use tracing::{info, warn};
 
 pub const SINGLE_WINDOW_BASELINE: u8 = 1;
-pub const DEFAULT_SCROLLBACK_CAP: usize = rldyourterm_services::DEFAULT_SCROLLBACK_CAP;
+pub const DEFAULT_SCROLLBACK_CAP: usize = rldyourterm_services::terminal::DEFAULT_SCROLLBACK_CAP;
 pub const DEFAULT_TERMINAL_WIDTH: u16 = 120;
 pub const DEFAULT_TERMINAL_HEIGHT: u16 = 30;
 

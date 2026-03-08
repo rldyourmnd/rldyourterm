@@ -1,8 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
-use rldyourterm_services::TerminalState;
-use rldyourterm_services::grid::{self, CELL_HEIGHT, CELL_WIDTH, Color};
 use rldyourterm_services::render_mode::GpuFailureKind;
+#[cfg(test)]
+use rldyourterm_services::terminal::ANSI_PALETTE;
+use rldyourterm_services::terminal::{
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, TerminalState, color_to_u32,
+};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -446,7 +449,7 @@ const CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD: u16 = 120;
 /// Pack atlas slot index and text attribute flags into a single u32.
 /// Lower 16 bits = atlas slot, upper bits = bold/italic/underline/strikethrough/dim/inverse.
 #[inline]
-fn pack_cell_flags(slot: u16, attrs: &grid::Attrs) -> u32 {
+fn pack_cell_flags(slot: u16, attrs: &Attrs) -> u32 {
     let mut flags = slot as u32;
     if attrs.bold {
         flags |= ATTR_BOLD;
@@ -612,8 +615,8 @@ impl GpuBackend {
         if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
             for (col, cell) in row_cells.iter().take(cols).enumerate() {
                 let attrs = &cell.attrs;
-                let fg = grid::color_to_u32(attrs.fg, DEFAULT_FG);
-                let bg = grid::color_to_u32(attrs.bg, DEFAULT_BG);
+                let fg = color_to_u32(attrs.fg, DEFAULT_FG);
+                let bg = color_to_u32(attrs.bg, DEFAULT_BG);
 
                 let slot = if cell.ch == ' ' {
                     0u16
@@ -637,8 +640,8 @@ impl GpuBackend {
                 };
             }
         } else {
-            let default_fg = grid::color_to_u32(Color::Default, DEFAULT_FG);
-            let default_bg = grid::color_to_u32(Color::Default, DEFAULT_BG);
+            let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
+            let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
             for col in 0..cols {
                 self.cell_instances[row_offset + col] = CellInstance {
                     atlas_and_flags: 0,
@@ -2035,21 +2038,21 @@ mod tests {
 
     #[test]
     fn color_to_u32_default_uses_fallback() {
-        let result = grid::color_to_u32(Color::Default, (0xFF, 0x80, 0x40));
+        let result = color_to_u32(Color::Default, (0xFF, 0x80, 0x40));
         assert_eq!(result, 0xFF8040);
     }
 
     #[test]
     fn color_to_u32_rgb() {
-        let result = grid::color_to_u32(Color::Rgb(0x12, 0x34, 0x56), (0, 0, 0));
+        let result = color_to_u32(Color::Rgb(0x12, 0x34, 0x56), (0, 0, 0));
         assert_eq!(result, 0x123456);
     }
 
     #[test]
     fn color_to_u32_indexed() {
         // Index 1 = standard red = 0xCC0000 in ANSI palette
-        let result = grid::color_to_u32(Color::Indexed(1), (0, 0, 0));
-        assert_eq!(result, grid::ANSI_PALETTE[1]);
+        let result = color_to_u32(Color::Indexed(1), (0, 0, 0));
+        assert_eq!(result, ANSI_PALETTE[1]);
     }
 
     #[test]
@@ -2147,7 +2150,7 @@ mod tests {
     #[test]
     fn stress_pack_cell_flags_all_64_combinations() {
         for bits in 0..64u8 {
-            let attrs = grid::Attrs {
+            let attrs = Attrs {
                 bold: bits & 1 != 0,
                 italic: bits & 2 != 0,
                 underline: bits & 4 != 0,
@@ -2174,7 +2177,7 @@ mod tests {
 
     #[test]
     fn stress_pack_cell_flags_max_atlas_slot() {
-        let attrs = grid::Attrs {
+        let attrs = Attrs {
             bold: true,
             italic: true,
             underline: true,
@@ -2192,7 +2195,7 @@ mod tests {
 
     #[test]
     fn stress_cell_instance_bulk_creation() {
-        let attrs = grid::Attrs::default();
+        let attrs = Attrs::default();
         let mut instances = Vec::with_capacity(80 * 50);
         for slot in 0..4000u16 {
             instances.push(CellInstance {

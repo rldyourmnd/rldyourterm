@@ -2010,6 +2010,7 @@ dependencies = [
 name = "rldyourterm-render-cpu"
 version = "0.1.0"
 dependencies = [
+ "rldyourterm-font",
  "rldyourterm-services",
  "tracing",
 ]

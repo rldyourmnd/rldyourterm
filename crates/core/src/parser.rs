@@ -26,10 +26,6 @@ impl SgrParams {
     pub fn as_slice(&self) -> &[Option<u16>] {
         &self.params[..self.len as usize]
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
 }
 
 impl Default for SgrParams {
@@ -156,6 +152,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    #[cfg(test)]
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<ParserAction> {
         let mut actions = Vec::new();
         self.feed_into(bytes, &mut actions);
@@ -185,6 +182,7 @@ impl Parser {
         self.flush_text_buffer(actions, true);
     }
 
+    #[cfg(test)]
     pub fn resync_after_truncation(&mut self) -> Vec<ParserAction> {
         let mut actions = Vec::new();
         self.resync_after_truncation_into(&mut actions);
