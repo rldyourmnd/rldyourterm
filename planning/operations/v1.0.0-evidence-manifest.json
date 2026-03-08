@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0.0",
   "manifest_kind": "release-evidence",
-  "generated_at_utc": "2026-03-07T22:46:38Z",
+  "generated_at_utc": "2026-03-08T02:51:08Z",
   "repo": {
     "name": "rldyourterm",
-    "head_sha": "9f018c2ef0ea764542569111b0085b483e29d537",
-    "head_short": "9f018c2"
+    "head_sha": "5aa59048694016d8b6b2ebd23c27db1a1ab77ab3",
+    "head_short": "5aa5904"
   },
   "policy": {
     "head_bound_evidence": true,
@@ -31,7 +31,7 @@
   "artifacts": [
     {
       "name": "compatibility_matrix_transcript",
-      "path": "scripts/mvp/output/matrix-20260306-080615.log",
+      "path": "scripts/mvp/output/matrix-20260308-022242.log",
       "required_patterns": [
         "MVP_GATE_RESULT profile=claude status=pass",
         "MVP_GATE_RESULT profile=codex status=pass",
@@ -43,7 +43,7 @@
     },
     {
       "name": "profile_claude_log",
-      "path": "scripts/mvp/output/claude-20260306T225840Z.log",
+      "path": "scripts/mvp/output/claude-20260308T025050Z.log",
       "required_patterns": [
         "MVP_HARNESS profile=claude",
         "MVP_RESULT profile=claude",
@@ -54,7 +54,7 @@
     },
     {
       "name": "profile_codex_log",
-      "path": "scripts/mvp/output/codex-20260306T225843Z.log",
+      "path": "scripts/mvp/output/codex-20260308T025057Z.log",
       "required_patterns": [
         "MVP_HARNESS profile=codex",
         "MVP_RESULT profile=codex",
@@ -65,7 +65,7 @@
     },
     {
       "name": "profile_gemini_log",
-      "path": "scripts/mvp/output/gemini-20260306T225846Z.log",
+      "path": "scripts/mvp/output/gemini-20260308T025058Z.log",
       "required_patterns": [
         "MVP_HARNESS profile=gemini",
         "MVP_RESULT profile=gemini",
