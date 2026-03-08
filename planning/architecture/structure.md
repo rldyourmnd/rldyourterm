@@ -37,6 +37,7 @@ crates/
 - `core`: `crates/core`.
 - `services`: `crates/services` (depends on `core` + `foundation` contracts).
 - `features`: `crates/features/*` (settings/render/shell/diagnostics capabilities).
+  - `render_gpu` internal ownership is being narrowed as well: surface recovery/configuration contracts now live in `crates/features/render_gpu/src/surface.rs`, while `lib.rs` remains the renderer/bootstrap owner.
 - `ui`: `crates/ui` (runtime command handling and state transitions over services).
 - `app`: `crates/app` (CLI + GUI/TTY runtime wiring).
   - Internal runtime helpers are being narrowed by responsibility: shared input/palette/PTY/shutdown/terminal pieces live under `crates/app/src/runtime_shared/`; GUI backend sequencing lives in `crates/app/src/gui_runtime_backend.rs`; GUI render/deferred-GPU-init/present helpers live in `crates/app/src/gui_runtime_render.rs`; GUI PTY output pumps/backpressure/drain budgeting live in `crates/app/src/gui_runtime_output.rs`; GUI lifecycle/output-application/shutdown helpers live in `crates/app/src/gui_runtime_lifecycle.rs`; GUI window/bootstrap/viewport/cadence helpers live in `crates/app/src/gui_runtime_window.rs`; GUI terminal input/palette/clipboard/PTY-write boundary helpers live in `crates/app/src/gui_runtime_terminal_io.rs`; TTY poll/raw-mode/size control helpers live in `crates/app/src/pty_runtime_control.rs`; TTY stdout read-pump/flush/join helpers live in `crates/app/src/pty_runtime_output.rs`; TTY palette/PTY-boundary/event-disconnect helpers live in `crates/app/src/pty_runtime_terminal_io.rs`.
