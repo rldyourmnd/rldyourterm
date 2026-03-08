@@ -102,13 +102,13 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@c1305996457413b456b636a549d9f98354fd89cf
+        uses: taiki-e/install-action@fc2a2b349fea94690f6a04dcec522c55f51fe2fd # v2.68.23
         with:
           tool: cargo-llvm-cov@0.8.4
       - name: Generate coverage
         run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: coverage-lcov
           path: lcov.info
@@ -220,7 +220,7 @@ jobs:
           save-if: "false"
           cache-targets: false
       - name: Install cargo-audit
-        uses: taiki-e/install-action@c05f3b579dc4e021a32e3f90a4ac41e0ce8a9035
+        uses: taiki-e/install-action@fc2a2b349fea94690f6a04dcec522c55f51fe2fd # v2.68.23
         with:
           tool: cargo-audit@0.22.1
       - name: Run cargo-audit
