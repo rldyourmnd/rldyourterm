@@ -39,13 +39,14 @@ crates/
 - `features`: `crates/features/*` (settings/render/shell/diagnostics capabilities).
 - `ui`: `crates/ui` (runtime command handling and state transitions over services).
 - `app`: `crates/app` (CLI + GUI/TTY runtime wiring).
+  - Internal runtime helpers are being narrowed by responsibility: shared input/palette/PTY/shutdown/terminal pieces live under `crates/app/src/runtime_shared/`; GUI backend sequencing lives in `crates/app/src/gui_runtime_backend.rs`; GUI render/deferred-GPU-init/present helpers live in `crates/app/src/gui_runtime_render.rs`; GUI PTY output pumps/backpressure/drain budgeting live in `crates/app/src/gui_runtime_output.rs`; GUI window/bootstrap/viewport/cadence helpers live in `crates/app/src/gui_runtime_window.rs`; GUI terminal input/palette/clipboard/PTY-write boundary helpers live in `crates/app/src/gui_runtime_terminal_io.rs`; TTY poll/raw-mode/size control helpers live in `crates/app/src/pty_runtime_control.rs`; TTY stdout read-pump/flush/join helpers live in `crates/app/src/pty_runtime_output.rs`; TTY palette/PTY-boundary/event-disconnect helpers live in `crates/app/src/pty_runtime_terminal_io.rs`.
 
 ## 4) Current dependency graph (observed in crate manifests)
 
 - `services -> {core, foundation}`
 - `ui -> services`
 - `features/settings -> services` (other feature crates are feature-local and/or snapshot consumers)
-- `app -> {ui, services, core, foundation, foundation-platform, features/*}`
+- `app -> {ui, services, foundation, foundation-platform, features/*}`
 
 Normative target from `AGENTS.md` remains:
 
@@ -54,7 +55,7 @@ Normative target from `AGENTS.md` remains:
 
 Current drift that must stay explicit:
 
-- direct `app -> core` and `app -> foundation` dependencies remain in runtime bootstrap paths.
+- direct `app -> foundation` dependencies remain in runtime bootstrap paths for adapter bootstrap and platform integration.
 - window ownership drift is closed: app runtime window lifecycle goes through foundation window contracts.
 
 ## 5) Foundation adapter runtime status (W3 ownership sync)
