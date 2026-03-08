@@ -37,8 +37,8 @@ bash planning/system/validate_planning.sh
 ## Quick checks
 
 ```bash
-cargo check -p rldyourterm-ui
-cargo check -p rldyourterm-app
+cargo check --locked -p rldyourterm-ui
+cargo check --locked -p rldyourterm-app
 ```
 
 ## Benchmarking
@@ -48,17 +48,23 @@ Canonical headless benchmark suite lives in `terminal_benchmark/`.
 Quick run:
 
 ```bash
-cargo run -p rldyourterm-terminal-benchmark -- --scenario all --scale standard
+cargo run --locked -p rldyourterm-terminal-benchmark -- --scenario all --scale standard
 ```
 
 Structured JSON output:
 
 ```bash
-cargo run -p rldyourterm-terminal-benchmark -- \
+cargo run --locked -p rldyourterm-terminal-benchmark -- \
   --scenario all \
   --scale stress \
   --format json \
   --output /tmp/rldyourterm-terminal-benchmark.json
+```
+
+CI-parity smoke run:
+
+```bash
+bash scripts/ci/run_terminal_benchmark_smoke.sh
 ```
 
 ## CI/CD profile

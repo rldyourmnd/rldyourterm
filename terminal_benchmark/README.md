@@ -17,17 +17,23 @@ It does **not** benchmark interactive windowing, `winit` event-loop jitter, or l
 ## Run
 
 ```bash
-cargo run -p rldyourterm-terminal-benchmark -- --scenario all --scale standard
+cargo run --locked -p rldyourterm-terminal-benchmark -- --scenario all --scale standard
 ```
 
 JSON output to a file:
 
 ```bash
-cargo run -p rldyourterm-terminal-benchmark -- \
+cargo run --locked -p rldyourterm-terminal-benchmark -- \
   --scenario all \
   --scale stress \
   --format json \
   --output /tmp/rldyourterm-terminal-benchmark.json
+```
+
+CI smoke parity:
+
+```bash
+bash scripts/ci/run_terminal_benchmark_smoke.sh
 ```
 
 ## Scenarios
