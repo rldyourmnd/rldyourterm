@@ -17,7 +17,8 @@ Crash-intolerant AI terminal runtime with v1.0 priorities locked as:
 ## Source of truth
 
 - `AGENTS.md`
-- `planning/`
+- `CLAUDE.md`
+- `.serena/memories/`
 
 ## MVP runtime status
 
@@ -27,12 +28,6 @@ This repository now includes a Rust workspace with an MVP bootstrap path:
 - `scripts/mvp/*`: executable compatibility harness for Claude/Codex/Gemini scenarios.
 
 Single-window baseline is explicit and mandatory in v1.0 (`window_count=1`).
-
-## Session start
-
-```bash
-bash planning/system/validate_planning.sh
-```
 
 ## Quick checks
 

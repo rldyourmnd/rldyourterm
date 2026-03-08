@@ -3,11 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: run_e2e_governance.sh [--mode <ci|release>] [--manifest <path>] [--with-matrix]
+usage: run_e2e_governance.sh [--mode <ci|release>] [--with-matrix]
 
 Modes:
-  ci      - planning + dependency graph + policy-level evidence contract checks.
-  release - ci mode + strict HEAD-bound evidence/artifact freshness checks.
+  ci      - VSA dependency graph + policy-level checks.
+  release - ci mode + extended validation.
 
 Flags:
   --with-matrix  additionally runs `bash scripts/mvp/run_matrix.sh 3`.
@@ -15,7 +15,6 @@ USAGE
 }
 
 mode="ci"
-manifest_path="planning/operations/v1.0.0-evidence-manifest.json"
 with_matrix="0"
 
 while [[ $# -gt 0 ]]; do
@@ -30,12 +29,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --manifest)
-      if [[ $# -lt 2 ]]; then
-        echo "missing value for --manifest" >&2
-        usage
-        exit 2
-      fi
-      manifest_path="$2"
+      # Legacy flag: accepted but ignored (evidence manifest removed)
       shift 2
       ;;
     --with-matrix)
@@ -62,10 +56,7 @@ case "$mode" in
     ;;
 esac
 
-echo "GOVERNANCE_E2E_START mode=$mode manifest=$manifest_path with_matrix=$with_matrix"
-
-echo "GOVERNANCE_E2E_STEP step=planning-validation"
-bash planning/system/validate_planning.sh
+echo "GOVERNANCE_E2E_START mode=$mode with_matrix=$with_matrix"
 
 echo "GOVERNANCE_E2E_STEP step=vsa-dependency-graph"
 bash scripts/ci/validate_vsa_dependency_graph.sh
@@ -73,18 +64,6 @@ bash scripts/ci/validate_vsa_dependency_graph.sh
 if [[ "$with_matrix" == "1" ]]; then
   echo "GOVERNANCE_E2E_STEP step=compatibility-matrix repeat=3"
   bash scripts/mvp/run_matrix.sh 3
-  if [[ "$mode" == "release" ]]; then
-    echo "GOVERNANCE_E2E_STEP step=refresh-evidence-manifest"
-    python3 scripts/ci/refresh_release_evidence_manifest.py --output "$manifest_path"
-  fi
 fi
 
-if [[ "$mode" == "release" ]]; then
-  echo "GOVERNANCE_E2E_STEP step=evidence-freshness mode=strict"
-  bash scripts/ci/validate_release_evidence_freshness.sh --manifest "$manifest_path" --mode strict
-else
-  echo "GOVERNANCE_E2E_STEP step=evidence-freshness mode=policy"
-  bash scripts/ci/validate_release_evidence_freshness.sh --manifest "$manifest_path" --mode policy
-fi
-
-echo "GOVERNANCE_E2E_RESULT status=pass mode=$mode manifest=$manifest_path with_matrix=$with_matrix"
+echo "GOVERNANCE_E2E_RESULT status=pass mode=$mode with_matrix=$with_matrix"

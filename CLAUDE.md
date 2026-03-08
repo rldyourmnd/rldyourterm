@@ -177,5 +177,4 @@ Three non-negotiable quality pillars (hard priority order):
 ## Authority
 
 - `AGENTS.md` is the highest-authority document for project governance
-- Planning docs: `planning/` directory
 - Serena memories: `.serena/memories/` for project knowledge

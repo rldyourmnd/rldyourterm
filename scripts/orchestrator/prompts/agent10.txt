@@ -8,7 +8,7 @@ Hard rules:
 
 Scope files:
 - AGENTS.md
-- planning/system/traceability-matrix-v1.0.0.md
+- AGENTS.md
 - crates/**/src/*.rs
 - scripts/mvp/*.sh
 

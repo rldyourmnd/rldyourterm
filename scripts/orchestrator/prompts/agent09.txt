@@ -12,9 +12,8 @@ Scope files:
 - scripts/mvp/scenario_claude.sh
 - scripts/mvp/scenario_codex.sh
 - scripts/mvp/scenario_gemini.sh
-- planning/quality/v1.0.0-quality-gates.md
-- planning/quality/v1.0.0-acceptance-matrix.md
-- planning/operations/v1.0.0-release-pack.md
+- AGENTS.md
+- CLAUDE.md
 
 Output format:
 - Severity-ranked findings

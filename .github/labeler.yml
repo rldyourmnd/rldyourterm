@@ -61,7 +61,7 @@ documentation:
   - changed-files:
       - any-glob-to-any-file: '*.md'
       - any-glob-to-any-file: 'docs/**/*'
-      - any-glob-to-any-file: 'planning/**/*.md'
+      - any-glob-to-any-file: '.serena/memories/*.md'
   - head-branch: ['main', 'dev']
 
 dependencies:

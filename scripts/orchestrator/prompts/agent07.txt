@@ -11,7 +11,7 @@ Scope files:
 - crates/foundation/src/lib.rs
 - crates/services/src/lib.rs
 - crates/ui/src/lib.rs
-- planning/stack/v1.0.0-module-integration-contracts.md
+- AGENTS.md
 
 Output format:
 - Severity-ranked findings with concrete dependency evidence

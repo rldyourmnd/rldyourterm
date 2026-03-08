@@ -50,12 +50,6 @@ ensure_output_dir
 log_file="$OUTPUT_DIR/${profile}-$(date -u +%Y%m%dT%H%M%SZ).log"
 extra_command_count="$#"
 
-echo "MVP_PROFILE_PREFLIGHT profile=$profile check=planning-validation"
-if ! (cd "$ROOT_DIR" && bash planning/system/validate_planning.sh >/dev/null); then
-  echo "MVP_PROFILE_RESULT profile=$profile status=fail reason=planning-validation-failed repeat=$repeat extra_commands=$extra_command_count single_window_required=$single_window_required release_governance=$release_governance log=$log_file" >&2
-  exit 1
-fi
-
 echo "MVP_PROFILE_PREFLIGHT profile=$profile check=app-build"
 if ! (cd "$ROOT_DIR" && cargo check -q -p rldyourterm-app >/dev/null); then
   echo "MVP_PROFILE_RESULT profile=$profile status=fail reason=app-build-check-failed repeat=$repeat extra_commands=$extra_command_count single_window_required=$single_window_required release_governance=$release_governance log=$log_file" >&2
