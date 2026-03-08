@@ -13,8 +13,8 @@ use tracing::info;
 
 pub const SINGLE_WINDOW_BASELINE: u8 = 1;
 pub const DEFAULT_SCROLLBACK_CAP: usize = rldyourterm_services::terminal::DEFAULT_SCROLLBACK_CAP;
-pub const DEFAULT_TERMINAL_WIDTH: u16 = 120;
-pub const DEFAULT_TERMINAL_HEIGHT: u16 = 30;
+pub const DEFAULT_TERMINAL_COLS: u16 = 120;
+pub const DEFAULT_TERMINAL_ROWS: u16 = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseGovernance {

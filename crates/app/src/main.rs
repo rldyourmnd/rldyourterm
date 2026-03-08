@@ -16,8 +16,8 @@ use rldyourterm_shell_integration::{
     resolve_shell,
 };
 use rldyourterm_ui::{
-    DEFAULT_SCROLLBACK_CAP, ReleaseGovernance, SINGLE_WINDOW_BASELINE, UiBootstrapConfig,
-    UiBootstrapHooks, UiRuntime,
+    DEFAULT_SCROLLBACK_CAP, DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ReleaseGovernance,
+    SINGLE_WINDOW_BASELINE, UiBootstrapConfig, UiBootstrapHooks, UiRuntime,
 };
 use tracing::{info, warn};
 
@@ -337,7 +337,7 @@ fn shell_availability() -> ShellAvailability {
 fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer) {
     match ui.active_render_path() {
         ActiveRenderPath::Cpu => {
-            let placeholder = TerminalState::new(120, 30, 1);
+            let placeholder = TerminalState::new(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, 1);
             let _ = cpu_renderer.render_full(&placeholder);
         }
         ActiveRenderPath::Gpu => {

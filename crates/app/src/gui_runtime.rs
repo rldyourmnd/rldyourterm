@@ -1,3 +1,5 @@
+#[path = "gui_runtime_app_handler.rs"]
+mod app_handler;
 #[path = "gui_runtime_lifecycle.rs"]
 mod lifecycle;
 #[path = "gui_runtime_output.rs"]
@@ -81,7 +83,10 @@ use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, Render
 use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
 use rldyourterm_services::terminal::{CELL_HEIGHT, CELL_WIDTH, TerminalState};
 use rldyourterm_settings::{SettingsCommand, SettingsService};
-use rldyourterm_ui::{UiBootstrapConfig, UiCommandOutcome, UiRuntime, UiRuntimeCommand};
+use rldyourterm_ui::{
+    DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome, UiRuntime,
+    UiRuntimeCommand,
+};
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use tracing::{debug, info, trace, warn};
 use winit::application::ApplicationHandler;
@@ -102,8 +107,6 @@ static LOGO_PNG: &[u8] = include_bytes!("../../../LOGO.png");
 
 const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
-const DEFAULT_COLS: u16 = 120;
-const DEFAULT_ROWS: u16 = 32;
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const CHILD_EXIT_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_EXIT_DRAIN_MAX_WAIT: Duration = Duration::from_millis(750);
@@ -279,8 +282,8 @@ fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty
         shell = shell_executable,
         args = ?shell_args,
         env_overrides = spawn_env.len(),
-        cols = DEFAULT_COLS,
-        rows = DEFAULT_ROWS,
+        cols = DEFAULT_TERMINAL_COLS,
+        rows = DEFAULT_TERMINAL_ROWS,
         "spawning PTY child process"
     );
     let spawn_config = PtySpawnConfig {
@@ -289,8 +292,8 @@ fn spawn_pty(shell_executable: &str, shell_args: &[String]) -> Result<SpawnedPty
         cwd: None,
         env: spawn_env,
         size: PtySize {
-            cols: DEFAULT_COLS,
-            rows: DEFAULT_ROWS,
+            cols: DEFAULT_TERMINAL_COLS,
+            rows: DEFAULT_TERMINAL_ROWS,
             pixel_width: 0,
             pixel_height: 0,
         },
@@ -427,7 +430,7 @@ impl GuiRuntimeApp {
             diagnostics: DiagnosticsSink::default(),
             ui_runtime,
             gpu_renderer: GpuRenderer::default(),
-            gpu_cache_dir: resolve_gpu_cache_dir(),
+            gpu_cache_dir: app_handler::resolve_gpu_cache_dir(),
             started_at: Instant::now(),
             render_backend: RenderBackendCoordinator::new(initial_mode),
             window: None,
@@ -436,7 +439,11 @@ impl GuiRuntimeApp {
             _context: None,
             surface: None,
             window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
-            terminal: TerminalState::new(DEFAULT_COLS, DEFAULT_ROWS, DEFAULT_SCROLLBACK_CAP),
+            terminal: TerminalState::new(
+                DEFAULT_TERMINAL_COLS,
+                DEFAULT_TERMINAL_ROWS,
+                DEFAULT_SCROLLBACK_CAP,
+            ),
             glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
             settings: SettingsService::default(),
             modifiers: ModifiersState::default(),
@@ -447,8 +454,8 @@ impl GuiRuntimeApp {
             child_exit_drain_started_at: None,
             last_rendered_cursor_row: None,
             last_softbuffer_size: None,
-            last_viewport_cols: DEFAULT_COLS,
-            last_viewport_rows: DEFAULT_ROWS,
+            last_viewport_cols: DEFAULT_TERMINAL_COLS,
+            last_viewport_rows: DEFAULT_TERMINAL_ROWS,
             last_viewport_pixel_width: DEFAULT_GUI_WIDTH.min(u16::MAX as u32) as u16,
             last_viewport_pixel_height: DEFAULT_GUI_HEIGHT.min(u16::MAX as u32) as u16,
             output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
@@ -466,230 +473,8 @@ impl GuiRuntimeApp {
     }
 }
 
-impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        debug!(
-            window_exists = self.window.is_some(),
-            "ApplicationHandler::resumed fired"
-        );
-        if let Err(error) = self.bootstrap_window(event_loop) {
-            self.fatal_error = Some(error);
-            event_loop.exit();
-        }
-    }
-
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        warn!("ApplicationHandler::suspended fired by compositor");
-    }
-
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        debug!(
-            exit_code = ?self.exit_code,
-            has_fatal_error = self.fatal_error.is_some(),
-            "ApplicationHandler::exiting - event loop shutting down"
-        );
-        self.persist_gpu_pipeline_cache();
-        // Release window resources while the Wayland/X11 connection is still
-        // alive.  This ensures the compositor receives surface-destroy and
-        // removes the window from the dock/taskbar.
-        self.release_window_resources();
-    }
-
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: GuiEvent) {
-        match event {
-            GuiEvent::OutputReady => self.drain_output_queue(event_loop),
-            GuiEvent::Exited(code) => {
-                info!(
-                    exit_code = code,
-                    "child process exited; draining pending output"
-                );
-                self.exit_code = Some(code);
-                self.begin_child_exit_drain(event_loop);
-            }
-            GuiEvent::PtyFailure {
-                ref boundary,
-                ref message,
-            } => {
-                warn!(?boundary, %message, "pty boundary failure event");
-                if *boundary == SessionBoundary::PtyWait {
-                    self.fatal_error = Some(fatal_pty_boundary_failure(
-                        &mut self.session_policy,
-                        *boundary,
-                        message,
-                    ));
-                    event_loop.exit();
-                    return;
-                }
-                if *boundary == SessionBoundary::PtyRead {
-                    if self.exit_code.is_some() {
-                        self.begin_child_exit_drain(event_loop);
-                        return;
-                    }
-                    match resolve_live_pty_read_failure(
-                        &*self.pty,
-                        &mut self.session_policy,
-                        message,
-                        "failed to poll PTY after reader boundary failure",
-                    ) {
-                        Ok(PtyReadFailureResolution::ChildExited(code)) => {
-                            self.exit_code = Some(code);
-                            info!(
-                                exit_code = code,
-                                "reader boundary reported after child exit; draining remaining output"
-                            );
-                            self.begin_child_exit_drain(event_loop);
-                            return;
-                        }
-                        Err(error) => {
-                            self.fatal_error = Some(error);
-                            event_loop.exit();
-                            return;
-                        }
-                    }
-                }
-                match self.handle_pty_boundary_failure(*boundary, message) {
-                    Ok(PtyBoundaryLoopAction::Continue) => {}
-                    Ok(PtyBoundaryLoopAction::ExitLoop) => {
-                        event_loop.exit();
-                    }
-                    Err(policy_error) => {
-                        self.fatal_error = Some(policy_error);
-                        event_loop.exit();
-                    }
-                }
-            }
-        }
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        if Some(window_id) != self.window_id {
-            return;
-        }
-
-        match event {
-            WindowEvent::CloseRequested => self.handle_close_requested(event_loop),
-            WindowEvent::RedrawRequested => {
-                self.redraw_in_flight = false;
-                if let Err(error) = self.draw_frame() {
-                    self.fatal_error = Some(error);
-                    event_loop.exit();
-                }
-            }
-            WindowEvent::Moved(_) => {
-                self.handle_monitor_affecting_event(MonitorAffectingWindowEvent::Moved);
-            }
-            WindowEvent::Resized(size) => {
-                self.apply_window_extent_change(
-                    event_loop,
-                    size,
-                    "ignoring zero-sized resize event to avoid synthetic PTY geometry",
-                    "window framebuffer exceeded runtime safety limits; dimensions were clamped",
-                    MonitorAffectingWindowEvent::Resized,
-                );
-            }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                if let Some(window) = self.window.as_ref() {
-                    self.apply_window_extent_change(
-                        event_loop,
-                        window.inner_size(),
-                        "ignoring zero-sized scale-factor resize event to avoid synthetic PTY geometry",
-                        "scale-factor framebuffer exceeded runtime safety limits; dimensions were clamped",
-                        MonitorAffectingWindowEvent::ScaleFactorChanged,
-                    );
-                }
-            }
-            WindowEvent::KeyboardInput {
-                event,
-                is_synthetic,
-                ..
-            } if !is_synthetic => self.handle_keyboard_input(&event, event_loop),
-            WindowEvent::Ime(Ime::Commit(text)) => self.handle_text_commit(&text, event_loop),
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers.state();
-            }
-            WindowEvent::Focused(focused) => {
-                debug!(focused, "window focus changed");
-            }
-            WindowEvent::Occluded(occluded) => {
-                debug!(occluded, "window occlusion changed");
-            }
-            WindowEvent::Destroyed => {
-                warn!("window destroyed by compositor");
-            }
-            _ => {
-                trace!(event = ?event, "unhandled window event");
-            }
-        }
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.render_backend.deferred_gpu_init_pending() {
-            self.try_deferred_gpu_init(event_loop);
-        }
-        if self.fatal_error.is_some() {
-            event_loop.exit();
-            return;
-        }
-        if self.child_exit_pending {
-            let now = Instant::now();
-            self.drain_output_queue(event_loop);
-            if self.child_exit_drain_complete() {
-                self.child_exit_pending = false;
-                self.child_exit_drain_started_at = None;
-                event_loop.exit();
-            } else if self
-                .child_exit_drain_started_at
-                .map(|started_at| child_exit_drain_timed_out(started_at, now))
-                .unwrap_or(false)
-            {
-                let elapsed_ms = self
-                    .child_exit_drain_started_at
-                    .map(|started_at| now.saturating_duration_since(started_at).as_millis())
-                    .unwrap_or(0);
-                warn!(
-                    elapsed_ms,
-                    max_wait_ms = CHILD_EXIT_DRAIN_MAX_WAIT.as_millis(),
-                    "child-exit output drain exceeded max wait budget; forcing shutdown"
-                );
-                self.child_exit_pending = false;
-                self.child_exit_drain_started_at = None;
-                event_loop.exit();
-            } else {
-                event_loop
-                    .set_control_flow(ControlFlow::WaitUntil(now + CHILD_EXIT_DRAIN_POLL_INTERVAL));
-            }
-            return;
-        }
-        if self.render_backend.deferred_gpu_init_pending()
-            && let Some(retry_at) = self.render_backend.deferred_retry_deadline()
-            && Instant::now() < retry_at
-        {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
-            return;
-        }
-
-        self.request_redraw_if_needed();
-        let wait_policy = self.render_backend.wait_policy(
-            self.ui_runtime.active_render_path(),
-            self.gpu_renderer.is_initialized(),
-            self.redraw_pending,
-            self.ui_runtime.cadence().frame_interval(),
-        );
-
-        trace!(
-            render_path = ?self.ui_runtime.active_render_path(),
-            gpu_initialized = self.gpu_renderer.is_initialized(),
-            wait_policy = ?wait_policy,
-            "about_to_wait: selecting control flow"
-        );
-        event_loop.set_control_flow(wait_policy.control_flow(Instant::now()));
-    }
-}
+#[cfg(test)]
+use app_handler::child_exit_drain_timed_out;
 
 #[cfg(test)]
 fn is_runtime_palette_shortcut_key(key: Key<&str>, modifiers: ModifiersState) -> bool {
@@ -700,25 +485,6 @@ fn is_runtime_palette_shortcut_key(key: Key<&str>, modifiers: ModifiersState) ->
 fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
     crate::runtime_shared::input::runtime_key_event_from_winit(key, modifiers)
         .and_then(crate::runtime_shared::input::encode_runtime_key_event)
-}
-
-fn resolve_gpu_cache_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches/rldyourterm"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
-            Some(PathBuf::from(xdg).join("rldyourterm"))
-        } else {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/rldyourterm"))
-        }
-    }
-}
-
-fn child_exit_drain_timed_out(started_at: Instant, now: Instant) -> bool {
-    shared_child_exit_drain_timed_out(started_at, now, CHILD_EXIT_DRAIN_MAX_WAIT)
 }
 
 #[cfg(test)]
