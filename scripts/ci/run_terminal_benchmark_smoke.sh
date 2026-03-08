@@ -3,7 +3,7 @@ set -euo pipefail
 
 report_path="${1:-$(mktemp -t rldyourterm-terminal-benchmark.XXXXXX.json)}"
 
-cargo run -q -p rldyourterm-terminal-benchmark -- \
+cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
   --scenario all \
   --scale quick \
   --warmup-iterations 0 \

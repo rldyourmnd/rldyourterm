@@ -78,6 +78,7 @@ jobs:
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo fmt --all -- --check
+          bash scripts/ci/run_terminal_benchmark_smoke.sh
       - name: Install security gate tools
         uses: cargo-bins/cargo-binstall@bc432b49369a3f25c8c8b19578a82060c18a5dd6
         with:
