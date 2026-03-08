@@ -29,10 +29,13 @@
 - [ ] Quality gates, acceptance matrix, and manual test plan are consistent.
 - [ ] Risk matrix mitigations map to acceptance/release evidence.
 - [ ] Release pack references required manual evidence and traceability.
+- [ ] Manual test plan includes manifest-aware governance preflight (`validate_release_evidence_freshness.sh --mode policy`) and strict release validation (`run_e2e_governance.sh --mode release`).
 
 ## System Consistency
 
 - [ ] Traceability matrix covers `R-01`..`R-14` at minimum.
 - [ ] Authoritative planning docs include only expected Req IDs (`R-01`..`R-14`).
 - [ ] Gap closure register reflects latest resolved contradictions.
+- [ ] Manifest anchors are present in release/start-readiness/traceability/quality docs.
+- [ ] Authoritative release/readiness docs do not use bare `CURRENT RUN` claims outside manifest-bound evidence policy.
 - [ ] `bash planning/system/validate_planning.sh` passes.

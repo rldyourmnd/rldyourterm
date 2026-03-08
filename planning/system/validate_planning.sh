@@ -88,7 +88,14 @@ required_paths=(
   "planning/system/planning-validation-checklist-v1.0.0.md"
   "planning/discovery/v1.0.0-answer-lock.md"
   "planning/quality/v1.0.0-quality-gates.md"
+  "planning/quality/v1.0.0-acceptance-matrix.md"
   "planning/operations/v1.0.0-manual-test-plan.md"
+  "planning/operations/v1.0.0-release-pack.md"
+  "planning/operations/v1.0.0-start-readiness-index.md"
+  "planning/operations/v1.0.0-evidence-manifest.json"
+  "scripts/ci/validate_release_evidence_freshness.sh"
+  "scripts/ci/validate_vsa_dependency_graph.sh"
+  "scripts/ci/run_e2e_governance.sh"
 )
 
 echo "Validating planning knowledge system..."
@@ -108,6 +115,8 @@ authoritative_paths=(
   "planning/quality/v1.0.0-quality-gates.md"
   "planning/quality/v1.0.0-acceptance-matrix.md"
   "planning/operations/v1.0.0-manual-test-plan.md"
+  "planning/operations/v1.0.0-release-pack.md"
+  "planning/operations/v1.0.0-start-readiness-index.md"
   "planning/system/traceability-matrix-v1.0.0.md"
   "planning/system/source-of-truth-and-precedence-v1.0.0.md"
 )
@@ -125,6 +134,28 @@ if search_pattern "render fps target 120|performance fps-target <hz>|1h test win
   fail "legacy inconsistent fps/long-run patterns still present (see /tmp/planning_bad_patterns.txt)"
 else
   pass "no legacy inconsistent fps/long-run patterns"
+fi
+
+manifest_anchor_literal="planning/operations/v1.0.0-evidence-manifest.json"
+manifest_anchor_docs=(
+  "planning/operations/v1.0.0-release-pack.md"
+  "planning/operations/v1.0.0-start-readiness-index.md"
+  "planning/system/traceability-matrix-v1.0.0.md"
+  "planning/quality/v1.0.0-quality-gates.md"
+  "planning/quality/v1.0.0-acceptance-matrix.md"
+)
+for doc in "${manifest_anchor_docs[@]}"; do
+  if search_pattern "$manifest_anchor_literal" "$doc" >/dev/null 2>&1; then
+    pass "manifest anchor is present: $doc"
+  else
+    fail "manifest anchor is missing from $doc"
+  fi
+done
+
+if search_pattern "CURRENT RUN" planning/operations/v1.0.0-release-pack.md planning/operations/v1.0.0-start-readiness-index.md >/tmp/planning_current_run_claims.txt 2>/dev/null; then
+  fail "forbidden bare CURRENT RUN claims remain in release/start readiness docs (see /tmp/planning_current_run_claims.txt)"
+else
+  pass "no forbidden CURRENT RUN claims in release/start readiness docs"
 fi
 
 if search_pattern "monitor-driven|refresh-rate|render cadence monitor-auto" AGENTS.md planning README.md >/tmp/planning_monitor_patterns.txt 2>/dev/null; then

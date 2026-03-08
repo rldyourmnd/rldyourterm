@@ -109,7 +109,8 @@ Any architecture/runtime behavior change must be synchronized across docs in thi
 Do not leave unresolved placeholders in authoritative docs.
 
 ## 10) Quality and Release Governance
-- v1.0 release process is manual (no CI gate in baseline).
+- v1.0 release authority remains manual.
+- CI quality/gov/security workflows are allowed and recommended as merge-time and pre-release validation gates, but passing CI does not by itself authorize release.
 - Release readiness requires completed artifacts:
   - `planning/quality/v1.0.0-quality-gates.md`
   - `planning/quality/v1.0.0-acceptance-matrix.md`

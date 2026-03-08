@@ -88,6 +88,8 @@ jobs:
           cargo deny check bans licenses advisories sources
       - name: Compatibility gate
         run: bash scripts/mvp/run_matrix.sh 3
+      - name: Governance strict validation (HEAD-bound evidence)
+        run: bash scripts/ci/run_e2e_governance.sh --mode release
 
   plan:
     name: Plan Release
