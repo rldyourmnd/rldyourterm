@@ -97,6 +97,7 @@ required_paths=(
   "scripts/ci/refresh_release_evidence_manifest.py"
   "scripts/ci/validate_vsa_dependency_graph.sh"
   "scripts/ci/run_e2e_governance.sh"
+  "scripts/ci/run_terminal_benchmark_smoke.sh"
 )
 
 echo "Validating planning knowledge system..."
@@ -176,6 +177,21 @@ if search_pattern "refresh_release_evidence_manifest.py --output" .github/workfl
   pass "release workflow uses refreshed preview manifest for strict governance validation"
 else
   fail "release workflow must refresh a preview manifest and pass it to strict governance validation"
+fi
+
+if search_pattern "Benchmark Smoke" .github/workflows/ci.yml >/dev/null 2>&1 \
+  && search_pattern "run_terminal_benchmark_smoke.sh" .github/workflows/ci.yml >/dev/null 2>&1 \
+  && search_pattern "run_terminal_benchmark_smoke.sh" .github/workflows/release.yml >/dev/null 2>&1; then
+  pass "benchmark smoke gate is wired in both CI and release workflows"
+else
+  fail "benchmark smoke gate must be present in both CI and release workflows"
+fi
+
+if search_pattern "MSRV_RUST_TOOLCHAIN" .github/workflows/release.yml >/dev/null 2>&1 \
+  && search_pattern 'cargo \+\$\{MSRV_RUST_TOOLCHAIN\} check --workspace --locked' .github/workflows/release.yml >/dev/null 2>&1; then
+  pass "release workflow enforces MSRV check alongside locked quality gates"
+else
+  fail "release workflow must enforce MSRV check alongside locked quality gates"
 fi
 
 if search_pattern "No free-form command-line input inside GUI/TTY palette UI" planning/settings/settings_palette.md >/dev/null 2>&1; then
