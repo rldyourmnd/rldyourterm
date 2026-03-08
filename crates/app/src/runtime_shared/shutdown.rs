@@ -40,6 +40,14 @@ pub(crate) fn join_thread_with_timeout(
     JoinThreadOutcome::TimedOut
 }
 
+pub(crate) fn child_exit_drain_timed_out(
+    started_at: Instant,
+    now: Instant,
+    max_wait: Duration,
+) -> bool {
+    now.saturating_duration_since(started_at) >= max_wait
+}
+
 #[cfg(test)]
 mod tests {
     use super::{JoinThreadOutcome, child_exit_drain_timed_out, join_thread_with_timeout};
@@ -94,12 +102,4 @@ mod tests {
             max_wait
         ));
     }
-}
-
-pub(crate) fn child_exit_drain_timed_out(
-    started_at: Instant,
-    now: Instant,
-    max_wait: Duration,
-) -> bool {
-    now.saturating_duration_since(started_at) >= max_wait
 }
