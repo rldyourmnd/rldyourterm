@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rldyourterm_core::parser::Parser;
+use rldyourterm_core::Parser;
 
 fuzz_target!(|data: &[u8]| {
     let mut parser = Parser::default();
@@ -11,5 +11,5 @@ fuzz_target!(|data: &[u8]| {
         parser.feed_into(chunk, &mut actions);
     }
 
-    let _ = parser.resync_after_truncation();
+    parser.resync_after_truncation_into(&mut actions);
 });
