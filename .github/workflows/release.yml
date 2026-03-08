@@ -88,8 +88,15 @@ jobs:
           cargo deny check bans licenses advisories sources
       - name: Compatibility gate
         run: bash scripts/mvp/run_matrix.sh 3
+      - id: release_manifest
+        name: Refresh temporary release evidence manifest
+        run: |
+          set -euo pipefail
+          manifest_path="$RUNNER_TEMP/rldyourterm-release-evidence-manifest.json"
+          python3 scripts/ci/refresh_release_evidence_manifest.py --output "$manifest_path"
+          echo "path=$manifest_path" >> "$GITHUB_OUTPUT"
       - name: Governance strict validation (HEAD-bound evidence)
-        run: bash scripts/ci/run_e2e_governance.sh --mode release
+        run: bash scripts/ci/run_e2e_governance.sh --mode release --manifest "${{ steps.release_manifest.outputs.path }}"
 
   plan:
     name: Plan Release

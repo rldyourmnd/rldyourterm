@@ -29,7 +29,7 @@
 - [ ] Quality gates, acceptance matrix, and manual test plan are consistent.
 - [ ] Risk matrix mitigations map to acceptance/release evidence.
 - [ ] Release pack references required manual evidence and traceability.
-- [ ] Manual test plan includes manifest-aware governance preflight (`validate_release_evidence_freshness.sh --mode policy`) and strict release validation (`run_e2e_governance.sh --mode release`).
+- [ ] Manual test plan includes manifest-aware governance preflight (`validate_release_evidence_freshness.sh --mode policy`) and strict release validation against a refreshed preview manifest (`run_e2e_governance.sh --mode release --manifest ...`).
 
 ## System Consistency
 
