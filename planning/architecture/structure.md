@@ -14,6 +14,7 @@
 ## 2) Current workspace crate map (as implemented on 2026-03-04)
 
 ```text
+terminal_benchmark/
 crates/
   app/
   core/
@@ -42,6 +43,9 @@ crates/
   - `UiRuntime` root definitions stay in `crates/ui/src/lib.rs`, while command execution/state-machine helpers now live in `crates/ui/src/commands.rs`, so UI contract types stay separate from command-processing policy.
 - `app`: `crates/app` (CLI + GUI/TTY runtime wiring).
   - Internal runtime helpers are being narrowed by responsibility: harness/bootstrap-command parsing, palette-command application, and MVP reporting now live in `crates/app/src/app_harness.rs`; shared input/palette/PTY/shutdown/terminal pieces live under `crates/app/src/runtime_shared/`; GUI backend sequencing lives in `crates/app/src/gui_runtime_backend.rs`; GUI render/deferred-GPU-init/present helpers live in `crates/app/src/gui_runtime_render.rs`; GUI PTY output pumps/backpressure/fixed-capacity chunk transport/drain budgeting live in `crates/app/src/gui_runtime_output.rs`; GUI lifecycle/output-application/shutdown helpers live in `crates/app/src/gui_runtime_lifecycle.rs`; GUI window/bootstrap/viewport/cadence helpers live in `crates/app/src/gui_runtime_window.rs`; GUI terminal input/palette/clipboard/PTY-write boundary helpers live in `crates/app/src/gui_runtime_terminal_io.rs`; TTY poll/raw-mode/size control helpers live in `crates/app/src/pty_runtime_control.rs`; TTY stdout read-pump/flush/join helpers live in `crates/app/src/pty_runtime_output.rs`; TTY palette/PTY-boundary/event-disconnect helpers live in `crates/app/src/pty_runtime_terminal_io.rs`.
+- `terminal_benchmark`: root-level tooling crate for reproducible headless performance baselines.
+  - Consumes only stable public surfaces (`services::terminal`, `render_cpu`, `font`) and does not reach into app-private runtime modules or environment-sensitive GPU/window ownership.
+  - Owns deterministic workload generation, iteration stats, JSON/table reporting, and benchmark scenario composition for future perf-regression automation.
 
 ## 4) Current dependency graph (observed in crate manifests)
 

@@ -41,6 +41,26 @@ cargo check -p rldyourterm-ui
 cargo check -p rldyourterm-app
 ```
 
+## Benchmarking
+
+Canonical headless benchmark suite lives in `terminal_benchmark/`.
+
+Quick run:
+
+```bash
+cargo run -p rldyourterm-terminal-benchmark -- --scenario all --scale standard
+```
+
+Structured JSON output:
+
+```bash
+cargo run -p rldyourterm-terminal-benchmark -- \
+  --scenario all \
+  --scale stress \
+  --format json \
+  --output /tmp/rldyourterm-terminal-benchmark.json
+```
+
 ## CI/CD profile
 
 - Required merge gates: `CI`, `Planning`, `CodeQL`, `Scorecard`.
