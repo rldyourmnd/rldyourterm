@@ -2055,6 +2055,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rldyourterm-terminal-benchmark"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rldyourterm-font",
+ "rldyourterm-render-cpu",
+ "rldyourterm-services",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rldyourterm-ui"
 version = "0.1.0"
 dependencies = [

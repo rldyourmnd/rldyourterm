@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "terminal_benchmark",
   "crates/core",
   "crates/services",
   "crates/foundation",
