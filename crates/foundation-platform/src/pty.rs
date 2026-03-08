@@ -264,10 +264,16 @@ impl PtyIo for PlatformPtyIo {
             return Ok(());
         }
 
-        inner
-            .master
-            .resize(to_portable_size(normalized))
-            .map_err(|error| io_failure(PtyOperation::Resize, error))?;
+        if let Err(error) = inner.master.resize(to_portable_size(normalized)) {
+            if let Some(io_error) = error.downcast_ref::<io::Error>()
+                && is_child_lifecycle_race(io_error)
+            {
+                let _ = Self::cache_unknown_exit(&mut inner, PtyOperation::Resize, io_error);
+                Self::close_handles(&mut inner);
+                return Ok(());
+            }
+            return Err(io_failure(PtyOperation::Resize, error));
+        }
         inner.last_size = normalized;
         Ok(())
     }
@@ -500,10 +506,11 @@ fn single_writer_violation(operation: PtyOperation) -> FoundationError {
 
 #[cfg(test)]
 mod tests {
-    use super::single_writer_violation;
+    use super::{child_failure, single_writer_violation};
     use rldyourterm_foundation::error::{
         FoundationError, PtyFailureCode, PtyOperation, Recoverability,
     };
+    use std::io;
 
     #[test]
     fn single_writer_violation_contract_is_degrade_recoverable() {
@@ -516,6 +523,23 @@ mod tests {
                 code: PtyFailureCode::SingleWriterInvariantViolation,
                 recoverability: Recoverability::Degrade,
                 message: "pty writer is already acquired".to_string(),
+                correlation_id: None,
+            }
+        );
+        assert!(error.recoverability().is_recoverable());
+    }
+
+    #[test]
+    fn resize_lifecycle_race_is_degrade_recoverable() {
+        let error = child_failure(PtyOperation::Resize, io::Error::from_raw_os_error(3));
+
+        assert_eq!(
+            error,
+            FoundationError::Pty {
+                operation: PtyOperation::Resize,
+                code: PtyFailureCode::BoundaryFault,
+                recoverability: Recoverability::Degrade,
+                message: "pty lifecycle boundary race: No such process (os error 3)".to_string(),
                 correlation_id: None,
             }
         );

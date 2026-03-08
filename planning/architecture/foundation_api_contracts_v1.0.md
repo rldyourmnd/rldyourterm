@@ -149,54 +149,24 @@ pub struct WindowConfig {
     pub high_dpi: bool,
 }
 
-#[derive(Debug, Clone)]
-pub enum WindowEvent {
-    CloseRequested,
-    Moved { x: i32, y: i32 },
-    Resized { width: u32, height: u32, cols: u16, rows: u16 },
-    ScaleFactorChanged { scale: f64 },
-    DisplayRefreshChanged { refresh_rate_millihz: Option<u32>, monitor_name: Option<String> },
-    RedrawRequested,
-    Focused(bool),
-    ModifierChanged { shift: bool, ctrl: bool, alt: bool, logo: bool },
-    Keyboard { input: WindowInput },
-    MouseWheel { delta_x: f32, delta_y: f32 },
-    MouseMove { x: f64, y: f64 },
-    MouseButton { button: u8, pressed: bool },
-}
-
-#[derive(Debug, Clone)]
-pub enum WindowInput {
-    Text { text: String },
-    Key { key_code: u32, name: String, pressed: bool, repeat: bool },
-}
-
-pub trait WindowEventSink: Send + Sync {
-    fn on_event(&self, event: WindowEvent);
-}
-
 pub trait WindowControl: Send + Sync {
     fn request_redraw(&self) -> Result<()>;
     fn set_title(&self, title: &str) -> Result<()>;
     fn current_monitor_timing(&self) -> Result<MonitorTiming>;
-    fn clipboard_text(&self) -> Result<String>;
-    fn set_clipboard_text(&self, text: &str) -> Result<()>;
     fn close(&self) -> Result<()>;
-    fn poll_events(&self) -> Result<Vec<WindowEvent>>;
 }
 
 pub trait WindowFactory: Send + Sync {
-    fn init(&self, config: WindowConfig, sink: Box<dyn WindowEventSink>) -> Result<Box<dyn WindowControl>>;
+    fn init(&self, config: WindowConfig) -> Result<Box<dyn WindowControl>>;
 }
 ```
 
 ### 5.2 Behavioral guarantees
 
-- События ввода должны идти в порядке доставки event-loop.
-- `RedrawRequested` обязателен для отложенного/коалесцируемого рендера.
-- `request_redraw` не должен блокировать event-loop.
-- `DisplayRefreshChanged` должен эмититься при переносе окна между мониторами или при изменении monitor timing.
+- `app` владеет `winit` event-loop и обработкой `WindowEvent::*`; `foundation/window` не дублирует внутреннюю очередь событий.
+- `request_redraw` является тонким operational boundary над platform window handle и не должен блокировать event-loop.
 - `current_monitor_timing` не должен паниковать, даже если refresh-rate недоступен (`None` допускается).
+- Clipboard вынесен в отдельный `ClipboardAdapter`; `WindowControl` не владеет clipboard surface.
 
 ## 6) foundation/api/diagnostics.rs
 
@@ -250,7 +220,7 @@ pub trait ClipboardAdapter: Send + Sync {
 
 ### 8.1 services/session contract
 - `PtyFactory::spawn` -> создание сессии.
-- `WindowFactory::init` -> старт окна и подписка событий.
+- `WindowFactory::init` -> старт окна и привязка тонкого operational control surface.
 - `PtyIo::take_reader` -> отдельный поток/задача для чтения.
 - ошибки -> `RuntimeError{recoverable,...}`.
 
@@ -261,7 +231,7 @@ pub trait ClipboardAdapter: Send + Sync {
 
 ### 8.3 services/render pacing contract
 - `WindowControl::current_monitor_timing` используется для monitor-driven cadence.
-- При `WindowEvent::Moved`/`ScaleFactorChanged`/`DisplayRefreshChanged` cadence пересчитывается и применяется без restart.
+- При `winit::WindowEvent::{Moved, Resized, ScaleFactorChanged}` cadence пересчитывается и применяется без restart в app-owned runtime loop.
 - При недоступном refresh-rate сервис не падает: использует безопасный present path и эмитит диагностическое событие.
 
 ## 9) foundation implementation expectations by OS

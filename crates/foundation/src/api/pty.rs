@@ -20,9 +20,6 @@ pub struct PtySpawnConfig {
     pub size: PtySize,
 }
 
-#[deprecated(note = "Use PtySpawnConfig; kept temporarily for compatibility.")]
-pub type PtySpawnRequest = PtySpawnConfig;
-
 pub trait PtyIo: Send + Sync {
     fn take_reader(&self) -> ContractResult<Box<dyn Read + Send>>;
 

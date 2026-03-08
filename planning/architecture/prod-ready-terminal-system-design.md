@@ -172,8 +172,8 @@ crates/
 - `WindowControl::request_redraw()`
 - `WindowControl::set_title()`
 - `WindowControl::current_monitor_timing()`
-- `WindowControl::clipboard_text()`
-- translated event callbacks: close, move, resize, redraw, input, focus, scale, display-refresh-changed.
+- `WindowControl::close()`
+- `app` владеет `winit` event handling напрямую; foundation window boundary предоставляет только operational control + monitor timing sampling.
 
 ### foundation/api/diagnostics.rs
 

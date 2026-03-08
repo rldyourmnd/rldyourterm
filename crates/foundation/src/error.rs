@@ -168,7 +168,6 @@ pub enum WindowOperation {
     RequestRedraw,
     SetTitle,
     QueryMonitorTiming,
-    PollSignals,
     Close,
 }
 
@@ -178,7 +177,6 @@ impl WindowOperation {
             Self::RequestRedraw => "request-redraw",
             Self::SetTitle => "set-title",
             Self::QueryMonitorTiming => "query-monitor-timing",
-            Self::PollSignals => "poll-signals",
             Self::Close => "close",
         }
     }
