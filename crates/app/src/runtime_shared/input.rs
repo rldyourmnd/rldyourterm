@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use winit::event::KeyEvent as WinitKeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::shared::{
+use crate::runtime_shared::key_encoding::{
     csi_modified, encode_ctrl_letter, fkey_ss3_modified, tilde_modified, xterm_modifier_param,
 };
 

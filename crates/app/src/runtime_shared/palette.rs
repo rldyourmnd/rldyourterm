@@ -2,8 +2,8 @@ use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use tracing::warn;
 
+use crate::runtime_shared::display::{on_off_token, render_mode_token};
 use crate::runtime_shared::input::RuntimeKey;
-use crate::shared::{on_off_token, render_mode_token};
 
 pub(crate) const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";

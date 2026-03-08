@@ -9,7 +9,7 @@ use rldyourterm_ui::{
 };
 use tracing::info;
 
-use crate::shared::{render_mode_token, session_boundary_token as boundary_token};
+use crate::runtime_shared::display::{render_mode_token, session_boundary_token as boundary_token};
 use crate::{
     Cli, MVP_RESULT_LABEL, MVP_STEP_LABEL, MvpProfileArg, gpu_failure_kind_token,
     release_governance_token, shell_token, single_window_enforced_token, state_token, yes_no_token,

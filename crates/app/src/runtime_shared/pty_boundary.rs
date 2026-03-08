@@ -1,13 +1,50 @@
 use anyhow::{Result, anyhow};
 use rldyourterm_foundation::api::pty::PtyIo;
 use rldyourterm_services::session::{
-    FatalBoundaryReason, SessionBoundary, SessionController, SessionState,
+    FatalBoundaryReason, SessionBoundary, SessionController, SessionState, SessionTransitionOutcome,
 };
 
-use crate::shared::{
-    PtyBoundaryPolicyDecision, classify_pty_boundary_failure, fatal_boundary_reason_token,
-    session_boundary_token,
-};
+use crate::runtime_shared::display::{fatal_boundary_reason_token, session_boundary_token};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PtyBoundaryPolicyDecision {
+    Continue { attempt: u8, remaining_budget: u8 },
+    Fatal { reason: FatalBoundaryReason },
+}
+
+pub(crate) fn classify_pty_boundary_failure(
+    session_policy: &mut SessionController,
+    boundary: SessionBoundary,
+) -> Result<PtyBoundaryPolicyDecision> {
+    let transition = session_policy
+        .handle_boundary_failure(boundary)
+        .map_err(|error| {
+            anyhow!(
+                "failed to apply PTY boundary policy boundary={}: {error}",
+                session_boundary_token(boundary)
+            )
+        })?;
+
+    match transition.outcome {
+        SessionTransitionOutcome::RecoverableBoundary {
+            attempt,
+            remaining_budget,
+            ..
+        } => Ok(PtyBoundaryPolicyDecision::Continue {
+            attempt,
+            remaining_budget,
+        }),
+        SessionTransitionOutcome::FatalBoundary { reason, .. } => {
+            Ok(PtyBoundaryPolicyDecision::Fatal { reason })
+        }
+        outcome @ (SessionTransitionOutcome::Started { .. }
+        | SessionTransitionOutcome::StopRequested
+        | SessionTransitionOutcome::Stopped) => Err(anyhow!(
+            "unexpected session transition for boundary={} outcome={outcome:?}",
+            session_boundary_token(boundary)
+        )),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundaryFailureOutcome {

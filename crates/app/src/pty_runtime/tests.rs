@@ -8,7 +8,9 @@ use crate::runtime_shared::input::{
     encode_crossterm_key_event as encode_key_event,
     is_runtime_palette_shortcut_crossterm as is_runtime_palette_shortcut,
 };
-use crate::shared::{PtyBoundaryPolicyDecision, classify_pty_boundary_failure};
+use crate::runtime_shared::pty_boundary::{
+    PtyBoundaryPolicyDecision, classify_pty_boundary_failure,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rldyourterm_services::render_mode::RenderMode;
 use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};

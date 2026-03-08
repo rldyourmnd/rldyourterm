@@ -16,7 +16,9 @@ use super::{
     sample_monitor_refresh_rate_millihz, should_flush_output_batch, take_output_chunk_buffer,
     terminal_feed_chunks, viewport_geometry_changed, warm_output_chunk_pool,
 };
-use crate::shared::{PtyBoundaryPolicyDecision, classify_pty_boundary_failure};
+use crate::runtime_shared::pty_boundary::{
+    PtyBoundaryPolicyDecision, classify_pty_boundary_failure,
+};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_foundation::api::{
     clipboard::ClipboardAdapter,

@@ -155,10 +155,9 @@ enum MonitorAffectingWindowEvent {
     ScaleFactorChanged,
 }
 
-use crate::shared::{
-    ai_cli_spawn_env_overrides, fatal_boundary_reason_token, is_disconnect_error,
-    session_boundary_token, write_all_and_flush,
-};
+use crate::runtime_shared::display::{fatal_boundary_reason_token, session_boundary_token};
+use crate::runtime_shared::io::{is_disconnect_error, write_all_and_flush};
+use crate::runtime_shared::spawn_env::ai_cli_spawn_env_overrides;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PtyBoundaryLoopAction {

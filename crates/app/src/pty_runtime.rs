@@ -25,10 +25,12 @@ use self::terminal_io::{
     handle_pty_boundary_failure, handle_pty_io_failure, handle_terminal_event_disconnect,
     mark_pty_boundary_recovered, write_runtime_palette_line,
 };
+use crate::runtime_shared::display::{fatal_boundary_reason_token, session_boundary_token};
 use crate::runtime_shared::input::{
     encode_crossterm_key_event, is_local_shutdown_key_crossterm,
     is_runtime_palette_shortcut_crossterm, runtime_key_event_from_crossterm,
 };
+use crate::runtime_shared::io::{is_disconnect_error, write_all_and_flush};
 use crate::runtime_shared::palette::{
     RuntimePaletteView, handle_runtime_palette_key_input, toggle_runtime_palette,
 };
@@ -41,10 +43,7 @@ use crate::runtime_shared::runtime_config::frame_budget_millis as shared_frame_b
 use crate::runtime_shared::shutdown::{
     JoinThreadOutcome, join_thread_with_timeout as shared_join_thread_with_timeout,
 };
-use crate::shared::{
-    ai_cli_spawn_env_overrides, fatal_boundary_reason_token, is_disconnect_error,
-    session_boundary_token, write_all_and_flush,
-};
+use crate::runtime_shared::spawn_env::ai_cli_spawn_env_overrides;
 use anyhow::{Context, Result, anyhow};
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal;
