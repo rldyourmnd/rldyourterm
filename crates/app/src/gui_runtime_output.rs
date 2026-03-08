@@ -44,6 +44,30 @@ pub(super) struct OutputQueueBackpressure {
     queued_chunks: AtomicUsize,
 }
 
+#[derive(Debug)]
+pub(super) struct OutputChunk {
+    buffer: Vec<u8>,
+    len: usize,
+}
+
+impl OutputChunk {
+    pub(super) fn new(buffer: Vec<u8>, len: usize) -> Self {
+        Self { buffer, len }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn as_bytes(&self) -> &[u8] {
+        &self.buffer[..self.len]
+    }
+
+    pub(super) fn into_buffer(self) -> Vec<u8> {
+        self.buffer
+    }
+}
+
 impl OutputQueueBackpressure {
     pub(super) fn note_enqueue(&self, bytes: usize) {
         self.queued_bytes.fetch_add(bytes, Ordering::AcqRel);
@@ -74,7 +98,7 @@ impl OutputQueueBackpressure {
 pub(super) fn spawn_reader_pump(
     mut reader: Box<dyn Read + Send>,
     proxy: EventLoopProxy<GuiEvent>,
-    output_tx: SyncSender<Vec<u8>>,
+    output_tx: SyncSender<OutputChunk>,
     output_recycle_rx: Receiver<Vec<u8>>,
     output_event_pending: Arc<AtomicBool>,
     output_backpressure: Arc<OutputQueueBackpressure>,
@@ -86,9 +110,8 @@ pub(super) fn spawn_reader_pump(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read_bytes) => {
-                    buffer.truncate(read_bytes);
                     output_backpressure.note_enqueue(read_bytes);
-                    match output_tx.send(buffer) {
+                    match output_tx.send(OutputChunk::new(buffer, read_bytes)) {
                         Ok(()) => {
                             if !output_event_pending.swap(true, Ordering::AcqRel)
                                 && proxy.send_event(GuiEvent::OutputReady).is_err()
@@ -99,7 +122,7 @@ pub(super) fn spawn_reader_pump(
                         }
                         Err(send_error) => {
                             output_backpressure.note_dequeue(read_bytes);
-                            drop(send_error.0);
+                            drop(send_error.0.into_buffer());
                             break;
                         }
                     }
@@ -148,9 +171,7 @@ pub(super) fn warm_output_chunk_pool(recycle_tx: &SyncSender<Vec<u8>>) {
 pub(super) fn take_output_chunk_buffer(recycle_rx: &Receiver<Vec<u8>>) -> Vec<u8> {
     let mut chunk = match recycle_rx.try_recv() {
         Ok(buffer) => buffer,
-        Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
-            Vec::with_capacity(PTY_OUTPUT_CHUNK_BYTES)
-        }
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => vec![0_u8; PTY_OUTPUT_CHUNK_BYTES],
     };
     if chunk.len() != PTY_OUTPUT_CHUNK_BYTES {
         chunk.resize(PTY_OUTPUT_CHUNK_BYTES, 0);
@@ -159,7 +180,9 @@ pub(super) fn take_output_chunk_buffer(recycle_rx: &Receiver<Vec<u8>>) -> Vec<u8
 }
 
 pub(super) fn recycle_output_chunk_buffer(recycle_tx: &SyncSender<Vec<u8>>, mut chunk: Vec<u8>) {
-    chunk.clear();
+    if chunk.len() != PTY_OUTPUT_CHUNK_BYTES {
+        chunk.resize(PTY_OUTPUT_CHUNK_BYTES, 0);
+    }
     let _ = recycle_tx.try_send(chunk);
 }
 

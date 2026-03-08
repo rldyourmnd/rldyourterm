@@ -165,8 +165,8 @@ impl GuiRuntimeApp {
         true
     }
 
-    fn recycle_output_chunk(&self, chunk: Vec<u8>) {
-        recycle_output_chunk_buffer(&self.output_recycle_tx, chunk);
+    fn recycle_output_chunk(&self, chunk: OutputChunk) {
+        recycle_output_chunk_buffer(&self.output_recycle_tx, chunk.into_buffer());
     }
 
     pub(super) fn drain_output_queue(&mut self, event_loop: &ActiveEventLoop) {
@@ -178,16 +178,17 @@ impl GuiRuntimeApp {
         let mut active_budget = output_drain_budget(self.output_backpressure.snapshot());
 
         'drain: loop {
-            while let Ok(data) = self.output_rx.try_recv() {
-                self.output_backpressure.note_dequeue(data.len());
+            while let Ok(chunk) = self.output_rx.try_recv() {
+                let chunk_len = chunk.len();
+                self.output_backpressure.note_dequeue(chunk_len);
                 drained_any = true;
-                drained_bytes = drained_bytes.saturating_add(data.len());
-                if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
-                    self.recycle_output_chunk(data);
+                drained_bytes = drained_bytes.saturating_add(chunk_len);
+                if !self.append_output_chunk_to_batch(&mut batch, chunk.as_bytes(), event_loop) {
+                    self.recycle_output_chunk(chunk);
                     self.output_batch = batch;
                     return;
                 }
-                self.recycle_output_chunk(data);
+                self.recycle_output_chunk(chunk);
                 active_budget = output_drain_budget(self.output_backpressure.snapshot());
                 if output_drain_budget_exhausted(
                     drained_bytes,
@@ -204,17 +205,19 @@ impl GuiRuntimeApp {
 
             // Handle producer race: data may arrive between empty check and flag reset.
             match self.output_rx.try_recv() {
-                Ok(data) => {
-                    self.output_backpressure.note_dequeue(data.len());
+                Ok(chunk) => {
+                    let chunk_len = chunk.len();
+                    self.output_backpressure.note_dequeue(chunk_len);
                     self.output_event_pending.store(true, Ordering::Release);
                     drained_any = true;
-                    drained_bytes = drained_bytes.saturating_add(data.len());
-                    if !self.append_output_chunk_to_batch(&mut batch, &data, event_loop) {
-                        self.recycle_output_chunk(data);
+                    drained_bytes = drained_bytes.saturating_add(chunk_len);
+                    if !self.append_output_chunk_to_batch(&mut batch, chunk.as_bytes(), event_loop)
+                    {
+                        self.recycle_output_chunk(chunk);
                         self.output_batch = batch;
                         return;
                     }
-                    self.recycle_output_chunk(data);
+                    self.recycle_output_chunk(chunk);
                     active_budget = output_drain_budget(self.output_backpressure.snapshot());
                     if output_drain_budget_exhausted(
                         drained_bytes,

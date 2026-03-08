@@ -18,14 +18,14 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use self::output::{
+    OutputChunk, OutputQueueBackpressure, output_drain_budget, output_drain_budget_exhausted,
+    recycle_output_chunk_buffer, should_flush_output_batch, spawn_reader_pump, spawn_wait_pump,
+    warm_output_chunk_pool,
+};
 #[cfg(test)]
 use self::output::{
     OutputDrainBudget, OutputDrainPressure, OutputQueueSnapshot, take_output_chunk_buffer,
-};
-use self::output::{
-    OutputQueueBackpressure, output_drain_budget, output_drain_budget_exhausted,
-    recycle_output_chunk_buffer, should_flush_output_batch, spawn_reader_pump, spawn_wait_pump,
-    warm_output_chunk_pool,
 };
 #[cfg(test)]
 use self::terminal_io::{
@@ -191,7 +191,7 @@ pub(crate) fn run_interactive_gui_pty(
     let event_loop = build_gui_event_loop()?;
     let proxy = event_loop.create_proxy();
 
-    let (output_tx, output_rx) = sync_channel::<Vec<u8>>(PTY_OUTPUT_QUEUE_CAPACITY);
+    let (output_tx, output_rx) = sync_channel::<OutputChunk>(PTY_OUTPUT_QUEUE_CAPACITY);
     let (output_recycle_tx, output_recycle_rx) =
         sync_channel::<Vec<u8>>(PTY_OUTPUT_RECYCLE_POOL_CAPACITY);
     warm_output_chunk_pool(&output_recycle_tx);
@@ -317,7 +317,7 @@ struct GuiRuntimeApp {
     event_proxy: EventLoopProxy<GuiEvent>,
     pty: Arc<dyn PtyIo>,
     writer: Box<dyn Write + Send>,
-    output_rx: Receiver<Vec<u8>>,
+    output_rx: Receiver<OutputChunk>,
     output_recycle_tx: SyncSender<Vec<u8>>,
     output_event_pending: Arc<AtomicBool>,
     output_backpressure: Arc<OutputQueueBackpressure>,
@@ -371,7 +371,7 @@ struct GuiRuntimeBootstrap {
 }
 
 struct GuiRuntimeChannels {
-    output_rx: Receiver<Vec<u8>>,
+    output_rx: Receiver<OutputChunk>,
     output_recycle_tx: SyncSender<Vec<u8>>,
     output_event_pending: Arc<AtomicBool>,
     reader_pump: JoinHandle<()>,
