@@ -101,7 +101,7 @@ impl GlyphCache {
             return self
                 .cache
                 .get(&ch)
-                .expect("cache entry checked above must exist");
+                .expect("cache entry verified by contains_key with exclusive access");
         }
 
         if self.cache.len() >= self.max_entries {
@@ -114,18 +114,15 @@ impl GlyphCache {
                 return self
                     .cache
                     .get(&FALLBACK_GLYPH_CHAR)
-                    .expect("fallback glyph must stay cached");
+                    .expect("fallback glyph is inserted in constructor and never evicted");
             }
         }
 
         let bitmap = self.rasterize_into_cell(ch);
-        self.cache.insert(ch, bitmap);
         if ch != FALLBACK_GLYPH_CHAR {
             self.eviction_queue.push_back(ch);
         }
-        self.cache
-            .get(&ch)
-            .expect("glyph inserted above must exist in cache")
+        self.cache.entry(ch).or_insert(bitmap)
     }
 
     /// Check if the font contains a real glyph for `ch` (not just .notdef / tofu).
