@@ -21,8 +21,8 @@ use atlas::{ATLAS_GLYPH_COLS, ATLAS_GLYPH_ROWS, ATLAS_SLOTS, build_glyph_atlas};
 #[cfg(test)]
 use atlas::{ATLAS_GLYPH_HEIGHT, ATLAS_GLYPH_WIDTH, ATLAS_SIZE, write_glyph_to_atlas};
 use cell_data::{
-    create_cell_bind_group, initial_cell_buffer_capacity, reconcile_cell_buffer_capacity,
-    upload_dirty_ranges,
+    create_cell_bind_group, initial_cell_buffer_capacity, prepare_and_upload_dirty_rows,
+    reconcile_cell_buffer_capacity,
 };
 #[cfg(test)]
 use cell_data::{next_cell_buffer_capacity, pack_cell_flags, shrink_cell_buffer_capacity};
@@ -683,16 +683,8 @@ impl GpuRenderer {
                 &mut backend.cell_bind_group_back,
             );
         } else if !force_full_upload {
-            // Standard path: prepare dirty rows and upload coalesced ranges
-            backend.prepare_dirty_rows(terminal, dirty_rows);
-            upload_dirty_ranges(
-                &backend.queue,
-                &backend.cell_buffer,
-                &backend.cell_instances,
-                dirty_rows,
-                grid_cols,
-                row_byte_size,
-            );
+            // Standard path: prepare dirty rows and upload coalesced ranges in one pass.
+            prepare_and_upload_dirty_rows(backend, terminal, dirty_rows, grid_cols, row_byte_size);
         }
 
         // Update grid uniforms

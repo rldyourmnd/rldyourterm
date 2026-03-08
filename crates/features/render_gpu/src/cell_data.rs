@@ -88,18 +88,6 @@ impl GpuBackend {
         }
     }
 
-    pub(super) fn prepare_dirty_rows(&mut self, terminal: &TerminalState, dirty_rows: &[bool]) {
-        let cols = terminal.grid.width() as usize;
-        let rows = terminal.grid.height() as usize;
-
-        for row in 0..rows {
-            if row >= dirty_rows.len() || !dirty_rows[row] {
-                continue;
-            }
-            self.write_row_instances(terminal, row, cols);
-        }
-    }
-
     pub(super) fn write_row_instances(
         &mut self,
         terminal: &TerminalState,
@@ -248,39 +236,41 @@ pub(super) fn reconcile_cell_buffer_capacity(backend: &mut GpuBackend, cell_coun
     force_full_upload
 }
 
-pub(super) fn upload_dirty_ranges(
-    queue: &wgpu::Queue,
-    cell_buffer: &wgpu::Buffer,
-    cell_instances: &[CellInstance],
+pub(super) fn prepare_and_upload_dirty_rows(
+    backend: &mut GpuBackend,
+    terminal: &TerminalState,
     dirty_rows: &[bool],
     grid_cols: usize,
     row_byte_size: usize,
 ) {
-    let mut range_start: Option<usize> = None;
-
-    let flush = |queue: &wgpu::Queue, s: usize, end: usize| {
-        let byte_offset = (s * row_byte_size) as u64;
-        let instance_start = s * grid_cols;
+    let flush = |backend: &GpuBackend, start: usize, end: usize| {
+        let byte_offset = (start * row_byte_size) as u64;
+        let instance_start = start * grid_cols;
         let instance_end = end * grid_cols;
-        queue.write_buffer(
-            cell_buffer,
+        backend.queue.write_buffer(
+            &backend.cell_buffer,
             byte_offset,
-            bytemuck::cast_slice(&cell_instances[instance_start..instance_end]),
+            bytemuck::cast_slice(&backend.cell_instances[instance_start..instance_end]),
         );
     };
 
+    let mut range_start: Option<usize> = None;
+
     for (row, &dirty) in dirty_rows.iter().enumerate() {
-        match (dirty, range_start) {
-            (true, None) => range_start = Some(row),
-            (false, Some(s)) => {
-                flush(queue, s, row);
-                range_start = None;
+        if dirty {
+            if range_start.is_none() {
+                range_start = Some(row);
             }
-            _ => {}
+            backend.write_row_instances(terminal, row, grid_cols);
+            continue;
+        }
+
+        if let Some(start) = range_start.take() {
+            flush(backend, start, row);
         }
     }
 
-    if let Some(s) = range_start {
-        flush(queue, s, dirty_rows.len());
+    if let Some(start) = range_start {
+        flush(backend, start, dirty_rows.len());
     }
 }
