@@ -28,10 +28,6 @@ while [[ $# -gt 0 ]]; do
       mode="$2"
       shift 2
       ;;
-    --manifest)
-      # Legacy flag: accepted but ignored (evidence manifest removed)
-      shift 2
-      ;;
     --with-matrix)
       with_matrix="1"
       shift
