@@ -1,7 +1,8 @@
+use rldyourterm_foundation::api::common::ContractResult;
 use rldyourterm_foundation::api::diagnostics::{
-    DiagnosticEvent as FoundationDiagnosticEvent, DiagnosticKind as FoundationDiagnosticKind,
-    DiagnosticLayer as FoundationDiagnosticLayer,
-    DiagnosticSeverity as FoundationDiagnosticSeverity,
+    DiagnosticConfig as FoundationDiagnosticConfig, DiagnosticEvent as FoundationDiagnosticEvent,
+    DiagnosticKind as FoundationDiagnosticKind, DiagnosticLayer as FoundationDiagnosticLayer,
+    DiagnosticSeverity as FoundationDiagnosticSeverity, DiagnosticSink as FoundationDiagnosticSink,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -334,6 +335,17 @@ impl Default for DiagnosticsSink {
 }
 
 impl DiagnosticsSink {
+    fn emit_foundation_event(&self, canonical_event: &FoundationDiagnosticEvent) {
+        tracing::info!(
+            event_id = %canonical_event.event_id.0,
+            kind = ?canonical_event.kind,
+            severity = ?canonical_event.severity,
+            layer = ?canonical_event.layer,
+            correlation_id = ?canonical_event.correlation_id,
+            "diagnostics event emitted"
+        );
+    }
+
     pub fn emit(&self, mut event: Event) -> Event {
         if event.event_id.is_empty() {
             event.event_id = self.next_event_id();
@@ -343,14 +355,7 @@ impl DiagnosticsSink {
         }
 
         let canonical_event = event.to_foundation_event();
-        tracing::info!(
-            event_id = %canonical_event.event_id.0,
-            kind = ?canonical_event.kind,
-            severity = ?canonical_event.severity,
-            layer = ?canonical_event.layer,
-            correlation_id = ?canonical_event.correlation_id,
-            "diagnostics event emitted"
-        );
+        self.emit_foundation_event(&canonical_event);
 
         event
     }
@@ -440,6 +445,51 @@ impl DiagnosticsSink {
     fn next_event_id(&self) -> String {
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
         format!("diag-{sequence}")
+    }
+}
+
+impl FoundationDiagnosticSink for DiagnosticsSink {
+    fn emit(&self, event: FoundationDiagnosticEvent) -> ContractResult<()> {
+        self.emit_foundation_event(&event);
+        Ok(())
+    }
+
+    fn flush(&self) -> ContractResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiagnosticsRuntimeConfig {
+    enabled: bool,
+    debug_mode: bool,
+}
+
+impl Default for DiagnosticsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            debug_mode: false,
+        }
+    }
+}
+
+impl DiagnosticsRuntimeConfig {
+    pub const fn new(enabled: bool, debug_mode: bool) -> Self {
+        Self {
+            enabled,
+            debug_mode,
+        }
+    }
+}
+
+impl FoundationDiagnosticConfig for DiagnosticsRuntimeConfig {
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn is_debug_mode(&self) -> bool {
+        self.debug_mode
     }
 }
 
@@ -692,5 +742,35 @@ mod tests {
             Some(CorrelationId::new("corr-launch"))
         );
         assert!(emitted.payload_json.is_some());
+    }
+
+    #[test]
+    fn foundation_diagnostic_sink_trait_emits_without_error() {
+        let sink = DiagnosticsSink::default();
+        let foundation_sink: &dyn FoundationDiagnosticSink = &sink;
+
+        foundation_sink
+            .emit(
+                FoundationDiagnosticEvent::new(
+                    "diag-foundation",
+                    FoundationDiagnosticKind::SessionStarted,
+                    FoundationDiagnosticSeverity::Info,
+                    FoundationDiagnosticLayer::App,
+                    "boot",
+                    1,
+                )
+                .with_correlation_id("corr-1"),
+            )
+            .expect("foundation event should emit");
+        foundation_sink.flush().expect("flush should be a no-op");
+    }
+
+    #[test]
+    fn diagnostics_runtime_config_implements_foundation_contract() {
+        let config = DiagnosticsRuntimeConfig::new(true, true);
+        let foundation_config: &dyn FoundationDiagnosticConfig = &config;
+
+        assert!(foundation_config.is_enabled());
+        assert!(foundation_config.is_debug_mode());
     }
 }
