@@ -94,6 +94,7 @@ required_paths=(
   "planning/operations/v1.0.0-start-readiness-index.md"
   "planning/operations/v1.0.0-evidence-manifest.json"
   "scripts/ci/validate_release_evidence_freshness.sh"
+  "scripts/ci/refresh_release_evidence_manifest.py"
   "scripts/ci/validate_vsa_dependency_graph.sh"
   "scripts/ci/run_e2e_governance.sh"
 )
