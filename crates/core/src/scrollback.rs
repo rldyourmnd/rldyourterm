@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 pub const MAX_SCROLLBACK_CAP: usize = 50_000;
-pub const DEFAULT_SCROLLBACK_BYTE_CAP: usize = 512 * 1024 * 1024;
+pub(crate) const DEFAULT_SCROLLBACK_BYTE_CAP: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scrollback {
