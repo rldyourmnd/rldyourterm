@@ -24,7 +24,12 @@ impl GuiRuntimeApp {
         }
 
         // Selection drag: update selection_end while left button held and mouse mode is off.
-        if self.selection_anchor.is_some() && self.mouse_buttons & 1 != 0 {
+        // Guard on MouseMode::Off prevents selection state corruption when a TUI app
+        // activates mouse reporting after a selection was started.
+        if self.selection_anchor.is_some()
+            && self.mouse_buttons & 1 != 0
+            && self.terminal.mouse_mode() == MouseMode::Off
+        {
             self.selection_end = Some((row, col));
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();

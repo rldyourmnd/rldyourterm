@@ -118,20 +118,29 @@ pub fn render_terminal_buffer(
         }
     }
 
-    // Selection highlight: invert colors for selected cell range.
+    // Selection highlight: invert colors for selected cells on dirty rows only.
+    // The softbuffer framebuffer persists across frames; clean rows already have
+    // correct XOR-inverted pixels from the previous frame. Re-inverting them
+    // would toggle the highlight off (XOR is its own inverse).
     if selection_start != u32::MAX {
-        let sel_lo = selection_start.min(selection_end);
-        let sel_hi = selection_start.max(selection_end);
-        for flat_idx in sel_lo..=sel_hi {
-            let sel_row = (flat_idx / grid_cols as u32) as usize;
-            let sel_col = (flat_idx % grid_cols as u32) as usize;
-            if sel_row < visible_rows && sel_col < visible_cols {
+        let sel_lo = selection_start.min(selection_end) as usize;
+        let sel_hi = selection_start.max(selection_end) as usize;
+        for &row in &dirty {
+            let row_usize = row as usize;
+            let row_flat_start = row_usize * grid_cols;
+            let row_flat_end = row_flat_start + grid_cols - 1;
+            if row_flat_end < sel_lo || row_flat_start > sel_hi {
+                continue;
+            }
+            let start_col = sel_lo.saturating_sub(row_flat_start);
+            let end_col = (sel_hi - row_flat_start).min(grid_cols - 1);
+            for col in start_col..=end_col.min(visible_cols - 1) {
                 draw_cell_invert(
                     buffer,
                     width,
                     height,
-                    sel_col * CELL_WIDTH,
-                    sel_row * CELL_HEIGHT,
+                    col * CELL_WIDTH,
+                    row_usize * CELL_HEIGHT,
                 );
             }
         }
