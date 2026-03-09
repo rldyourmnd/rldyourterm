@@ -144,6 +144,7 @@ pub enum ParserAction {
     SetCursorBlink(bool),
     SetFocusReporting(bool),
     SetSynchronizedOutput(bool),
+    SetCursorShape(u8),
     SetCurrentWorkingDirectory(String),
     ClipboardSet {
         selection: char,

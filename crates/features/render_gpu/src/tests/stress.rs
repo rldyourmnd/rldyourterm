@@ -55,7 +55,7 @@ fn stress_cell_instance_bulk_creation() {
             atlas_and_flags: pack_cell_flags(slot, &attrs),
             fg_color: 0xD8D8D8,
             bg_color: 0x141B1F,
-            _pad: 0,
+            underline_color: 0,
         });
     }
     assert_eq!(instances.len(), 4000);

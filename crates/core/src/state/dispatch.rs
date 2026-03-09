@@ -145,6 +145,9 @@ impl TerminalState {
             ParserAction::SetSynchronizedOutput(enabled) => {
                 self.synchronized_output = enabled;
             }
+            ParserAction::SetCursorShape(shape) => {
+                self.cursor_shape = shape;
+            }
             ParserAction::SetCurrentWorkingDirectory(path) => {
                 if self.cwd != path {
                     self.cwd = path.clone();

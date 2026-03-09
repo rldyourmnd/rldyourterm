@@ -179,7 +179,8 @@ impl Grid {
         Ok(s)
     }
 
-    pub fn scroll_up(&mut self, lines: u16) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn scroll_up(&mut self, lines: u16) -> Vec<String> {
         if lines == 0 || self.height == 0 {
             return Vec::new();
         }
