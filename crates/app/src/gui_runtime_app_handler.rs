@@ -146,8 +146,25 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(position, event_loop);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.handle_mouse_input(state, button, event_loop);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.handle_mouse_wheel(delta, event_loop);
+            }
             WindowEvent::Focused(focused) => {
                 debug!(focused, "window focus changed");
+                if self.terminal.focus_reporting_enabled() {
+                    let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
+                    let _ = self.write_pty_payload(
+                        seq.as_slice(),
+                        event_loop,
+                        "failed to write focus event to PTY",
+                    );
+                }
             }
             WindowEvent::Occluded(occluded) => {
                 debug!(occluded, "window occlusion changed");
@@ -205,6 +222,13 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         {
             event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
             return;
+        }
+
+        if self.last_blink_toggle.elapsed() >= BLINK_TOGGLE_INTERVAL {
+            self.blink_visible = !self.blink_visible;
+            self.last_blink_toggle = Instant::now();
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
         }
 
         self.request_redraw_if_needed();

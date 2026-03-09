@@ -261,10 +261,13 @@ impl GuiRuntimeApp {
         if self.is_gpu_lane_ready() {
             let dirty_rows = self.terminal.grid.dirty_rows();
             let scroll_count = self.terminal.grid.scroll_count();
-            match self
-                .gpu_renderer
-                .render_frame(&self.terminal, dirty_rows, scroll_count)
-            {
+            match self.gpu_renderer.render_frame(
+                &self.terminal,
+                dirty_rows,
+                scroll_count,
+                self.blink_visible,
+                self.viewport_offset,
+            ) {
                 Ok(()) => {
                     self.terminal.grid.clear_dirty_rows();
                     let _ = self
@@ -366,6 +369,8 @@ impl GuiRuntimeApp {
             &mut self.glyph_cache,
             self.last_rendered_cursor_row,
             &mut self.dirty_rows_scratch,
+            self.blink_visible,
+            self.viewport_offset,
         );
         self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
         buffer

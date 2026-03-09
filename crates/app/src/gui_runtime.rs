@@ -2,6 +2,8 @@
 mod app_handler;
 #[path = "gui_runtime_lifecycle.rs"]
 mod lifecycle;
+#[path = "gui_runtime_mouse.rs"]
+mod mouse;
 #[path = "gui_runtime_output.rs"]
 mod output;
 #[path = "gui_runtime_render.rs"]
@@ -81,7 +83,9 @@ use rldyourterm_render_cpu::render_terminal_buffer;
 use rldyourterm_render_gpu::GpuRenderer;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
-use rldyourterm_services::terminal::{CELL_HEIGHT, CELL_WIDTH, TerminalState};
+use rldyourterm_services::terminal::{
+    CELL_HEIGHT, CELL_WIDTH, MouseFormat, MouseMode, TerminalState,
+};
 use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_ui::{
     DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome, UiRuntime,
@@ -93,7 +97,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -110,6 +114,7 @@ const DEFAULT_GUI_HEIGHT: u32 = 800;
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
 const CHILD_EXIT_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_EXIT_DRAIN_MAX_WAIT: Duration = Duration::from_millis(750);
+const BLINK_TOGGLE_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(test)]
 use rldyourterm_render_cpu::{DEFAULT_FG, DEFAULT_FG_U32, resolve_cell_colors};
 const CLIPBOARD_PASTE_CAP_BYTES: usize = 64 * 1024;
@@ -359,6 +364,14 @@ struct GuiRuntimeApp {
     response_buffer_scratch: TerminalResponseBuffer,
     dirty_rows_scratch: Vec<u16>,
 
+    blink_visible: bool,
+    last_blink_toggle: Instant,
+    last_window_title: String,
+    viewport_offset: usize,
+    mouse_cell_col: u16,
+    mouse_cell_row: u16,
+    mouse_buttons: u8,
+
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
 }
@@ -463,6 +476,13 @@ impl GuiRuntimeApp {
                 FEED_EVENTS_SCRATCH_INITIAL_CAPACITY,
             ),
             dirty_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
+            blink_visible: true,
+            last_blink_toggle: Instant::now(),
+            last_window_title: String::new(),
+            viewport_offset: 0,
+            mouse_cell_col: 0,
+            mouse_cell_row: 0,
+            mouse_buttons: 0,
             exit_code: None,
             fatal_error: None,
         })

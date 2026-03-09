@@ -78,6 +78,28 @@ impl GuiRuntimeApp {
             }
         }
 
+        // Scrollback navigation: Shift+PageUp/Down adjusts viewport_offset
+        if self.modifiers.shift_key() {
+            match &event.logical_key {
+                Key::Named(NamedKey::PageUp) => {
+                    let page_size = self.terminal.grid.height() as usize / 2;
+                    let max_offset = self.terminal.scrollback.len();
+                    self.viewport_offset = (self.viewport_offset + page_size).min(max_offset);
+                    self.terminal.grid.mark_all_dirty();
+                    self.queue_redraw();
+                    return;
+                }
+                Key::Named(NamedKey::PageDown) => {
+                    let page_size = self.terminal.grid.height() as usize / 2;
+                    self.viewport_offset = self.viewport_offset.saturating_sub(page_size);
+                    self.terminal.grid.mark_all_dirty();
+                    self.queue_redraw();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if is_paste_shortcut(&event.logical_key, self.modifiers) {
             self.handle_clipboard_paste(event_loop);
             return;

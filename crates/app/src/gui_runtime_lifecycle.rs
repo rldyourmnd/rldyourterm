@@ -121,6 +121,7 @@ impl GuiRuntimeApp {
 
     fn apply_output_bytes(&mut self, data: &[u8], event_loop: &ActiveEventLoop) -> bool {
         trace!(bytes = data.len(), "pty output received");
+        self.viewport_offset = 0;
         let mut response_buffer = std::mem::take(&mut self.response_buffer_scratch);
         for chunk in terminal_feed_chunks(data) {
             response_buffer.feed_terminal(&mut self.terminal, chunk);
@@ -262,8 +263,10 @@ impl GuiRuntimeApp {
         }
 
         let title = self.terminal.window_title();
-        if !title.is_empty() {
+        if !title.is_empty() && title != self.last_window_title {
             self.set_window_title(title);
+            self.last_window_title.clear();
+            self.last_window_title.push_str(title);
         }
 
         if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
