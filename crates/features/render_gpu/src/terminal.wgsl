@@ -161,8 +161,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         fg = bg;
     }
 
-    // Selection highlight: invert colors for selected range
-    if grid.selection_start != SEL_NONE {
+    // Selection highlight: invert colors for selected range.
+    // Skip the cursor cell to avoid double-inversion with the cursor pass below
+    // (two swaps cancel out, making the cursor invisible on selected cells).
+    let cursor_index = grid.cursor_row * grid.grid_cols + grid.cursor_col;
+    let is_cursor_cell = grid.cursor_visible != 0u && in.instance == cursor_index;
+    if grid.selection_start != SEL_NONE && !is_cursor_cell {
         let sel_lo = min(grid.selection_start, grid.selection_end);
         let sel_hi = max(grid.selection_start, grid.selection_end);
         if in.instance >= sel_lo && in.instance <= sel_hi {
@@ -175,8 +179,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Cursor: shape-aware rendering (DECSCUSR)
     // Shapes: 0/1=blinking block, 2=steady block, 3=blinking underline,
     // 4=steady underline, 5=blinking bar, 6=steady bar.
-    let cursor_index = grid.cursor_row * grid.grid_cols + grid.cursor_col;
-    if grid.cursor_visible != 0u && in.instance == cursor_index {
+    if is_cursor_cell {
         let shape = grid.cursor_shape;
         let is_blinking = (shape == 0u || (shape & 1u) != 0u);
         let cursor_on = !is_blinking || grid.blink_visible != 0u;

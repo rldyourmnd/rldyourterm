@@ -84,8 +84,10 @@ impl GuiRuntimeApp {
 
         let mouse_mode = self.terminal.mouse_mode();
 
-        // Selection: left click when mouse mode is off starts text selection.
-        if button_code == 0 && mouse_mode == MouseMode::Off {
+        // Selection: left click when mouse mode is off and live view (not scrollback).
+        // Scrollback view (viewport_offset > 0) uses screen-relative coordinates that
+        // don't map to grid flat-indices, so selection is disabled in that mode.
+        if button_code == 0 && mouse_mode == MouseMode::Off && self.viewport_offset == 0 {
             if is_press {
                 let row = self.mouse_cell_row;
                 let col = self.mouse_cell_col;
@@ -95,6 +97,7 @@ impl GuiRuntimeApp {
                 self.queue_redraw();
             } else if self.selection_anchor.is_some() {
                 self.copy_selection_to_clipboard();
+                self.clear_selection();
             }
             return;
         }
