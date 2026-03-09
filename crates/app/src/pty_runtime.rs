@@ -1,118 +1,74 @@
+#[path = "pty_runtime_control.rs"]
+mod control;
+#[path = "pty_runtime_output.rs"]
+mod output;
+#[path = "pty_runtime_terminal_io.rs"]
+mod terminal_io;
+
 use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::shared::{
-    PtyBoundaryPolicyDecision, ai_cli_spawn_env_overrides, classify_pty_boundary_failure,
-    csi_modified, encode_ctrl_letter, fatal_boundary_reason_token, fkey_ss3_modified,
-    is_disconnect_error, on_off_token, render_mode_token, session_boundary_token, tilde_modified,
-    write_all_and_flush, xterm_modifier_param,
+use self::control::{
+    EventPollController, RawModeGuard, current_pty_size, ensure_single_window,
+    ensure_tty_stdio_is_terminal, is_press_like,
 };
+#[cfg(test)]
+use self::control::{derive_poll_timeouts, frame_budget_millis, tty_stdio_requirement_message};
+#[cfg(test)]
+use self::output::{is_stdout_disconnect_error, should_flush_read_pump};
+use self::output::{join_thread_with_timeout, spawn_read_pump};
+#[cfg(test)]
+use self::terminal_io::dispatch_runtime_palette_command;
+use self::terminal_io::{
+    handle_pty_boundary_failure, handle_pty_io_failure, handle_terminal_event_disconnect,
+    mark_pty_boundary_recovered, write_runtime_palette_line,
+};
+use crate::runtime_shared::display::{fatal_boundary_reason_token, session_boundary_token};
+use crate::runtime_shared::input::{
+    encode_crossterm_key_event, is_local_shutdown_key_crossterm,
+    is_runtime_palette_shortcut_crossterm, runtime_key_event_from_crossterm,
+};
+use crate::runtime_shared::io::{is_disconnect_error, write_all_and_flush};
+use crate::runtime_shared::palette::{
+    RuntimePaletteView, handle_runtime_palette_key_input, toggle_runtime_palette,
+};
+use crate::runtime_shared::pty_boundary::{
+    BoundaryFailureOutcome, PtyReadFailureResolution, apply_pty_boundary_failure,
+    fatal_pty_boundary_failure, mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered,
+    resolve_live_pty_read_failure, runtime_boundary_notice,
+};
+use crate::runtime_shared::runtime_config::frame_budget_millis as shared_frame_budget_millis;
+use crate::runtime_shared::shutdown::{
+    JoinThreadOutcome, SHUTDOWN_JOIN_POLL_INTERVAL, SHUTDOWN_JOIN_TIMEOUT,
+    join_thread_with_timeout as shared_join_thread_with_timeout,
+};
+use crate::runtime_shared::spawn_env::ai_cli_spawn_env_overrides;
 use anyhow::{Context, Result, anyhow};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_services::render_mode::RenderMode;
-use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
-use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
+use rldyourterm_services::session::{SessionBoundary, SessionController};
+use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_ui::SINGLE_WINDOW_BASELINE;
 use tracing::{info, warn};
 
-const DEFAULT_REFRESH_RATE_MILLIHZ: u32 = 60_000;
 const MIN_EVENT_POLL_TIMEOUT_MILLIS: u64 = 1;
 const MAX_EVENT_POLL_TIMEOUT_MILLIS: u64 = 200;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(750);
-const SHUTDOWN_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const READ_PUMP_FLUSH_INTERVAL: Duration = Duration::from_millis(4);
 const READ_PUMP_FLUSH_MAX_BYTES: usize = 32 * 1024;
 const READ_PUMP_SIGNAL_STDOUT_DISCONNECTED: &str = "stdout-disconnected";
-const RUNTIME_PALETTE_HELP_LINE: &str =
-    "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
-const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimePaletteAction {
-    ApplyCommand(&'static str),
-    ShowInfo,
-    Close,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RuntimePaletteDispatchResult {
-    message: String,
-    updated_mode: Option<RenderMode>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JoinThreadOutcome {
-    Joined,
-    Panicked,
-    TimedOut,
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TtyRuntimeConfig {
     pub initial_mode: RenderMode,
     pub refresh_rate_millihz: u32,
     pub window_count: u8,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EventPollController {
-    min_timeout: Duration,
-    max_timeout: Duration,
-    next_timeout: Duration,
-}
-
-impl EventPollController {
-    fn from_config(config: TtyRuntimeConfig) -> Self {
-        let (min_timeout, max_timeout) =
-            derive_poll_timeouts(config.initial_mode, config.refresh_rate_millihz);
-        Self {
-            min_timeout,
-            max_timeout,
-            next_timeout: min_timeout,
-        }
-    }
-
-    fn next_timeout(&self) -> Duration {
-        self.next_timeout
-    }
-
-    fn on_terminal_event(&mut self) {
-        self.next_timeout = self.min_timeout;
-    }
-
-    fn on_idle_poll(&mut self) {
-        self.next_timeout = self
-            .next_timeout
-            .checked_mul(2)
-            .unwrap_or(self.max_timeout)
-            .min(self.max_timeout);
-    }
-
-    fn bounds_millis(&self) -> (u128, u128) {
-        (self.min_timeout.as_millis(), self.max_timeout.as_millis())
-    }
-}
-
-struct RawModeGuard;
-
-impl RawModeGuard {
-    fn new() -> Result<Self> {
-        terminal::enable_raw_mode().context("failed to enable terminal raw mode")?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
-    }
 }
 
 pub fn run_interactive_pty(
@@ -171,7 +127,6 @@ pub fn run_interactive_pty(
     let mut exit_code: Option<i32> = None;
     let mut requested_local_exit = false;
     let mut fatal_error: Option<anyhow::Error> = None;
-
     loop {
         match pty.try_wait().context("failed to poll PTY child status") {
             Ok(Some(code)) => {
@@ -180,7 +135,12 @@ pub fn run_interactive_pty(
             }
             Ok(None) => {}
             Err(error) => {
-                fatal_error = Some(error);
+                let detail = format!("failed to poll PTY child status: {error}");
+                fatal_error = Some(fatal_pty_boundary_failure(
+                    &mut session_policy,
+                    SessionBoundary::PtyWait,
+                    &detail,
+                ));
                 break;
             }
         }
@@ -202,50 +162,38 @@ pub fn run_interactive_pty(
                     }
                     break;
                 }
-                match pty
-                    .try_wait()
-                    .context("failed to poll PTY after read pump failure")
-                {
-                    Ok(Some(code)) => {
+                let detail = format!("TTY read pump failure detail={detail}");
+                match resolve_live_pty_read_failure(
+                    &*pty,
+                    &mut session_policy,
+                    &detail,
+                    "failed to poll PTY after read pump failure",
+                ) {
+                    Ok(PtyReadFailureResolution::ChildExited(code)) => {
                         exit_code = Some(code);
                         info!(
                             exit_code = code,
                             "TTY read pump failure observed after child exit; stopping without fatal escalation"
                         );
-                        break;
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        fatal_error = Some(error);
-                        break;
-                    }
+                    Err(policy_error) => fatal_error = Some(policy_error),
                 }
-                fatal_error = Some(anyhow!(
-                    "fatal PTY read pump failure boundary={} detail={detail}",
-                    session_boundary_token(SessionBoundary::PtyRead),
-                ));
                 break;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) if read_pump.is_finished() => {
-                match pty
-                    .try_wait()
-                    .context("failed to poll PTY after read pump disconnect")
-                {
-                    Ok(Some(code)) => {
-                        exit_code = Some(code);
-                    }
-                    Ok(None) => {
-                        if requested_local_exit {
-                            exit_code.get_or_insert(0);
-                        } else {
-                            fatal_error = Some(anyhow!(
-                                "PTY read pump terminated unexpectedly while child is running boundary={}",
-                                session_boundary_token(SessionBoundary::PtyRead),
-                            ));
-                        }
-                    }
-                    Err(error) => fatal_error = Some(error),
+                if requested_local_exit {
+                    exit_code.get_or_insert(0);
+                    break;
+                }
+                match resolve_live_pty_read_failure(
+                    &*pty,
+                    &mut session_policy,
+                    "PTY read pump terminated unexpectedly while child is running",
+                    "failed to poll PTY after read pump disconnect",
+                ) {
+                    Ok(PtyReadFailureResolution::ChildExited(code)) => exit_code = Some(code),
+                    Err(policy_error) => fatal_error = Some(policy_error),
                 }
                 break;
             }
@@ -311,56 +259,55 @@ pub fn run_interactive_pty(
 
         match terminal_event {
             Event::Key(key_event) if is_press_like(key_event.kind) => {
-                if is_local_shutdown_key(key_event) {
+                if is_local_shutdown_key_crossterm(key_event) {
                     requested_local_exit = true;
                     break;
                 }
 
-                if is_runtime_palette_shortcut(key_event) {
-                    palette_open = !palette_open;
-                    if palette_open {
-                        write_runtime_palette_line(RUNTIME_PALETTE_HELP_LINE);
-                    } else {
-                        write_runtime_palette_line(RUNTIME_PALETTE_CLOSED_LINE);
+                if is_runtime_palette_shortcut_crossterm(key_event) {
+                    let decision = toggle_runtime_palette(palette_open);
+                    palette_open = decision.next_open;
+                    if let Some(notice) = decision.notice {
+                        write_runtime_palette_line(&notice);
                     }
                     continue;
                 }
 
                 if palette_open {
-                    if let Some(action) =
-                        runtime_palette_action_for_key_event(key_event, settings.state().debug_mode)
-                    {
-                        match action {
-                            RuntimePaletteAction::Close => {
-                                palette_open = false;
-                                write_runtime_palette_line(RUNTIME_PALETTE_CLOSED_LINE);
-                            }
-                            RuntimePaletteAction::ShowInfo => {
-                                let info_line = runtime_palette_info_line(&settings, active_mode);
-                                write_runtime_palette_line(&info_line);
-                            }
-                            RuntimePaletteAction::ApplyCommand(input) => {
-                                let dispatch =
-                                    dispatch_runtime_palette_command(&mut settings, input);
-                                if let Some(updated_mode) = dispatch.updated_mode {
-                                    active_mode = updated_mode;
-                                    poll_controller =
-                                        EventPollController::from_config(TtyRuntimeConfig {
-                                            initial_mode: active_mode,
-                                            refresh_rate_millihz: runtime_config
-                                                .refresh_rate_millihz,
-                                            window_count: runtime_config.window_count,
-                                        });
-                                }
-                                palette_open = false;
-                                write_runtime_palette_line(&dispatch.message);
-                            }
+                    let diagnostics_enabled = settings.state().debug_mode;
+                    let decision = handle_runtime_palette_key_input(
+                        palette_open,
+                        runtime_key_event_from_crossterm(key_event).map(|event| event.key),
+                        &mut settings,
+                        RuntimePaletteView {
+                            mode: active_mode,
+                            diagnostics_enabled,
+                            active_render_path: None,
+                        },
+                    );
+                    palette_open = decision.next_open;
+
+                    if let Some(dispatch) = decision.dispatch {
+                        if let Some(updated_mode) = dispatch.updated_mode {
+                            active_mode = updated_mode;
+                            poll_controller = EventPollController::from_config(TtyRuntimeConfig {
+                                initial_mode: active_mode,
+                                refresh_rate_millihz: runtime_config.refresh_rate_millihz,
+                                window_count: runtime_config.window_count,
+                            });
                         }
+                        if let Some(notice) = decision.notice {
+                            write_runtime_palette_line(&notice);
+                        } else {
+                            write_runtime_palette_line(&dispatch.message);
+                        }
+                    } else if let Some(notice) = decision.notice {
+                        write_runtime_palette_line(&notice);
                     }
                     continue;
                 }
 
-                if let Some(bytes) = encode_key_event(key_event) {
+                if let Some(bytes) = encode_crossterm_key_event(key_event) {
                     if let Err(error) = write_all_and_flush(&mut *writer, &bytes) {
                         match handle_pty_io_failure(
                             &mut session_policy,
@@ -428,7 +375,14 @@ pub fn run_interactive_pty(
             .context("failed while waiting for PTY child exit")
         {
             Ok(code) => exit_code = Some(code),
-            Err(error) => fatal_error = Some(error),
+            Err(error) => {
+                let detail = format!("failed while waiting for PTY child exit: {error}");
+                fatal_error = Some(fatal_pty_boundary_failure(
+                    &mut session_policy,
+                    SessionBoundary::PtyWait,
+                    &detail,
+                ));
+            }
         }
     }
 
@@ -460,848 +414,5 @@ pub fn run_interactive_pty(
     Ok(exit_code.unwrap_or(0))
 }
 
-fn ensure_tty_stdio_is_terminal() -> Result<()> {
-    let stdin_is_terminal = io::stdin().is_terminal();
-    let stdout_is_terminal = io::stdout().is_terminal();
-    if stdin_is_terminal && stdout_is_terminal {
-        return Ok(());
-    }
-
-    Err(anyhow!(tty_stdio_requirement_message(
-        stdin_is_terminal,
-        stdout_is_terminal
-    )))
-}
-
-fn tty_stdio_requirement_message(stdin_is_terminal: bool, stdout_is_terminal: bool) -> String {
-    format!(
-        "TTY interactive runtime requires terminal stdin/stdout (stdin_is_terminal={} stdout_is_terminal={})",
-        stdin_is_terminal, stdout_is_terminal,
-    )
-}
-
-fn handle_terminal_event_disconnect(
-    pty: &dyn PtyIo,
-    exit_code: &mut Option<i32>,
-    requested_local_exit: &mut bool,
-    context: &'static str,
-) -> Result<()> {
-    match pty
-        .try_wait()
-        .context(format!("failed to poll PTY after {context}"))?
-    {
-        Some(code) => {
-            *exit_code = Some(code);
-            Ok(())
-        }
-        None => {
-            warn!(
-                disconnect_context = context,
-                "terminal input stream disconnected while PTY child is still running; closing PTY"
-            );
-            pty.close()
-                .context(format!("failed to close PTY after {context}"))?;
-            *requested_local_exit = true;
-            exit_code.get_or_insert(0);
-            Ok(())
-        }
-    }
-}
-
-fn handle_pty_io_failure(
-    session_policy: &mut SessionController,
-    pty: &dyn PtyIo,
-    boundary: SessionBoundary,
-    error: io::Error,
-    error_context: &'static str,
-) -> Result<Option<i32>> {
-    if is_disconnect_error(&error)
-        && let Some(code) = pty
-            .try_wait()
-            .context("failed to poll PTY after disconnecting I/O failure")?
-    {
-        info!(
-            boundary = session_boundary_token(boundary),
-            code, "PTY child already exited after disconnecting I/O failure"
-        );
-        return Ok(Some(code));
-    }
-
-    let detail = format!("{error_context}: {error}");
-    handle_pty_boundary_failure(session_policy, boundary, &detail).map(|_| None)
-}
-
-fn handle_pty_boundary_failure(
-    session_policy: &mut SessionController,
-    boundary: SessionBoundary,
-    detail: &str,
-) -> Result<()> {
-    match classify_pty_boundary_failure(session_policy, boundary)? {
-        PtyBoundaryPolicyDecision::Continue {
-            attempt,
-            remaining_budget,
-        } => {
-            warn!(
-                boundary = session_boundary_token(boundary),
-                attempt,
-                remaining_budget,
-                state = session_policy.state().as_str(),
-                detail,
-                "recoverable PTY boundary failure in TTY runtime; continuing in degraded mode"
-            );
-            write_runtime_boundary_line(boundary, attempt, remaining_budget, detail);
-            Ok(())
-        }
-        PtyBoundaryPolicyDecision::Fatal { reason } => Err(anyhow!(
-            "fatal PTY boundary failure boundary={} reason={} detail={detail}",
-            session_boundary_token(boundary),
-            fatal_boundary_reason_token(reason),
-        )),
-    }
-}
-
-fn mark_pty_boundary_recovered(
-    session_policy: &mut SessionController,
-    boundary: SessionBoundary,
-) -> Result<()> {
-    if session_policy.state() != SessionState::Degraded {
-        return Ok(());
-    }
-
-    let transition = session_policy.mark_running().map_err(|error| {
-        anyhow!(
-            "failed to mark PTY boundary recovery boundary={}: {error}",
-            session_boundary_token(boundary),
-        )
-    })?;
-
-    info!(
-        boundary = session_boundary_token(boundary),
-        from = transition.from.as_str(),
-        to = transition.to.as_str(),
-        "PTY boundary recovered; TTY runtime returned to running state"
-    );
-    write_runtime_boundary_recovered_line(boundary);
-    Ok(())
-}
-
-fn ensure_single_window(window_count: u8) -> Result<()> {
-    if window_count != SINGLE_WINDOW_BASELINE {
-        return Err(anyhow!(
-            "tty runtime requires single-window mode; required_window_count={SINGLE_WINDOW_BASELINE} requested_window_count={window_count}"
-        ));
-    }
-    Ok(())
-}
-
-fn derive_poll_timeouts(
-    initial_mode: RenderMode,
-    refresh_rate_millihz: u32,
-) -> (Duration, Duration) {
-    let frame_budget_millis = frame_budget_millis(refresh_rate_millihz);
-    let min_timeout_millis = frame_budget_millis
-        .saturating_div(2)
-        .clamp(MIN_EVENT_POLL_TIMEOUT_MILLIS, 16);
-
-    let mode_multiplier: u64 = match initial_mode {
-        RenderMode::Cpu => 12,
-        RenderMode::Gpu => 8,
-        RenderMode::Auto => 10,
-    };
-
-    let max_timeout_millis = frame_budget_millis
-        .saturating_mul(mode_multiplier)
-        .clamp(min_timeout_millis, MAX_EVENT_POLL_TIMEOUT_MILLIS);
-
-    (
-        Duration::from_millis(min_timeout_millis),
-        Duration::from_millis(max_timeout_millis),
-    )
-}
-
-fn frame_budget_millis(refresh_rate_millihz: u32) -> u64 {
-    let sanitized_refresh_rate = match refresh_rate_millihz {
-        0 => DEFAULT_REFRESH_RATE_MILLIHZ,
-        value => value,
-    };
-
-    let frame_nanos = 1_000_000_000_000_u64 / u64::from(sanitized_refresh_rate);
-    let rounded_up_millis = frame_nanos.div_ceil(1_000_000);
-    rounded_up_millis.max(1)
-}
-
-fn current_pty_size() -> PtySize {
-    match terminal::size() {
-        Ok((cols, rows)) => PtySize {
-            cols,
-            rows,
-            pixel_width: 0,
-            pixel_height: 0,
-        },
-        Err(error) => {
-            warn!(?error, "failed to read terminal size; using 80x24 default");
-            PtySize {
-                cols: DEFAULT_COLS,
-                rows: DEFAULT_ROWS,
-                pixel_width: 0,
-                pixel_height: 0,
-            }
-        }
-    }
-}
-
-fn is_stdout_disconnect_error(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        ErrorKind::BrokenPipe | ErrorKind::NotConnected
-    )
-}
-
-fn spawn_read_pump(mut reader: Box<dyn Read + Send>) -> (JoinHandle<()>, Receiver<String>) {
-    let (failure_tx, failure_rx) = mpsc::channel::<String>();
-    let handle = thread::spawn(move || {
-        let mut stdout = BufWriter::with_capacity(READ_PUMP_FLUSH_MAX_BYTES * 2, io::stdout());
-        let mut buffer = [0_u8; 65536];
-        let mut buffered_bytes = 0usize;
-        let mut last_flush = Instant::now();
-
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read_bytes) => {
-                    let chunk = &buffer[..read_bytes];
-                    if let Err(error) = stdout.write_all(chunk) {
-                        if is_stdout_disconnect_error(&error) {
-                            let _ =
-                                failure_tx.send(READ_PUMP_SIGNAL_STDOUT_DISCONNECTED.to_owned());
-                            break;
-                        }
-                        let _ = failure_tx.send("failed to write PTY chunk to stdout".to_owned());
-                        break;
-                    }
-                    buffered_bytes = buffered_bytes.saturating_add(read_bytes);
-
-                    let should_flush =
-                        should_flush_read_pump(chunk, buffered_bytes, last_flush.elapsed());
-                    if should_flush && let Err(error) = stdout.flush() {
-                        if is_stdout_disconnect_error(&error) {
-                            let _ =
-                                failure_tx.send(READ_PUMP_SIGNAL_STDOUT_DISCONNECTED.to_owned());
-                            break;
-                        }
-                        let _ = failure_tx.send("failed to flush PTY chunk to stdout".to_owned());
-                        break;
-                    }
-                    if should_flush {
-                        buffered_bytes = 0;
-                        last_flush = Instant::now();
-                    }
-                }
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    let _ = failure_tx.send(format!("PTY read error: {error}"));
-                    break;
-                }
-            }
-        }
-
-        let _ = stdout.flush();
-    });
-    (handle, failure_rx)
-}
-
-fn join_thread_with_timeout(
-    handle: JoinHandle<()>,
-    timeout: Duration,
-    poll_interval: Duration,
-    thread_label: &'static str,
-) -> JoinThreadOutcome {
-    let poll_interval = poll_interval.max(Duration::from_millis(1));
-    let deadline = Instant::now() + timeout;
-    while !handle.is_finished() && Instant::now() < deadline {
-        thread::sleep(poll_interval);
-    }
-
-    if handle.is_finished() {
-        return match handle.join() {
-            Ok(()) => JoinThreadOutcome::Joined,
-            Err(join_error) => {
-                warn!(?join_error, thread_label, "TTY shutdown thread join failed");
-                JoinThreadOutcome::Panicked
-            }
-        };
-    }
-
-    // One final immediate check reduces false timeout logs in the race window
-    // where the worker finishes right after the bounded polling loop exits.
-    if handle.is_finished() {
-        return match handle.join() {
-            Ok(()) => JoinThreadOutcome::Joined,
-            Err(join_error) => {
-                warn!(?join_error, thread_label, "TTY shutdown thread join failed");
-                JoinThreadOutcome::Panicked
-            }
-        };
-    }
-
-    JoinThreadOutcome::TimedOut
-}
-
-fn should_flush_read_pump(chunk: &[u8], buffered_bytes: usize, elapsed: Duration) -> bool {
-    chunk.contains(&b'\n')
-        || chunk.contains(&b'\r')
-        || buffered_bytes >= READ_PUMP_FLUSH_MAX_BYTES
-        || elapsed >= READ_PUMP_FLUSH_INTERVAL
-}
-
-fn is_press_like(kind: KeyEventKind) -> bool {
-    matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
-}
-
-fn write_runtime_palette_line(line: &str) {
-    let mut stdout = io::stdout();
-    let mut payload = String::from("\r\n");
-    payload.push_str(line);
-    payload.push_str("\r\n");
-    if let Err(error) = write_all_and_flush(&mut stdout, payload.as_bytes()) {
-        warn!(error = %error, "failed to write runtime palette output");
-    }
-}
-
-fn write_runtime_boundary_line(
-    boundary: SessionBoundary,
-    attempt: u8,
-    remaining_budget: u8,
-    detail: &str,
-) {
-    write_runtime_palette_line(&format!(
-        "[runtime] recoverable pty-boundary={} attempt={} remaining-budget={} detail={detail}",
-        session_boundary_token(boundary),
-        attempt,
-        remaining_budget,
-    ));
-}
-
-fn write_runtime_boundary_recovered_line(boundary: SessionBoundary) {
-    write_runtime_palette_line(&format!(
-        "[runtime] recovered pty-boundary={}",
-        session_boundary_token(boundary)
-    ));
-}
-
-fn is_runtime_palette_shortcut(key_event: KeyEvent) -> bool {
-    if !key_event.modifiers.contains(KeyModifiers::SHIFT) {
-        return false;
-    }
-    if !(key_event.modifiers.contains(KeyModifiers::CONTROL)
-        || key_event.modifiers.contains(KeyModifiers::SUPER))
-    {
-        return false;
-    }
-
-    matches!(key_event.code, KeyCode::Char('p') | KeyCode::Char('P'))
-}
-
-fn runtime_palette_action_for_key_event(
-    key_event: KeyEvent,
-    diagnostics_enabled: bool,
-) -> Option<RuntimePaletteAction> {
-    match key_event.code {
-        KeyCode::Esc => Some(RuntimePaletteAction::Close),
-        KeyCode::Char('1') => Some(RuntimePaletteAction::ApplyCommand("mode cpu")),
-        KeyCode::Char('2') => Some(RuntimePaletteAction::ApplyCommand("mode gpu")),
-        KeyCode::Char('3') => Some(RuntimePaletteAction::ApplyCommand("mode auto")),
-        KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&'d') => {
-            if diagnostics_enabled {
-                Some(RuntimePaletteAction::ApplyCommand("debug off"))
-            } else {
-                Some(RuntimePaletteAction::ApplyCommand("debug on"))
-            }
-        }
-        KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&'i') => Some(RuntimePaletteAction::ShowInfo),
-        _ => None,
-    }
-}
-
-fn dispatch_runtime_palette_command(
-    settings: &mut SettingsService,
-    input: &str,
-) -> RuntimePaletteDispatchResult {
-    match settings.apply_palette_command(input) {
-        SettingsPaletteApplyOutcome::Applied {
-            command, current, ..
-        } => runtime_palette_dispatch_result(command, current.mode, current.debug_mode),
-        SettingsPaletteApplyOutcome::Noop { command, state, .. } => {
-            runtime_palette_dispatch_result(command, state.mode, state.debug_mode)
-        }
-        SettingsPaletteApplyOutcome::Rejected { reason, .. } => {
-            warn!(?reason, input = input, "runtime palette command rejected");
-            RuntimePaletteDispatchResult {
-                message: format!("[palette] rejected input={input} reason={reason:?}"),
-                updated_mode: None,
-            }
-        }
-    }
-}
-
-fn runtime_palette_dispatch_result(
-    command: SettingsCommand,
-    mode: RenderMode,
-    diagnostics_enabled: bool,
-) -> RuntimePaletteDispatchResult {
-    match command {
-        SettingsCommand::SetMode(_) => RuntimePaletteDispatchResult {
-            message: format!(
-                "[palette] mode={} diagnostics={}",
-                render_mode_token(mode),
-                on_off_token(diagnostics_enabled),
-            ),
-            updated_mode: Some(mode),
-        },
-        SettingsCommand::SetDebugMode(_) => RuntimePaletteDispatchResult {
-            message: format!(
-                "[palette] diagnostics={} mode={}",
-                on_off_token(diagnostics_enabled),
-                render_mode_token(mode),
-            ),
-            updated_mode: None,
-        },
-        SettingsCommand::SetShellTarget(_)
-        | SettingsCommand::SetShellAutoInit(_)
-        | SettingsCommand::SetRenderCadencePolicy(_)
-        | SettingsCommand::SetTheme(_)
-        | SettingsCommand::SetRuntimeProfile(_) => RuntimePaletteDispatchResult {
-            message: format!("[palette] saved (restart required) input={command:?}"),
-            updated_mode: None,
-        },
-    }
-}
-
-fn runtime_palette_info_line(settings: &SettingsService, active_mode: RenderMode) -> String {
-    format!(
-        "[palette] info mode={} diagnostics={}",
-        render_mode_token(active_mode),
-        on_off_token(settings.state().debug_mode),
-    )
-}
-
-fn is_local_shutdown_key(key_event: KeyEvent) -> bool {
-    key_event.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key_event.code, KeyCode::Char('q') | KeyCode::Char('Q'))
-}
-
-fn encode_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
-    let mods = key_event.modifiers;
-    let mod_param = xterm_modifier_param(
-        mods.contains(KeyModifiers::SHIFT),
-        mods.contains(KeyModifiers::ALT),
-        mods.contains(KeyModifiers::CONTROL),
-    );
-    let has_mod = mod_param > 1;
-
-    match key_event.code {
-        KeyCode::Enter => Some(vec![b'\r']),
-        KeyCode::Backspace if mods.contains(KeyModifiers::ALT) => Some(b"\x1b\x7f".to_vec()),
-        KeyCode::Backspace => Some(vec![0x7f]),
-        KeyCode::BackTab => Some(b"\x1b[Z".to_vec()),
-        KeyCode::Tab => Some(vec![b'\t']),
-        KeyCode::Esc => Some(vec![0x1b]),
-        KeyCode::Up => Some(csi_modified(b'A', mod_param, has_mod)),
-        KeyCode::Down => Some(csi_modified(b'B', mod_param, has_mod)),
-        KeyCode::Right => Some(csi_modified(b'C', mod_param, has_mod)),
-        KeyCode::Left => Some(csi_modified(b'D', mod_param, has_mod)),
-        KeyCode::Home => Some(csi_modified(b'H', mod_param, has_mod)),
-        KeyCode::End => Some(csi_modified(b'F', mod_param, has_mod)),
-        KeyCode::Delete => Some(tilde_modified(3, mod_param, has_mod)),
-        KeyCode::Insert => Some(tilde_modified(2, mod_param, has_mod)),
-        KeyCode::PageUp => Some(tilde_modified(5, mod_param, has_mod)),
-        KeyCode::PageDown => Some(tilde_modified(6, mod_param, has_mod)),
-        KeyCode::F(1) => Some(fkey_ss3_modified(b'P', mod_param, has_mod)),
-        KeyCode::F(2) => Some(fkey_ss3_modified(b'Q', mod_param, has_mod)),
-        KeyCode::F(3) => Some(fkey_ss3_modified(b'R', mod_param, has_mod)),
-        KeyCode::F(4) => Some(fkey_ss3_modified(b'S', mod_param, has_mod)),
-        KeyCode::F(5) => Some(tilde_modified(15, mod_param, has_mod)),
-        KeyCode::F(6) => Some(tilde_modified(17, mod_param, has_mod)),
-        KeyCode::F(7) => Some(tilde_modified(18, mod_param, has_mod)),
-        KeyCode::F(8) => Some(tilde_modified(19, mod_param, has_mod)),
-        KeyCode::F(9) => Some(tilde_modified(20, mod_param, has_mod)),
-        KeyCode::F(10) => Some(tilde_modified(21, mod_param, has_mod)),
-        KeyCode::F(11) => Some(tilde_modified(23, mod_param, has_mod)),
-        KeyCode::F(12) => Some(tilde_modified(24, mod_param, has_mod)),
-        KeyCode::Char(ch) if mods.contains(KeyModifiers::CONTROL) => {
-            encode_ctrl_letter(ch).map(|code| vec![code])
-        }
-        KeyCode::Char(ch) if mods.contains(KeyModifiers::ALT) => {
-            let mut b = vec![0x1b];
-            b.extend_from_slice(ch.to_string().as_bytes());
-            Some(b)
-        }
-        KeyCode::Char(ch) => Some(ch.to_string().into_bytes()),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::{
-        JoinThreadOutcome, PtyBoundaryPolicyDecision, READ_PUMP_FLUSH_INTERVAL,
-        READ_PUMP_FLUSH_MAX_BYTES, classify_pty_boundary_failure, derive_poll_timeouts,
-        dispatch_runtime_palette_command, encode_key_event, ensure_single_window,
-        frame_budget_millis, is_runtime_palette_shortcut, is_stdout_disconnect_error,
-        join_thread_with_timeout, should_flush_read_pump, tty_stdio_requirement_message,
-    };
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rldyourterm_services::render_mode::RenderMode;
-    use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
-    use rldyourterm_settings::SettingsService;
-    use std::{io, thread, time::Duration};
-
-    #[test]
-    fn encodes_basic_control_keys() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(vec![b'\r'])
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
-            Some(vec![0x7f])
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-            Some(vec![b'\t'])
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-            Some(vec![0x1b])
-        );
-    }
-
-    #[test]
-    fn encodes_navigation_keys() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-            Some(b"\x1b[A".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-            Some(b"\x1b[B".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
-            Some(b"\x1b[C".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
-            Some(b"\x1b[D".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
-            Some(b"\x1b[H".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
-            Some(b"\x1b[F".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
-            Some(b"\x1b[3~".to_vec())
-        );
-    }
-
-    #[test]
-    fn key_event_uses_ctrl_letter_encoding() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-            Some(vec![0x03])
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(
-                KeyCode::Char('Q'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT
-            )),
-            Some(vec![0x11])
-        );
-    }
-
-    #[test]
-    fn enforces_single_window_invariant() {
-        assert!(ensure_single_window(1).is_ok());
-
-        let error = ensure_single_window(2).expect_err("window_count=2 must fail");
-        assert!(error.to_string().contains("single-window mode"));
-    }
-
-    #[test]
-    fn derives_adaptive_poll_timeouts_from_runtime_hints() {
-        let (gpu_min, gpu_max) = derive_poll_timeouts(RenderMode::Gpu, 144_000);
-        let (cpu_min, cpu_max) = derive_poll_timeouts(RenderMode::Cpu, 60_000);
-
-        assert!(gpu_min <= cpu_min);
-        assert!(gpu_max < cpu_max);
-        assert!(gpu_min <= gpu_max);
-        assert!(cpu_min <= cpu_max);
-    }
-
-    #[test]
-    fn falls_back_to_default_refresh_for_zero_hint() {
-        assert_eq!(frame_budget_millis(0), frame_budget_millis(60_000));
-    }
-
-    #[test]
-    fn detects_palette_shortcut_with_ctrl_or_super_shift_p() {
-        assert!(is_runtime_palette_shortcut(KeyEvent::new(
-            KeyCode::Char('P'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT
-        )));
-        assert!(is_runtime_palette_shortcut(KeyEvent::new(
-            KeyCode::Char('P'),
-            KeyModifiers::SUPER | KeyModifiers::SHIFT
-        )));
-        assert!(!is_runtime_palette_shortcut(KeyEvent::new(
-            KeyCode::Char('p'),
-            KeyModifiers::CONTROL
-        )));
-    }
-
-    #[test]
-    fn palette_dispatch_updates_mode_state() {
-        let mut settings = SettingsService::default();
-
-        let result = dispatch_runtime_palette_command(&mut settings, "mode gpu");
-
-        assert_eq!(result.updated_mode, Some(RenderMode::Gpu));
-        assert_eq!(settings.state().mode, RenderMode::Gpu);
-        assert!(result.message.contains("mode=gpu"));
-    }
-
-    #[test]
-    fn palette_dispatch_toggles_diagnostics_state() {
-        let mut settings = SettingsService::default();
-
-        let on_result = dispatch_runtime_palette_command(&mut settings, "debug on");
-        assert!(settings.state().debug_mode);
-        assert!(on_result.message.contains("diagnostics=on"));
-
-        let off_result = dispatch_runtime_palette_command(&mut settings, "debug off");
-        assert!(!settings.state().debug_mode);
-        assert!(off_result.message.contains("diagnostics=off"));
-    }
-
-    #[test]
-    fn pty_write_boundary_policy_stays_recoverable_with_remaining_budget() {
-        let mut session_policy = SessionController::with_recoverable_budget(2);
-        session_policy
-            .mark_running()
-            .expect("session should enter running state");
-
-        let decision =
-            classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
-                .expect("recoverable write boundary should classify");
-
-        assert_eq!(
-            decision,
-            PtyBoundaryPolicyDecision::Continue {
-                attempt: 1,
-                remaining_budget: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn pty_write_boundary_policy_escalates_after_budget_exhaustion() {
-        let mut session_policy = SessionController::with_recoverable_budget(1);
-        session_policy
-            .mark_running()
-            .expect("session should enter running state");
-
-        let first = classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
-            .expect("first write boundary should stay recoverable");
-        assert_eq!(
-            first,
-            PtyBoundaryPolicyDecision::Continue {
-                attempt: 1,
-                remaining_budget: 0,
-            }
-        );
-
-        let second = classify_pty_boundary_failure(&mut session_policy, SessionBoundary::PtyWrite)
-            .expect("second write boundary should escalate after budget exhaustion");
-        assert_eq!(
-            second,
-            PtyBoundaryPolicyDecision::Fatal {
-                reason: FatalBoundaryReason::RecoverableBudgetExhausted,
-            }
-        );
-    }
-
-    #[test]
-    fn encodes_ctrl_arrow_keys() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
-            Some(b"\x1b[1;5D".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
-            Some(b"\x1b[1;5C".to_vec())
-        );
-    }
-
-    #[test]
-    fn encodes_shift_arrow_keys() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)),
-            Some(b"\x1b[1;2A".to_vec())
-        );
-    }
-
-    #[test]
-    fn encodes_alt_arrow_keys() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
-            Some(b"\x1b[1;3D".to_vec())
-        );
-    }
-
-    #[test]
-    fn encodes_f_keys_and_nav_keys() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
-            Some(b"\x1bOP".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE)),
-            Some(b"\x1b[15~".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)),
-            Some(b"\x1b[2~".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
-            Some(b"\x1b[5~".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
-            Some(b"\x1b[6~".to_vec())
-        );
-    }
-
-    #[test]
-    fn encodes_backtab_and_alt_backspace() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
-            Some(b"\x1b[Z".to_vec())
-        );
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT)),
-            Some(b"\x1b\x7f".to_vec())
-        );
-    }
-
-    #[test]
-    fn encodes_alt_char_with_esc_prefix() {
-        assert_eq!(
-            encode_key_event(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT)),
-            Some(b"\x1bf".to_vec())
-        );
-    }
-
-    #[test]
-    fn join_thread_with_timeout_returns_joined_for_finished_thread() {
-        let handle = thread::spawn(|| {});
-        let outcome = join_thread_with_timeout(
-            handle,
-            Duration::from_millis(100),
-            Duration::from_millis(1),
-            "test_joined",
-        );
-        assert_eq!(outcome, JoinThreadOutcome::Joined);
-    }
-
-    #[test]
-    fn join_thread_with_timeout_returns_timed_out_for_busy_thread() {
-        let handle = thread::spawn(|| thread::sleep(Duration::from_millis(50)));
-        let outcome = join_thread_with_timeout(
-            handle,
-            Duration::from_millis(1),
-            Duration::from_millis(1),
-            "test_timeout",
-        );
-        assert_eq!(outcome, JoinThreadOutcome::TimedOut);
-        thread::sleep(Duration::from_millis(60));
-    }
-
-    #[test]
-    fn join_thread_with_timeout_detects_panicking_thread() {
-        let handle = thread::spawn(|| panic!("panic for test"));
-        let outcome = join_thread_with_timeout(
-            handle,
-            Duration::from_millis(100),
-            Duration::from_millis(1),
-            "test_panic",
-        );
-        assert_eq!(outcome, JoinThreadOutcome::Panicked);
-    }
-
-    #[test]
-    fn read_pump_flushes_on_line_terminator() {
-        assert!(should_flush_read_pump(
-            b"prompt line\n",
-            1,
-            Duration::from_millis(0)
-        ));
-        assert!(should_flush_read_pump(
-            b"\rprogress update",
-            1,
-            Duration::from_millis(0)
-        ));
-    }
-
-    #[test]
-    fn read_pump_flushes_on_buffer_or_latency_budget() {
-        assert!(should_flush_read_pump(
-            b"chunk",
-            READ_PUMP_FLUSH_MAX_BYTES,
-            Duration::from_millis(0)
-        ));
-        assert!(should_flush_read_pump(
-            b"chunk",
-            1,
-            READ_PUMP_FLUSH_INTERVAL
-        ));
-    }
-
-    #[test]
-    fn read_pump_keeps_short_chunks_buffered_between_budget_limits() {
-        assert!(!should_flush_read_pump(
-            b"chunk",
-            READ_PUMP_FLUSH_MAX_BYTES - 1,
-            READ_PUMP_FLUSH_INTERVAL
-                .checked_sub(Duration::from_millis(1))
-                .expect("flush interval is non-zero"),
-        ));
-    }
-
-    #[test]
-    fn stdout_disconnect_classifier_recognizes_pipe_close_errors() {
-        assert!(is_stdout_disconnect_error(&io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "broken pipe"
-        )));
-        assert!(is_stdout_disconnect_error(&io::Error::new(
-            io::ErrorKind::NotConnected,
-            "not connected"
-        )));
-        assert!(!is_stdout_disconnect_error(&io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "permission denied"
-        )));
-    }
-
-    #[test]
-    fn tty_stdio_requirement_message_reports_both_stream_flags() {
-        let detail = tty_stdio_requirement_message(false, true);
-        assert!(detail.contains("stdin_is_terminal=false"));
-        assert!(detail.contains("stdout_is_terminal=true"));
-    }
-}
+mod tests;

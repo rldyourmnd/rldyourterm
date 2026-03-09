@@ -1,0 +1,233 @@
+use super::*;
+
+impl GuiRuntimeApp {
+    pub(super) fn handle_cursor_moved(
+        &mut self,
+        position: winit::dpi::PhysicalPosition<f64>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let col = (position.x as usize / CELL_WIDTH) as u16;
+        let row = (position.y as usize / CELL_HEIGHT) as u16;
+
+        let grid_cols = self.terminal.grid.width();
+        let grid_rows = self.terminal.grid.height();
+        let col = col.min(grid_cols.saturating_sub(1));
+        let row = row.min(grid_rows.saturating_sub(1));
+
+        let prev_col = self.mouse_cell_col;
+        let prev_row = self.mouse_cell_row;
+        self.mouse_cell_col = col;
+        self.mouse_cell_row = row;
+
+        if col == prev_col && row == prev_row {
+            return;
+        }
+
+        let mouse_mode = self.terminal.mouse_mode();
+        match mouse_mode {
+            MouseMode::AnyEvent => {
+                let button_code = if self.mouse_buttons == 0 {
+                    35 // no button, motion only
+                } else {
+                    mouse_button_code(self.mouse_buttons) + 32
+                };
+                let encoded =
+                    encode_mouse_event(self.terminal.mouse_format(), button_code, col, row, true);
+                let _ =
+                    self.write_pty_payload(&encoded, event_loop, "failed to write mouse motion");
+            }
+            MouseMode::ButtonTrack if self.mouse_buttons != 0 => {
+                let button_code = mouse_button_code(self.mouse_buttons) + 32;
+                let encoded =
+                    encode_mouse_event(self.terminal.mouse_format(), button_code, col, row, true);
+                let _ = self.write_pty_payload(
+                    &encoded,
+                    event_loop,
+                    "failed to write mouse drag motion",
+                );
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn handle_mouse_input(
+        &mut self,
+        state: ElementState,
+        button: winit::event::MouseButton,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let mouse_mode = self.terminal.mouse_mode();
+        if mouse_mode == MouseMode::Off {
+            return;
+        }
+
+        let button_code = match button {
+            winit::event::MouseButton::Left => 0u8,
+            winit::event::MouseButton::Middle => 1,
+            winit::event::MouseButton::Right => 2,
+            _ => return,
+        };
+
+        let is_press = state == ElementState::Pressed;
+        if is_press {
+            self.mouse_buttons |= 1 << button_code;
+        } else {
+            self.mouse_buttons &= !(1 << button_code);
+        }
+
+        let encoded = encode_mouse_event(
+            self.terminal.mouse_format(),
+            button_code,
+            self.mouse_cell_col,
+            self.mouse_cell_row,
+            is_press,
+        );
+        let _ = self.write_pty_payload(&encoded, event_loop, "failed to write mouse button event");
+    }
+
+    pub(super) fn handle_mouse_wheel(
+        &mut self,
+        delta: winit::event::MouseScrollDelta,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let lines = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                if y > 0.0 {
+                    -(y.ceil() as i32)
+                } else {
+                    (-y).ceil() as i32
+                }
+            }
+            winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                let cell_height = CELL_HEIGHT as f64;
+                if pos.y.abs() < cell_height {
+                    return;
+                }
+                -(pos.y / cell_height) as i32
+            }
+        };
+
+        if lines == 0 {
+            return;
+        }
+
+        let mouse_mode = self.terminal.mouse_mode();
+        if mouse_mode == MouseMode::Off {
+            // Scrollback navigation when mouse reporting is off
+            if lines < 0 {
+                let page_size = (-lines) as usize;
+                let max_offset = self.terminal.scrollback.len();
+                self.viewport_offset = (self.viewport_offset + page_size).min(max_offset);
+            } else {
+                let page_size = lines as usize;
+                self.viewport_offset = self.viewport_offset.saturating_sub(page_size);
+            }
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+            return;
+        }
+
+        // Mouse mode active: encode scroll events
+        let button_code: u8 = if lines < 0 { 64 } else { 65 };
+        let count = lines.unsigned_abs();
+        for _ in 0..count.min(10) {
+            let encoded = encode_mouse_event(
+                self.terminal.mouse_format(),
+                button_code,
+                self.mouse_cell_col,
+                self.mouse_cell_row,
+                true,
+            );
+            let _ =
+                self.write_pty_payload(&encoded, event_loop, "failed to write mouse scroll event");
+        }
+    }
+}
+
+fn mouse_button_code(buttons_mask: u8) -> u8 {
+    if buttons_mask & 1 != 0 {
+        0
+    } else if buttons_mask & 2 != 0 {
+        1
+    } else if buttons_mask & 4 != 0 {
+        2
+    } else {
+        0
+    }
+}
+
+fn encode_mouse_event(
+    format: MouseFormat,
+    button_code: u8,
+    col: u16,
+    row: u16,
+    is_press: bool,
+) -> Vec<u8> {
+    match format {
+        MouseFormat::Sgr => {
+            let suffix = if is_press { 'M' } else { 'm' };
+            format!(
+                "\x1b[<{};{};{}{}",
+                button_code,
+                col.saturating_add(1),
+                row.saturating_add(1),
+                suffix
+            )
+            .into_bytes()
+        }
+        MouseFormat::Normal => {
+            let cb = button_code.saturating_add(32);
+            let cx = (col as u8).saturating_add(33);
+            let cy = (row as u8).saturating_add(33);
+            vec![0x1b, b'[', b'M', cb, cx, cy]
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sgr_press_encodes_correctly() {
+        let encoded = encode_mouse_event(MouseFormat::Sgr, 0, 5, 10, true);
+        assert_eq!(encoded, b"\x1b[<0;6;11M");
+    }
+
+    #[test]
+    fn sgr_release_encodes_correctly() {
+        let encoded = encode_mouse_event(MouseFormat::Sgr, 0, 0, 0, false);
+        assert_eq!(encoded, b"\x1b[<0;1;1m");
+    }
+
+    #[test]
+    fn normal_format_encodes_press() {
+        let encoded = encode_mouse_event(MouseFormat::Normal, 0, 0, 0, true);
+        assert_eq!(encoded, vec![0x1b, b'[', b'M', 32, 33, 33]);
+    }
+
+    #[test]
+    fn scroll_up_button_code_is_64() {
+        let encoded = encode_mouse_event(MouseFormat::Sgr, 64, 3, 7, true);
+        assert_eq!(encoded, b"\x1b[<64;4;8M");
+    }
+
+    #[test]
+    fn scroll_down_button_code_is_65() {
+        let encoded = encode_mouse_event(MouseFormat::Sgr, 65, 0, 0, true);
+        assert_eq!(encoded, b"\x1b[<65;1;1M");
+    }
+
+    #[test]
+    fn motion_with_button_held_adds_32() {
+        let encoded = encode_mouse_event(MouseFormat::Sgr, 32, 10, 20, true);
+        assert_eq!(encoded, b"\x1b[<32;11;21M");
+    }
+
+    #[test]
+    fn mouse_button_code_prefers_left() {
+        assert_eq!(mouse_button_code(0b111), 0);
+        assert_eq!(mouse_button_code(0b010), 1);
+        assert_eq!(mouse_button_code(0b100), 2);
+    }
+}

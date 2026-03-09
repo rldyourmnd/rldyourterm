@@ -1,0 +1,24 @@
+[package]
+name = "rldyourterm-terminal-benchmark"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Self-authored canonical benchmark harness for rldyourterm terminal paths"
+publish = false
+
+[[bin]]
+name = "terminal-benchmark"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rldyourterm-font.workspace = true
+rldyourterm-render-cpu.workspace = true
+rldyourterm-services.workspace = true

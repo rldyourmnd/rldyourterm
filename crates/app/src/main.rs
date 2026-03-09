@@ -1,30 +1,26 @@
 use std::{io::IsTerminal, sync::Arc};
 
+use crate::runtime_shared::runtime_config::DEFAULT_REFRESH_RATE_MILLIHZ;
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, ValueEnum};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation_platform::clipboard::PlatformClipboard;
 use rldyourterm_render_cpu::CpuRenderer;
-use rldyourterm_services::TerminalState;
-use rldyourterm_services::render_mode::{
-    ActiveRenderPath, GpuFailureKind, RenderMode, RenderTransitionReason,
-};
-use rldyourterm_services::session::{SessionBoundary, SessionState};
-use rldyourterm_settings::{
-    SettingsApplyOutcome, SettingsCommand, SettingsPaletteApplyOutcome, SettingsService,
-};
+use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
+use rldyourterm_services::session::SessionState;
+use rldyourterm_services::terminal::TerminalState;
+use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_shell_integration::{
     ShellAvailability, ShellLaunchPlan, ShellResolution, ShellResolutionReason, ShellTarget,
     resolve_shell,
 };
 use rldyourterm_ui::{
-    DEFAULT_SCROLLBACK_CAP, ReleaseGovernance, SINGLE_WINDOW_BASELINE, UiBootstrapConfig,
-    UiBootstrapHooks, UiCommandReceipt, UiRuntime, UiRuntimeCommand,
+    DEFAULT_SCROLLBACK_CAP, DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ReleaseGovernance,
+    SINGLE_WINDOW_BASELINE, UiBootstrapConfig, UiBootstrapHooks, UiRuntime,
 };
 use tracing::{info, warn};
 
-const DEFAULT_REFRESH_RATE_MILLIHZ: u32 = 60_000;
 const HIGH_REFRESH_RATE_MILLIHZ: u32 = 144_000;
 const MVP_STEP_LABEL: &str = "MVP_STEP";
 const MVP_RESULT_LABEL: &str = "MVP_RESULT";
@@ -178,33 +174,36 @@ fn run(cli: Cli) -> Result<RunOutcome> {
     let render_mode: RenderMode = cli.mode.into();
     let preferred_shell: ShellTarget = cli.shell.into();
     let selected_shell = resolve_startup_shell(preferred_shell)?;
+    let refresh_rate_millihz = crate::runtime_shared::runtime_config::sanitize_refresh_rate_millihz(
+        cli.refresh_rate_millihz,
+    );
 
     let diagnostics = DiagnosticsSink::default();
     diagnostics.emit_kind(EventKind::SessionStarted, "app bootstrap start");
 
     let mut settings = SettingsService::default();
-    apply_palette_commands(&diagnostics, &mut settings, &cli.palette_command);
+    app_harness::apply_palette_commands(&diagnostics, &mut settings, &cli.palette_command);
     let startup_settings = settings.apply(settings_command_for_mode(render_mode));
-    emit_settings_outcome(&diagnostics, startup_settings);
+    app_harness::emit_settings_outcome(&diagnostics, startup_settings);
 
     if harness_enabled(&cli) {
-        let bootstrap_commands = build_bootstrap_commands(&cli)?;
+        let bootstrap_commands = app_harness::build_bootstrap_commands(&cli)?;
         let hooks = UiBootstrapHooks::from_commands(bootstrap_commands);
 
         let (ui, command_receipts) = UiRuntime::bootstrap_with_hooks(
             UiBootstrapConfig {
                 render_mode,
-                refresh_rate_millihz: cli.refresh_rate_millihz,
+                refresh_rate_millihz,
                 window_count: cli.window_count,
                 scrollback_cap: DEFAULT_SCROLLBACK_CAP,
             },
             &hooks,
         )
         .context("failed to bootstrap UI runtime")?;
-        emit_command_receipts(&diagnostics, &command_receipts);
+        app_harness::emit_command_receipts(&diagnostics, &command_receipts);
 
         let post_hook_settings = settings.apply(settings_command_for_mode(ui.render_mode()));
-        emit_settings_outcome(&diagnostics, post_hook_settings);
+        app_harness::emit_settings_outcome(&diagnostics, post_hook_settings);
 
         let cpu_renderer = CpuRenderer::default();
         render_initial_frame(&ui, &cpu_renderer);
@@ -228,8 +227,8 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             "startup flow completed"
         );
 
-        if should_print_mvp_output(&cli) {
-            print_mvp_output(&cli, &command_receipts, &ui, selected_shell.resolved);
+        if app_harness::should_print_mvp_output(&cli) {
+            app_harness::print_mvp_output(&cli, &command_receipts, &ui, selected_shell.resolved);
         }
 
         diagnostics.emit_kind(EventKind::SessionEnded, "app bootstrap ready");
@@ -241,7 +240,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
     let tty_stdio_snapshot = TtyStdioSnapshot::capture();
     let tty_runtime_config = pty_runtime::TtyRuntimeConfig {
         initial_mode: render_mode,
-        refresh_rate_millihz: cli.refresh_rate_millihz,
+        refresh_rate_millihz,
         window_count: cli.window_count,
     };
     let exit_code = if cli.tty {
@@ -260,7 +259,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             &launch_plan.executable,
             &launch_plan.args,
             render_mode,
-            cli.refresh_rate_millihz,
+            refresh_rate_millihz,
             cli.window_count,
             clipboard,
         ) {
@@ -338,7 +337,7 @@ fn shell_availability() -> ShellAvailability {
 fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer) {
     match ui.active_render_path() {
         ActiveRenderPath::Cpu => {
-            let placeholder = TerminalState::new(120, 30, 1);
+            let placeholder = TerminalState::new(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, 1);
             let _ = cpu_renderer.render_full(&placeholder);
         }
         ActiveRenderPath::Gpu => {
@@ -365,478 +364,9 @@ fn emit_shell_fallback_if_needed(diagnostics: &DiagnosticsSink, reason: ShellRes
     }
 }
 
-fn build_bootstrap_commands(cli: &Cli) -> Result<Vec<UiRuntimeCommand>> {
-    let mut commands = vec![UiRuntimeCommand::AssertSingleWindow {
-        requested: cli.window_count,
-    }];
-    commands.extend(default_profile_commands(cli.mvp_profile));
-
-    for raw in &cli.mvp_command {
-        commands.push(parse_mvp_command(raw)?);
-    }
-
-    if commands.len() == 1 {
-        commands.push(UiRuntimeCommand::Tick);
-    }
-
-    if cli.mvp_repeat > 1 {
-        let repeatable = commands
-            .iter()
-            .copied()
-            .filter(|command| !matches!(command, UiRuntimeCommand::AssertSingleWindow { .. }))
-            .collect::<Vec<_>>();
-
-        for _ in 1..cli.mvp_repeat {
-            commands.extend(repeatable.iter().copied());
-        }
-    }
-
-    Ok(commands)
-}
-
-fn default_profile_commands(profile: Option<MvpProfileArg>) -> Vec<UiRuntimeCommand> {
-    let mut commands = match profile {
-        Some(MvpProfileArg::Claude) => vec![
-            UiRuntimeCommand::Tick,
-            UiRuntimeCommand::SetRenderMode(RenderMode::Auto),
-            UiRuntimeCommand::RecoverableBoundary(SessionBoundary::PtyRead),
-            UiRuntimeCommand::Tick,
-            UiRuntimeCommand::ResyncCadence {
-                refresh_rate_millihz: DEFAULT_REFRESH_RATE_MILLIHZ,
-            },
-        ],
-        Some(MvpProfileArg::Codex) => vec![
-            UiRuntimeCommand::Tick,
-            UiRuntimeCommand::SetRenderMode(RenderMode::Auto),
-            UiRuntimeCommand::GpuFailure {
-                kind: GpuFailureKind::SurfaceError,
-                observed_at_millis: 1_000,
-            },
-            UiRuntimeCommand::GpuFailure {
-                kind: GpuFailureKind::SubmitError,
-                observed_at_millis: 1_500,
-            },
-            UiRuntimeCommand::GpuFailure {
-                kind: GpuFailureKind::SwapchainOutOfDate,
-                observed_at_millis: 2_000,
-            },
-            UiRuntimeCommand::Tick,
-        ],
-        Some(MvpProfileArg::Gemini) => vec![
-            UiRuntimeCommand::Tick,
-            UiRuntimeCommand::SetRenderMode(RenderMode::Auto),
-            UiRuntimeCommand::ResyncCadenceAfterTransfer {
-                refresh_rate_millihz: HIGH_REFRESH_RATE_MILLIHZ,
-            },
-            UiRuntimeCommand::ResyncCadenceAfterTransfer {
-                refresh_rate_millihz: DEFAULT_REFRESH_RATE_MILLIHZ,
-            },
-        ],
-        None => Vec::new(),
-    };
-
-    if !commands.is_empty() {
-        commands.push(UiRuntimeCommand::AssertSingleWindow {
-            requested: SINGLE_WINDOW_BASELINE,
-        });
-    }
-
-    commands
-}
-
-fn parse_mvp_command(raw: &str) -> Result<UiRuntimeCommand> {
-    let normalized = raw.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return Err(anyhow!("empty --mvp-command entry"));
-    }
-
-    match normalized.as_str() {
-        "tick" => return Ok(UiRuntimeCommand::Tick),
-        "stop" => return Ok(UiRuntimeCommand::RequestStop),
-        "stopped" => return Ok(UiRuntimeCommand::MarkStopped),
-        "gpu-frame-ok" => return Ok(UiRuntimeCommand::GpuFramePresented),
-        "single-window" => {
-            return Ok(UiRuntimeCommand::AssertSingleWindow {
-                requested: SINGLE_WINDOW_BASELINE,
-            });
-        }
-        _ => {}
-    }
-
-    if let Some(value) = normalized.strip_prefix("single-window:") {
-        let requested = value
-            .parse::<u8>()
-            .context("invalid single-window command: expected single-window:<window-count>")?;
-        return Ok(UiRuntimeCommand::AssertSingleWindow { requested });
-    }
-    if let Some(value) = normalized.strip_prefix("mode:") {
-        return Ok(UiRuntimeCommand::SetRenderMode(parse_render_mode(value)?));
-    }
-    if let Some(value) = normalized.strip_prefix("cadence:") {
-        let refresh_rate_millihz = value
-            .parse::<u32>()
-            .context("invalid cadence command: expected cadence:<refresh-rate-millihz>")?;
-        return Ok(UiRuntimeCommand::ResyncCadence {
-            refresh_rate_millihz,
-        });
-    }
-    if let Some(value) = normalized.strip_prefix("transfer-cadence:") {
-        let refresh_rate_millihz = value.parse::<u32>().context(
-            "invalid transfer cadence command: expected transfer-cadence:<refresh-rate-millihz>",
-        )?;
-        return Ok(UiRuntimeCommand::ResyncCadenceAfterTransfer {
-            refresh_rate_millihz,
-        });
-    }
-    if let Some(value) = normalized.strip_prefix("gpu-failure:") {
-        return parse_gpu_failure_command(value);
-    }
-    if let Some(value) = normalized.strip_prefix("recoverable:") {
-        return Ok(UiRuntimeCommand::RecoverableBoundary(parse_boundary(
-            value,
-        )?));
-    }
-    if let Some(value) = normalized.strip_prefix("fatal:") {
-        return Ok(UiRuntimeCommand::FatalBoundary(parse_boundary(value)?));
-    }
-
-    Err(anyhow!(
-        "unsupported --mvp-command `{raw}`; supported forms: \
-tick, stop, stopped, gpu-frame-ok, single-window[:N], mode:<cpu|gpu|auto>, \
-cadence:<millihz>, transfer-cadence:<millihz>, gpu-failure:<kind>[:observed-ms], \
-recoverable:<boundary>, fatal:<boundary>"
-    ))
-}
-
-fn parse_gpu_failure_command(raw: &str) -> Result<UiRuntimeCommand> {
-    let mut parts = raw.split(':');
-    let kind_token = parts
-        .next()
-        .ok_or_else(|| anyhow!("gpu-failure command requires failure kind"))?;
-    let observed_at_millis = match parts.next() {
-        Some(token) => token
-            .parse::<u64>()
-            .context("invalid gpu-failure command: observed-ms must be an integer")?,
-        None => 1_000,
-    };
-    if parts.next().is_some() {
-        return Err(anyhow!(
-            "invalid gpu-failure command: expected gpu-failure:<kind>[:observed-ms]"
-        ));
-    }
-
-    let kind = match kind_token {
-        "device-lost" => GpuFailureKind::DeviceLost,
-        "out-of-memory" => GpuFailureKind::OutOfMemory,
-        "surface-error" => GpuFailureKind::SurfaceError,
-        "submit-error" => GpuFailureKind::SubmitError,
-        "swapchain-out-of-date" => GpuFailureKind::SwapchainOutOfDate,
-        _ => {
-            return Err(anyhow!(
-                "unsupported gpu failure kind `{kind_token}`; expected one of: \
-device-lost, out-of-memory, surface-error, submit-error, swapchain-out-of-date"
-            ));
-        }
-    };
-
-    Ok(UiRuntimeCommand::GpuFailure {
-        kind,
-        observed_at_millis,
-    })
-}
-
-fn parse_render_mode(token: &str) -> Result<RenderMode> {
-    match token {
-        "cpu" => Ok(RenderMode::Cpu),
-        "gpu" => Ok(RenderMode::Gpu),
-        "auto" => Ok(RenderMode::Auto),
-        _ => Err(anyhow!(
-            "unsupported mode token `{token}`; expected cpu|gpu|auto"
-        )),
-    }
-}
-
-fn parse_boundary(token: &str) -> Result<SessionBoundary> {
-    let normalized = token.replace('_', "-");
-    match normalized.as_str() {
-        "startup-spawn" => Ok(SessionBoundary::StartupSpawn),
-        "pty-read" => Ok(SessionBoundary::PtyRead),
-        "pty-write" => Ok(SessionBoundary::PtyWrite),
-        "pty-resize" => Ok(SessionBoundary::PtyResize),
-        "pty-wait" => Ok(SessionBoundary::PtyWait),
-        "pty-writer-acquire" => Ok(SessionBoundary::PtyWriterAcquire),
-        "stop" => Ok(SessionBoundary::Stop),
-        _ => Err(anyhow!(
-            "unsupported boundary token `{token}`; expected one of: \
-startup-spawn, pty-read, pty-write, pty-resize, pty-wait, pty-writer-acquire, stop"
-        )),
-    }
-}
-
-fn emit_command_receipts(diagnostics: &DiagnosticsSink, receipts: &[UiCommandReceipt]) {
-    for (index, receipt) in receipts.iter().enumerate() {
-        let command = command_token(receipt.command);
-        info!(
-            step = index + 1,
-            command = %command,
-            outcome = ?receipt.outcome,
-            state = ?receipt.state,
-            mode = ?receipt.render_mode,
-            cadence_millihz = receipt.cadence_millihz,
-            windows = receipt.window_count,
-            "ui command processed"
-        );
-        diagnostics.emit_kind(
-            EventKind::SettingsApply,
-            format!(
-                "ui command step={} command={} state={} mode={} cadence={} windows={}",
-                index + 1,
-                command,
-                state_token(receipt.state),
-                render_mode_token(receipt.render_mode),
-                receipt.cadence_millihz,
-                receipt.window_count
-            ),
-        );
-
-        match receipt.outcome {
-            rldyourterm_ui::UiCommandOutcome::RenderModeTransition(transition) => {
-                if matches!(
-                    transition.reason,
-                    RenderTransitionReason::AutoGpuFallback { .. }
-                ) {
-                    diagnostics.emit_kind(
-                        EventKind::RenderModeTransition,
-                        format!(
-                            "gpu auto-fallback applied step={} command={} mode={} state={}",
-                            index + 1,
-                            command,
-                            render_mode_token(receipt.render_mode),
-                            state_token(receipt.state),
-                        ),
-                    );
-                }
-            }
-            rldyourterm_ui::UiCommandOutcome::GpuRetryScheduled {
-                failure_kind,
-                failure_streak,
-                retry_budget_remaining,
-            } => {
-                diagnostics.emit_kind(
-                    EventKind::ResourceWarning,
-                    format!(
-                        "gpu retry scheduled step={} command={} kind={} streak={} remaining={}",
-                        index + 1,
-                        command,
-                        gpu_failure_kind_token(failure_kind),
-                        failure_streak,
-                        retry_budget_remaining,
-                    ),
-                );
-            }
-            _ => {}
-        }
-    }
-}
-
-fn emit_settings_outcome(diagnostics: &DiagnosticsSink, outcome: SettingsApplyOutcome) {
-    match outcome {
-        SettingsApplyOutcome::Applied { current, .. } => {
-            diagnostics.emit_kind(
-                EventKind::SettingsApply,
-                format!(
-                    "settings applied mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
-                    render_mode_token(current.mode),
-                    current.shell_target,
-                    current.shell_auto_init,
-                    current.render_cadence_policy
-                ),
-            );
-        }
-        SettingsApplyOutcome::Noop { .. } => {}
-        SettingsApplyOutcome::Rejected { reason, .. } => {
-            diagnostics.emit_kind(
-                EventKind::ResourceWarning,
-                format!("settings command rejected: {reason:?}"),
-            );
-        }
-    }
-}
-
-fn apply_palette_commands(
-    diagnostics: &DiagnosticsSink,
-    settings: &mut SettingsService,
-    commands: &[String],
-) {
-    for (index, command) in commands.iter().enumerate() {
-        let outcome = settings.apply_palette_command(command);
-        match outcome {
-            SettingsPaletteApplyOutcome::Applied { input, current, .. } => {
-                diagnostics.emit_kind(
-                    EventKind::SettingsApply,
-                    format!(
-                        "palette command applied step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
-                        index + 1,
-                        input,
-                        render_mode_token(current.mode),
-                        current.shell_target,
-                        current.shell_auto_init,
-                        current.render_cadence_policy,
-                    ),
-                );
-            }
-            SettingsPaletteApplyOutcome::Noop { input, state, .. } => {
-                diagnostics.emit_kind(
-                    EventKind::SettingsApply,
-                    format!(
-                        "palette command noop step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
-                        index + 1,
-                        input,
-                        render_mode_token(state.mode),
-                        state.shell_target,
-                        state.shell_auto_init,
-                        state.render_cadence_policy,
-                    ),
-                );
-            }
-            SettingsPaletteApplyOutcome::Rejected { input, reason, .. } => {
-                diagnostics.emit_kind(
-                    EventKind::SettingsRejected,
-                    format!(
-                        "palette command rejected step={} input={} reason={:?}",
-                        index + 1,
-                        input,
-                        reason
-                    ),
-                );
-            }
-        }
-    }
-}
-
 fn harness_enabled(cli: &Cli) -> bool {
     cli.mvp_profile.is_some() || !cli.mvp_command.is_empty() || cli.mvp_repeat > 1
 }
-
-fn should_print_mvp_output(cli: &Cli) -> bool {
-    cli.mvp_profile.is_some()
-        || !cli.mvp_command.is_empty()
-        || !cli.palette_command.is_empty()
-        || cli.mvp_repeat > 1
-}
-
-fn print_mvp_output(
-    cli: &Cli,
-    receipts: &[UiCommandReceipt],
-    ui: &UiRuntime,
-    resolved_shell: ShellTarget,
-) {
-    let recoverable_observed = receipts.iter().any(|receipt| {
-        matches!(
-            receipt.outcome,
-            rldyourterm_ui::UiCommandOutcome::SessionTransition(
-                rldyourterm_services::session::SessionTransition {
-                    outcome: rldyourterm_services::session::SessionTransitionOutcome::RecoverableBoundary { .. },
-                    ..
-                }
-            )
-        )
-    });
-    let cadence_resync_observed = receipts.iter().any(|receipt| {
-        matches!(
-            receipt.outcome,
-            rldyourterm_ui::UiCommandOutcome::CadenceResynced { .. }
-        )
-    });
-    let gpu_retry_observed = receipts.iter().any(|receipt| {
-        matches!(
-            receipt.outcome,
-            rldyourterm_ui::UiCommandOutcome::GpuRetryScheduled { .. }
-        )
-    });
-    let fallback_observed = receipts.iter().any(|receipt| {
-        matches!(
-            receipt.outcome,
-            rldyourterm_ui::UiCommandOutcome::RenderModeTransition(
-                rldyourterm_services::render_mode::RenderModeTransition {
-                    reason: RenderTransitionReason::AutoGpuFallback { .. },
-                    ..
-                }
-            )
-        )
-    });
-    let running_step_observed = receipts
-        .iter()
-        .any(|receipt| receipt.state == SessionState::Running);
-
-    for (index, receipt) in receipts.iter().enumerate() {
-        println!(
-            "{MVP_STEP_LABEL} index={} command={} state={} mode={} cadence_millihz={} windows={} single_window_required={} single_window_enforced={} outcome={:?}",
-            index + 1,
-            command_token(receipt.command),
-            state_token(receipt.state),
-            render_mode_token(receipt.render_mode),
-            receipt.cadence_millihz,
-            receipt.window_count,
-            SINGLE_WINDOW_BASELINE,
-            single_window_enforced_token(receipt.window_count),
-            receipt.outcome
-        );
-    }
-
-    println!(
-        "{MVP_RESULT_LABEL} profile={} repeats={} commands={} state={} mode={} cadence_millihz={} windows={} shell={} single_window_required={} single_window_enforced={} release_governance={} recoverable_observed={} cadence_resync_observed={} gpu_retry_observed={} fallback_observed={} running_step_observed={}",
-        cli.mvp_profile
-            .map(MvpProfileArg::as_str)
-            .unwrap_or("custom"),
-        cli.mvp_repeat,
-        receipts.len(),
-        state_token(ui.state()),
-        render_mode_token(ui.render_mode()),
-        ui.cadence().refresh_rate_millihz,
-        ui.window_count(),
-        shell_token(resolved_shell),
-        SINGLE_WINDOW_BASELINE,
-        single_window_enforced_token(ui.window_count()),
-        release_governance_token(ui.release_governance()),
-        yes_no_token(recoverable_observed),
-        yes_no_token(cadence_resync_observed),
-        yes_no_token(gpu_retry_observed),
-        yes_no_token(fallback_observed),
-        yes_no_token(running_step_observed),
-    );
-}
-
-fn command_token(command: UiRuntimeCommand) -> String {
-    match command {
-        UiRuntimeCommand::Tick => "tick".to_string(),
-        UiRuntimeCommand::RecoverableBoundary(boundary) => {
-            format!("recoverable:{}", boundary_token(boundary))
-        }
-        UiRuntimeCommand::FatalBoundary(boundary) => format!("fatal:{}", boundary_token(boundary)),
-        UiRuntimeCommand::RequestStop => "stop".to_string(),
-        UiRuntimeCommand::MarkStopped => "stopped".to_string(),
-        UiRuntimeCommand::SetRenderMode(mode) => format!("mode:{}", render_mode_token(mode)),
-        UiRuntimeCommand::GpuFailure {
-            kind,
-            observed_at_millis,
-        } => format!(
-            "gpu-failure:{}:{}",
-            gpu_failure_kind_token(kind),
-            observed_at_millis
-        ),
-        UiRuntimeCommand::GpuFramePresented => "gpu-frame-ok".to_string(),
-        UiRuntimeCommand::ResyncCadence {
-            refresh_rate_millihz,
-        } => format!("cadence:{refresh_rate_millihz}"),
-        UiRuntimeCommand::ResyncCadenceAfterTransfer {
-            refresh_rate_millihz,
-        } => format!("transfer-cadence:{refresh_rate_millihz}"),
-        UiRuntimeCommand::AssertSingleWindow { requested } => format!("single-window:{requested}"),
-    }
-}
-
-use shared::{render_mode_token, session_boundary_token as boundary_token};
 
 fn gpu_failure_kind_token(kind: GpuFailureKind) -> &'static str {
     match kind {
@@ -887,10 +417,17 @@ fn shell_available_on_path(name: &str) -> bool {
         return false;
     };
     std::env::split_paths(&path_value).any(|path| {
-        let shell = path.join(name);
-        let shell_exe = path.join(format!("{name}.exe"));
-        shell.is_file() || shell_exe.is_file()
+        let candidate = path.join(name);
+        is_executable_file(&candidate)
     })
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match path.metadata() {
+        Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -947,6 +484,8 @@ mod tests {
     }
 }
 
+mod app_harness;
 mod gui_runtime;
+mod gui_runtime_backend;
 mod pty_runtime;
-mod shared;
+mod runtime_shared;

@@ -6,6 +6,5 @@ pub mod window;
 
 pub use api::common::{ContractResult, FontMetrics, MonitorTiming, ViewportSize};
 pub use error::{
-    CorrelationId, ErrorSeverity, FoundationError, FoundationResult, Recoverability, RuntimeError,
-    RuntimeLayer,
+    CorrelationId, ErrorSeverity, FoundationError, FoundationResult, Recoverability, RuntimeLayer,
 };

@@ -17,7 +17,8 @@ Crash-intolerant AI terminal runtime with v1.0 priorities locked as:
 ## Source of truth
 
 - `AGENTS.md`
-- `planning/`
+- `CLAUDE.md`
+- `.serena/memories/`
 
 ## MVP runtime status
 
@@ -28,17 +29,37 @@ This repository now includes a Rust workspace with an MVP bootstrap path:
 
 Single-window baseline is explicit and mandatory in v1.0 (`window_count=1`).
 
-## Session start
-
-```bash
-bash planning/system/validate_planning.sh
-```
-
 ## Quick checks
 
 ```bash
-cargo check -p rldyourterm-ui
-cargo check -p rldyourterm-app
+cargo check --locked -p rldyourterm-ui
+cargo check --locked -p rldyourterm-app
+```
+
+## Benchmarking
+
+Canonical headless benchmark suite lives in `terminal_benchmark/`.
+
+Quick run:
+
+```bash
+cargo run --locked -p rldyourterm-terminal-benchmark -- --scenario all --scale standard
+```
+
+Structured JSON output:
+
+```bash
+cargo run --locked -p rldyourterm-terminal-benchmark -- \
+  --scenario all \
+  --scale stress \
+  --format json \
+  --output /tmp/rldyourterm-terminal-benchmark.json
+```
+
+CI-parity smoke run:
+
+```bash
+bash scripts/ci/run_terminal_benchmark_smoke.sh
 ```
 
 ## CI/CD profile

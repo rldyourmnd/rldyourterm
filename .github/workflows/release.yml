@@ -25,6 +25,7 @@ env:
   CARGO_NET_RETRY: "5"
   CARGO_INCREMENTAL: "0"
   CI_RUST_TOOLCHAIN: "1.94.0"
+  MSRV_RUST_TOOLCHAIN: "1.92.0"
 
 jobs:
   preflight:
@@ -70,16 +71,17 @@ jobs:
         run: |
           sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
-      - name: Validate planning consistency
-        run: bash planning/system/validate_planning.sh
       - name: Quality gates
         run: |
           cargo check --workspace --locked
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo fmt --all -- --check
+          bash scripts/ci/run_terminal_benchmark_smoke.sh
+          rustup toolchain install "${MSRV_RUST_TOOLCHAIN}" --profile minimal
+          cargo +${MSRV_RUST_TOOLCHAIN} check --workspace --locked
       - name: Install security gate tools
-        uses: cargo-bins/cargo-binstall@bc432b49369a3f25c8c8b19578a82060c18a5dd6
+        uses: cargo-bins/cargo-binstall@1800853f2578f8c34492ec76154caef8e163fbca # v1.17.7
         with:
           bins: cargo-audit,cargo-deny
       - name: Security gates
@@ -88,6 +90,8 @@ jobs:
           cargo deny check bans licenses advisories sources
       - name: Compatibility gate
         run: bash scripts/mvp/run_matrix.sh 3
+      - name: VSA governance validation
+        run: bash scripts/ci/run_e2e_governance.sh --mode release
 
   plan:
     name: Plan Release
@@ -100,12 +104,12 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Install cargo-dist
-        uses: cargo-bins/cargo-binstall@bc432b49369a3f25c8c8b19578a82060c18a5dd6
+        uses: cargo-bins/cargo-binstall@1800853f2578f8c34492ec76154caef8e163fbca # v1.17.7
         with:
           bins: cargo-dist
       - name: Generate dist plan
         run: cargo dist plan --output-format=json > dist-plan.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: dist-plan
           path: dist-plan.json
@@ -149,7 +153,7 @@ jobs:
           mkdir -p release
           cd target/${{ matrix.target }}/release
           tar -czf ../../../release/rldyourterm-${{ matrix.target }}.tar.gz rldyourterm-app
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: rldyourterm-${{ matrix.target }}
           path: release/
@@ -163,7 +167,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         with:
           path: artifacts
           pattern: rldyourterm-*

@@ -11,6 +11,12 @@ static FONT_DATA: &[u8] =
 const DEFAULT_MAX_GLYPH_CACHE_ENTRIES: usize = 8_192;
 const FALLBACK_GLYPH_CHAR: char = '?';
 
+/// A single font in the fallback chain, calibrated to a specific cell size.
+struct FontEntry {
+    font: Font,
+    ascent_px: i32,
+}
+
 /// Pre-rasterized glyph bitmap sized to fit a terminal cell.
 pub struct GlyphBitmap {
     /// Grayscale coverage (0-255), row-major, `glyph_width * glyph_height` elements.
@@ -30,12 +36,15 @@ pub struct GlyphBitmap {
 /// Loads the embedded TTF at construction time. Rasterizes glyphs on demand
 /// and caches the results for the lifetime of the cache with an explicit upper
 /// bound to prevent unbounded growth in long-running sessions.
+///
+/// Supports an ordered fallback chain: primary font is tried first, then
+/// each fallback font in insertion order. ASCII glyphs hit the primary font
+/// on the first check with zero fallback overhead.
 pub struct GlyphCache {
-    font: Font,
+    fonts: Vec<FontEntry>,
     px_size: f32,
     cell_width: u16,
     cell_height: u16,
-    ascent_px: i32,
     cache: HashMap<char, GlyphBitmap>,
     eviction_queue: VecDeque<char>,
     max_entries: usize,
@@ -67,21 +76,17 @@ impl GlyphCache {
             initial_px
         };
 
-        // Compute baseline position from font metrics at calibrated size.
-        // fontdue horizontal_line_metrics gives ascent/descent in font units scaled to px_size.
-        let ascent_px = font
-            .horizontal_line_metrics(px_size)
-            .map(|lm| lm.ascent.round() as i32)
-            .unwrap_or(cell_height as i32 - 2);
+        let ascent_px = Self::compute_ascent(&font, px_size, cell_height);
+
+        let primary = FontEntry { font, ascent_px };
 
         let max_entries = max_entries.max(1);
         let mut cache = HashMap::with_capacity(max_entries.min(1024));
         let mut value = Self {
-            font,
+            fonts: vec![primary],
             px_size,
             cell_width,
             cell_height,
-            ascent_px,
             cache: HashMap::new(),
             eviction_queue: VecDeque::new(),
             max_entries,
@@ -95,13 +100,34 @@ impl GlyphCache {
         value
     }
 
+    /// Add a fallback font to the chain. Fonts are tried in insertion order
+    /// after the primary (bundled) font. The font data must be valid TTF/OTF.
+    ///
+    /// Returns `true` if the font was loaded, `false` if parsing failed.
+    pub fn add_fallback_font(&mut self, font_data: &[u8]) -> bool {
+        let font = match Font::from_bytes(font_data, FontSettings::default()) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let ascent_px = Self::compute_ascent(&font, self.px_size, self.cell_height);
+        self.fonts.push(FontEntry { font, ascent_px });
+        true
+    }
+
+    /// Compute baseline ascent for a font at the given px_size.
+    fn compute_ascent(font: &Font, px_size: f32, cell_height: u16) -> i32 {
+        font.horizontal_line_metrics(px_size)
+            .map(|lm| lm.ascent.round() as i32)
+            .unwrap_or(cell_height as i32 - 2)
+    }
+
     /// Get or rasterize a glyph for `ch`. Returns a reference to the cached bitmap.
     pub fn get(&mut self, ch: char) -> &GlyphBitmap {
         if self.cache.contains_key(&ch) {
             return self
                 .cache
                 .get(&ch)
-                .expect("cache entry checked above must exist");
+                .expect("cache entry verified by contains_key with exclusive access");
         }
 
         if self.cache.len() >= self.max_entries {
@@ -114,31 +140,30 @@ impl GlyphCache {
                 return self
                     .cache
                     .get(&FALLBACK_GLYPH_CHAR)
-                    .expect("fallback glyph must stay cached");
+                    .expect("fallback glyph is inserted in constructor and never evicted");
             }
         }
 
         let bitmap = self.rasterize_into_cell(ch);
-        self.cache.insert(ch, bitmap);
         if ch != FALLBACK_GLYPH_CHAR {
             self.eviction_queue.push_back(ch);
         }
-        self.cache
-            .get(&ch)
-            .expect("glyph inserted above must exist in cache")
+        self.cache.entry(ch).or_insert(bitmap)
     }
 
-    /// Check if the font contains a real glyph for `ch` (not just .notdef / tofu).
+    /// Check if any font in the chain contains a real glyph for `ch`.
     #[must_use]
     pub fn has_glyph(&self, ch: char) -> bool {
-        self.font.lookup_glyph_index(ch) != 0
+        self.fonts
+            .iter()
+            .any(|e| e.font.lookup_glyph_index(ch) != 0)
     }
 
     /// Rasterize a single character into a cell-sized coordinate space.
     ///
     /// For Box Drawing (U+2500-U+257F) and Block Elements (U+2580-U+259F) at 8px
     /// cell width, uses font8x8 pixel-perfect bitmaps scaled 2x vertically to fill
-    /// 8x16 cells. All other characters use fontdue rasterization.
+    /// 8x16 cells. All other characters use fontdue rasterization with fallback chain.
     fn rasterize_into_cell(&self, ch: char) -> GlyphBitmap {
         let cw = self.cell_width as usize;
         let ch_height = self.cell_height as usize;
@@ -151,8 +176,21 @@ impl GlyphCache {
             return bitmap;
         }
 
-        // fontdue rasterization path
-        let (metrics, bitmap) = self.font.rasterize(ch, self.px_size);
+        // Try each font in the chain until one has the glyph.
+        for entry in &self.fonts {
+            if entry.font.lookup_glyph_index(ch) == 0 {
+                continue;
+            }
+            return Self::rasterize_with_font(entry, ch, self.px_size);
+        }
+
+        // No font has the glyph - rasterize with primary font (produces .notdef).
+        Self::rasterize_with_font(&self.fonts[0], ch, self.px_size)
+    }
+
+    /// Rasterize `ch` using a specific font entry.
+    fn rasterize_with_font(entry: &FontEntry, ch: char, px_size: f32) -> GlyphBitmap {
+        let (metrics, bitmap) = entry.font.rasterize(ch, px_size);
 
         if bitmap.is_empty() || metrics.width == 0 || metrics.height == 0 {
             return GlyphBitmap {
@@ -164,10 +202,7 @@ impl GlyphCache {
             };
         }
 
-        // Place glyph within cell using font metrics.
-        // fontdue metrics.ymin = distance from baseline to bottom of glyph (positive = above baseline).
-        // y_offset = distance from cell top to glyph top row.
-        let y_offset = self.ascent_px - (metrics.ymin + metrics.height as i32);
+        let y_offset = entry.ascent_px - (metrics.ymin + metrics.height as i32);
         let x_offset = metrics.xmin;
 
         GlyphBitmap {
@@ -329,5 +364,44 @@ mod tests {
         assert_eq!(glyph, fallback);
         assert_eq!(cache.cache.len(), 1);
         assert!(cache.cache.contains_key(&FALLBACK_GLYPH_CHAR));
+    }
+
+    #[test]
+    fn add_fallback_font_accepts_valid_data() {
+        let mut cache = GlyphCache::new(8, 16);
+        // Re-adding the same font as fallback should succeed
+        let result = cache.add_fallback_font(FONT_DATA);
+        assert!(result);
+        assert_eq!(cache.fonts.len(), 2);
+    }
+
+    #[test]
+    fn add_fallback_font_rejects_invalid_data() {
+        let mut cache = GlyphCache::new(8, 16);
+        let result = cache.add_fallback_font(b"not a font");
+        assert!(!result);
+        assert_eq!(cache.fonts.len(), 1);
+    }
+
+    #[test]
+    fn has_glyph_checks_all_fonts_in_chain() {
+        let mut cache = GlyphCache::new(8, 16);
+        // Primary font has 'A'
+        assert!(cache.has_glyph('A'));
+        // Adding same font as fallback doesn't change result
+        cache.add_fallback_font(FONT_DATA);
+        assert!(cache.has_glyph('A'));
+        // Missing glyph still returns false
+        assert!(!cache.has_glyph('\u{FFFF}'));
+    }
+
+    #[test]
+    fn fallback_chain_rasterizes_from_first_matching_font() {
+        let mut cache = GlyphCache::new(8, 16);
+        cache.add_fallback_font(FONT_DATA);
+        // 'A' exists in primary - should get valid glyph
+        let glyph = cache.get('A');
+        assert!(glyph.glyph_width > 0);
+        assert!(!glyph.data.is_empty());
     }
 }

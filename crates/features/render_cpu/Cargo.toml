@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+rldyourterm-font.workspace = true
 rldyourterm-services.workspace = true
 tracing.workspace = true

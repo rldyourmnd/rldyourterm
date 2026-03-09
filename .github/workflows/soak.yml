@@ -43,7 +43,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev fish zsh
       - name: Run AI CLI compatibility soak matrix
         env:
           SOAK_REPEAT: ${{ github.event_name == 'workflow_dispatch' && inputs.repeat || '3' }}
@@ -52,7 +52,7 @@ jobs:
           bash scripts/mvp/run_matrix.sh "$SOAK_REPEAT"
       - name: Upload soak artifacts
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: soak-matrix-${{ github.run_id }}
           path: scripts/mvp/output/

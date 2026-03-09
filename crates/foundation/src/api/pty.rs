@@ -20,10 +20,10 @@ pub struct PtySpawnConfig {
     pub size: PtySize,
 }
 
-#[deprecated(note = "Use PtySpawnConfig; kept temporarily for compatibility.")]
-pub type PtySpawnRequest = PtySpawnConfig;
-
 pub trait PtyIo: Send + Sync {
+    // Reader contract: at most one successful acquisition for a PTY lifecycle.
+    // Runtime callers that lose the reader must terminate or recreate the PTY session;
+    // this adapter surface does not expose reader cloning/reacquisition.
     fn take_reader(&self) -> ContractResult<Box<dyn Read + Send>>;
 
     // Single-writer contract: at most one successful acquisition for a PTY lifecycle.

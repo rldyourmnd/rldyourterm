@@ -124,7 +124,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -135,7 +135,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -682,7 +682,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1075,9 +1075,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.182"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libloading"
@@ -1300,7 +1300,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1964,8 +1964,8 @@ dependencies = [
 name = "rldyourterm-core"
 version = "0.1.0"
 dependencies = [
- "serde",
  "thiserror 2.0.18",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1976,7 +1976,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1992,7 +1991,6 @@ name = "rldyourterm-foundation"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2010,6 +2008,7 @@ dependencies = [
 name = "rldyourterm-render-cpu"
 version = "0.1.0"
 dependencies = [
+ "rldyourterm-font",
  "rldyourterm-services",
  "tracing",
 ]
@@ -2051,6 +2050,19 @@ name = "rldyourterm-shell-integration"
 version = "0.1.0"
 dependencies = [
  "tracing",
+]
+
+[[package]]
+name = "rldyourterm-terminal-benchmark"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rldyourterm-font",
+ "rldyourterm-render-cpu",
+ "rldyourterm-services",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2099,7 +2111,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3035,7 +3047,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3439,9 +3451,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]

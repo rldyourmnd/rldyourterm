@@ -1,21 +1,16 @@
-# AGENTS.md - rldyourterm Runtime Constitution (v1.1.0-planning-reset)
+# AGENTS.md - rldyourterm Runtime Constitution (v1.2.0)
 
 ## 0) Scope
 - Applies to the whole repository.
-- This is the highest project-level runtime policy for Codex sessions.
+- This is the highest project-level runtime policy for AI agent sessions.
 - Any implementation decision must remain consistent with this file.
 
 ## 1) Decision Precedence
 Use this order if documents disagree:
 1. `AGENTS.md`
-2. `planning/discovery/v1.0.0-answer-lock.md`
-3. ADRs in `planning/adr/*`
-4. Architecture and integration contracts in `planning/architecture/*` and `planning/stack/*`
-5. Quality/risk/operations/roadmap docs in `planning/quality/*`, `planning/risk/*`, `planning/operations/*`, `planning/roadmap/*`
-6. System governance docs in `planning/system/*`
-
-Operational meta-rules are defined in:
-- `planning/system/source-of-truth-and-precedence-v1.0.0.md`
+2. `CLAUDE.md`
+3. Serena memories in `.serena/memories/`
+4. Inline code documentation and tests
 
 ## 2) Product Priorities (Hard Order)
 1. `СТАБИЛЬНОСТЬ (CRASH-INTOLERANT)`
@@ -87,36 +82,24 @@ Authoritative dependency references:
 - `winit` (`/websites/rs_winit_winit`): window/event model (`Moved`, `Resized`, `ScaleFactorChanged`, `RedrawRequested`) and monitor APIs.
 - `wgpu` (`/websites/rs_wgpu`): `SurfaceConfiguration`, `present_mode`, frame latency hints, surface error handling.
 
-Evidence registry:
-- `planning/system/dependency-evidence-context7-v1.0.0.md`
-
-## 8) Planning Knowledge System (Codex Workflow)
-Start each serious development session with:
+## 8) Session Workflow
+Start each development session with:
 1. `AGENTS.md`
-2. `planning/README.md`
-3. `planning/system/codex-session-playbook-v1.0.0.md`
-4. `planning/system/traceability-matrix-v1.0.0.md`
-5. `bash planning/system/validate_planning.sh`
-
-If validation fails, fix planning/docs consistency before coding.
+2. `CLAUDE.md`
+3. Serena memories (`.serena/memories/`)
+4. `cargo check --workspace`
 
 ## 9) Documentation and Change Governance
-Any architecture/runtime behavior change must be synchronized across docs in this order:
-1. ADR/contracts (`planning/adr`, `planning/architecture`, `planning/stack`)
-2. Quality/risk/operations/roadmap (`planning/quality`, `planning/risk`, `planning/operations`, `planning/roadmap`)
-3. System layer (`planning/system/traceability-matrix-v1.0.0.md`, `planning/system/gap-closure-register-v1.0.0.md`)
-
-Do not leave unresolved placeholders in authoritative docs.
+Architecture/runtime behavior changes must be synchronized across:
+1. `AGENTS.md` and `CLAUDE.md` (project governance)
+2. Serena memories (`.serena/memories/`)
+3. Inline code documentation and tests
 
 ## 10) Quality and Release Governance
-- v1.0 release process is manual (no CI gate in baseline).
-- Release readiness requires completed artifacts:
-  - `planning/quality/v1.0.0-quality-gates.md`
-  - `planning/quality/v1.0.0-acceptance-matrix.md`
-  - `planning/operations/v1.0.0-manual-test-plan.md`
-  - `planning/operations/v1.0.0-release-pack.md`
-- Start-gate authority for coding:
-  - `planning/operations/v1.0.0-start-readiness-index.md`
+- v1.0 release authority remains manual.
+- CI quality/gov/security workflows are merge-time and pre-release validation gates.
+- Quality gates: `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`, MSRV, security audit.
+- VSA dependency graph validation via `scripts/ci/validate_vsa_dependency_graph.sh`.
 
 ## 11) Commit and Collaboration Rules
 - Keep commits small, thematic, and traceable.
