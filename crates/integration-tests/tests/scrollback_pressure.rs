@@ -39,18 +39,18 @@ fn scrollback_fifo_ordering() {
     let mut prev_num = None;
     for i in 0..t.scrollback.len() {
         let line = t.scrollback.get(i).unwrap();
-        if let Some(num_str) = line.strip_prefix("Line ") {
-            if let Ok(num) = num_str.trim().parse::<u32>() {
-                if let Some(prev) = prev_num {
-                    assert!(
-                        num > prev,
-                        "scrollback must be FIFO ordered: {} should be > {}",
-                        num,
-                        prev
-                    );
-                }
-                prev_num = Some(num);
+        if let Some(num_str) = line.strip_prefix("Line ")
+            && let Ok(num) = num_str.trim().parse::<u32>()
+        {
+            if let Some(prev) = prev_num {
+                assert!(
+                    num > prev,
+                    "scrollback must be FIFO ordered: {} should be > {}",
+                    num,
+                    prev
+                );
             }
+            prev_num = Some(num);
         }
     }
     assert!(
@@ -103,7 +103,7 @@ fn scrollback_preserves_trimmed_content() {
     feed_bytes(&mut t, b"Third\r\n");
     feed_bytes(&mut t, b"Fourth\r\n");
     // Scrollback lines should be trimmed
-    if t.scrollback.len() > 0 {
+    if !t.scrollback.is_empty() {
         let line = t.scrollback.get(0).unwrap();
         assert_eq!(
             line,
@@ -121,7 +121,7 @@ fn interleaved_push_and_read() {
     for i in 0u32..500 {
         feed_bytes(&mut t, format!("Event {:04}\r\n", i).as_bytes());
         // Read scrollback during push cycle
-        if i % 50 == 0 && t.scrollback.len() > 0 {
+        if i % 50 == 0 && !t.scrollback.is_empty() {
             let first = t.scrollback.get(0).unwrap();
             assert!(
                 first.starts_with("Event"),
@@ -206,7 +206,7 @@ fn scrollback_with_long_lines() {
         feed_bytes(&mut t, b"Short\r\n");
     }
     // Scrollback should contain wrapped content
-    assert!(t.scrollback.len() > 0);
+    assert!(!t.scrollback.is_empty());
 }
 
 // ── Scrollback clear ────────────────────────────────────────
@@ -217,7 +217,7 @@ fn scrollback_clear_via_erase_display_3() {
     for i in 0..50 {
         feed_bytes(&mut t, format!("Line {}\r\n", i).as_bytes());
     }
-    assert!(t.scrollback.len() > 0);
+    assert!(!t.scrollback.is_empty());
     // CSI 3J = erase scrollback (xterm extension)
     feed_bytes(&mut t, b"\x1b[3J");
     assert_eq!(t.scrollback.len(), 0);

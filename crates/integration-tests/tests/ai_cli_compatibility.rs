@@ -165,7 +165,7 @@ fn rapid_line_output_with_scrollback() {
     assert_eq!(row(&t, 0), "Line 0046");
     assert_eq!(row(&t, 3), "Line 0049");
     // Scrollback should have earlier lines
-    assert!(t.scrollback.len() > 0);
+    assert!(!t.scrollback.is_empty());
     assert_eq!(t.scrollback.get(0), Some("Line 0000"));
 }
 

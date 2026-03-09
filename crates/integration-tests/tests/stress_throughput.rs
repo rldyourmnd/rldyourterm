@@ -27,7 +27,7 @@ fn ingest_10mb_ascii_stream() {
     // Terminal must remain functional after 10 MB
     feed_bytes(&mut t, b"ALIVE\r\n");
     assert!(t.grid.height() > 0);
-    assert!(t.scrollback.len() > 0);
+    assert!(!t.scrollback.is_empty());
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn cjk_flood_10k_characters() {
     // Terminal must still function
     assert!(t.cursor.row < t.grid.height());
     // Scrollback should have content from CJK scrolling
-    assert!(t.scrollback.len() > 0);
+    assert!(!t.scrollback.is_empty());
 }
 
 #[test]
