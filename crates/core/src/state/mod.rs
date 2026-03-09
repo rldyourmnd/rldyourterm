@@ -73,6 +73,7 @@ pub struct TerminalState {
     pub(super) mouse_mode: MouseMode,
     pub(super) mouse_format: MouseFormat,
     pub(super) cursor_blink: bool,
+    pub(super) cursor_shape: u8,
     pub(super) focus_reporting: bool,
     pub(super) synchronized_output: bool,
     pub(super) last_printed_char: Option<char>,
@@ -102,6 +103,7 @@ impl TerminalState {
             mouse_mode: MouseMode::Off,
             mouse_format: MouseFormat::Normal,
             cursor_blink: false,
+            cursor_shape: 0,
             focus_reporting: false,
             synchronized_output: false,
             last_printed_char: None,
@@ -142,6 +144,10 @@ impl TerminalState {
 
     pub fn mouse_format(&self) -> MouseFormat {
         self.mouse_format
+    }
+
+    pub fn cursor_shape(&self) -> u8 {
+        self.cursor_shape
     }
 
     pub fn focus_reporting_enabled(&self) -> bool {

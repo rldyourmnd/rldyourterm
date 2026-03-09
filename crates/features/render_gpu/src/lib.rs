@@ -142,7 +142,7 @@ pub struct CellInstance {
     pub atlas_and_flags: u32,
     pub fg_color: u32,
     pub bg_color: u32,
-    pub _pad: u32,
+    pub underline_color: u32,
 }
 
 struct GpuBackend {

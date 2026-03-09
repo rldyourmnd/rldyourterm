@@ -20,6 +20,21 @@ impl Parser {
             return;
         }
 
+        // ECMA-48: intermediate bytes (0x20-0x2F) appear between params and final byte.
+        // Split off the trailing intermediate byte to dispatch CSI sequences like DECSCUSR.
+        if let Some((&intermediate, numeric_params)) = params_raw.split_last()
+            && (0x20..=0x2F).contains(&intermediate)
+        {
+            let action = self
+                .parse_csi_with_intermediate(numeric_params, intermediate, final_byte)
+                .unwrap_or_else(|| {
+                    ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
+                });
+            actions.push(action);
+            self.reset_state_to_ground();
+            return;
+        }
+
         let action = self
             .parse_standard_csi_action(params_raw, final_byte)
             .unwrap_or_else(|| {
@@ -112,6 +127,25 @@ impl Parser {
             b'g' => {
                 let mode = parsed.first().and_then(|p| p).unwrap_or(0);
                 Some(ParserAction::TabClear(mode))
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_csi_with_intermediate(
+        &self,
+        params_raw: &[u8],
+        intermediate: u8,
+        final_byte: u8,
+    ) -> Option<ParserAction> {
+        let parsed = parse_params(params_raw).ok()?;
+        match (intermediate, final_byte) {
+            // DECSCUSR: CSI Ps SP q — set cursor shape (0=reset, 1=blink block,
+            // 2=steady block, 3=blink underline, 4=steady underline,
+            // 5=blink bar, 6=steady bar)
+            (b' ', b'q') => {
+                let shape = parsed.first().and_then(|p| p).unwrap_or(0);
+                Some(ParserAction::SetCursorShape(shape.min(6) as u8))
             }
             _ => None,
         }

@@ -87,7 +87,7 @@ impl GpuBackend {
                 atlas_and_flags: 0,
                 fg_color: 0,
                 bg_color: 0,
-                _pad: 0,
+                underline_color: 0,
             },
         );
         self.underutilized_frame_streak = 0;
@@ -126,7 +126,7 @@ impl GpuBackend {
                         atlas_and_flags: ATTR_CONTINUATION,
                         fg_color: fg,
                         bg_color: bg,
-                        _pad: 0,
+                        underline_color: 0,
                     };
                     continue;
                 }
@@ -167,7 +167,7 @@ impl GpuBackend {
                     atlas_and_flags: packed,
                     fg_color: fg,
                     bg_color: bg,
-                    _pad: ul_color,
+                    underline_color: ul_color,
                 };
             }
         } else {
@@ -177,7 +177,7 @@ impl GpuBackend {
                 atlas_and_flags: 0,
                 fg_color: default_fg,
                 bg_color: default_bg,
-                _pad: 0,
+                underline_color: 0,
             });
         }
     }
@@ -197,7 +197,7 @@ impl GpuBackend {
             atlas_and_flags: 0,
             fg_color: default_fg,
             bg_color: default_bg,
-            _pad: 0,
+            underline_color: 0,
         };
         self.cell_instances[row_offset..row_offset + cols].fill(blank);
 
@@ -220,7 +220,7 @@ impl GpuBackend {
                 atlas_and_flags: slot as u32,
                 fg_color: default_fg,
                 bg_color: default_bg,
-                _pad: 0,
+                underline_color: 0,
             };
         }
     }

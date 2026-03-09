@@ -485,3 +485,63 @@ fn osc_133_with_st_terminator() {
         vec![ParserAction::ShellMarker(ShellMarkerKind::PromptStart)]
     );
 }
+
+// --- DECSCUSR (CSI Ps SP q) tests ---
+
+#[test]
+fn decscusr_blinking_bar() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[5 q");
+    assert_eq!(actions, vec![ParserAction::SetCursorShape(5)]);
+}
+
+#[test]
+fn decscusr_steady_block() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[2 q");
+    assert_eq!(actions, vec![ParserAction::SetCursorShape(2)]);
+}
+
+#[test]
+fn decscusr_reset_default() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[0 q");
+    assert_eq!(actions, vec![ParserAction::SetCursorShape(0)]);
+}
+
+#[test]
+fn decscusr_no_param_defaults_to_zero() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[ q");
+    assert_eq!(actions, vec![ParserAction::SetCursorShape(0)]);
+}
+
+#[test]
+fn decscusr_clamped_to_six() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[99 q");
+    assert_eq!(actions, vec![ParserAction::SetCursorShape(6)]);
+}
+
+#[test]
+fn decscusr_followed_by_text() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[5 qHello");
+    assert!(actions.contains(&ParserAction::SetCursorShape(5)));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, ParserAction::PrintText(t) if t == "Hello"))
+    );
+}
+
+#[test]
+fn unknown_intermediate_byte_is_unsupported() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[1!p");
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, ParserAction::UnsupportedSequence(_)))
+    );
+}

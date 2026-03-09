@@ -912,3 +912,17 @@ fn sgr_underline_color_resets_to_default() {
     let _ = state.feed(b"\x1b[59m");
     assert_eq!(state.pen.underline_color, Color::Default);
 }
+
+// --- DECSCUSR cursor shape ---
+
+#[test]
+fn decscusr_sets_cursor_shape() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert_eq!(state.cursor_shape(), 0);
+    let _ = state.feed(b"\x1b[5 q");
+    assert_eq!(state.cursor_shape(), 5);
+    let _ = state.feed(b"\x1b[2 q");
+    assert_eq!(state.cursor_shape(), 2);
+    let _ = state.feed(b"\x1b[0 q");
+    assert_eq!(state.cursor_shape(), 0);
+}
