@@ -125,14 +125,12 @@ impl GpuBackend {
         } else {
             let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
             let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
-            for col in 0..cols {
-                self.cell_instances[row_offset + col] = CellInstance {
-                    atlas_and_flags: 0,
-                    fg_color: default_fg,
-                    bg_color: default_bg,
-                    _pad: 0,
-                };
-            }
+            self.cell_instances[row_offset..row_offset + cols].fill(CellInstance {
+                atlas_and_flags: 0,
+                fg_color: default_fg,
+                bg_color: default_bg,
+                _pad: 0,
+            });
         }
     }
 }
