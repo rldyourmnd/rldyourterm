@@ -1,7 +1,10 @@
-use super::{CpuRenderer, CpuRendererConfig, DEFAULT_BG_U32, render_terminal_buffer};
+use super::{
+    CpuRenderer, CpuRendererConfig, DEFAULT_BG_U32, DEFAULT_FG_U32, render_terminal_buffer,
+    resolve_cell_colors, rgb_to_u32,
+};
 use rldyourterm_font::GlyphCache;
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, DEFAULT_SCROLLBACK_CAP, TerminalState,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, DEFAULT_SCROLLBACK_CAP, TerminalState,
 };
 
 fn state_with_default_scrollback(width: u16, height: u16) -> TerminalState {
@@ -141,6 +144,8 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
         &mut glyph_cache,
         None,
         &mut dirty_rows,
+        true,
+        0,
     );
 
     assert!(
@@ -302,4 +307,45 @@ fn delta_stats_track_utf8_bytes_and_cells_from_payload() {
     assert_eq!(frame.stats.rendered_rows, 2);
     assert_eq!(frame.stats.rendered_cells, expected_cells);
     assert_eq!(frame.stats.rendered_bytes, expected_bytes);
+}
+
+#[test]
+fn resolve_cell_colors_default_attrs_produce_default_colors() {
+    let (fg, bg) = resolve_cell_colors(&Attrs::default());
+    assert_eq!(fg, DEFAULT_FG_U32);
+    assert_eq!(bg, DEFAULT_BG_U32);
+}
+
+#[test]
+fn resolve_cell_colors_hidden_makes_fg_equal_bg() {
+    let attrs = Attrs {
+        hidden: true,
+        ..Attrs::default()
+    };
+    let (fg, bg) = resolve_cell_colors(&attrs);
+    assert_eq!(fg, bg, "hidden text: fg must equal bg");
+}
+
+#[test]
+fn resolve_cell_colors_dim_halves_fg_brightness() {
+    let attrs = Attrs {
+        fg: Color::Rgb(200, 100, 50),
+        dim: true,
+        ..Attrs::default()
+    };
+    let (fg, _bg) = resolve_cell_colors(&attrs);
+    assert_eq!(fg, rgb_to_u32(100, 50, 25));
+}
+
+#[test]
+fn resolve_cell_colors_inverse_swaps_fg_bg() {
+    let attrs = Attrs {
+        fg: Color::Rgb(255, 0, 0),
+        bg: Color::Rgb(0, 0, 255),
+        inverse: true,
+        ..Attrs::default()
+    };
+    let (fg, bg) = resolve_cell_colors(&attrs);
+    assert_eq!(fg, rgb_to_u32(0, 0, 255), "fg should be original bg");
+    assert_eq!(bg, rgb_to_u32(255, 0, 0), "bg should be original fg");
 }
