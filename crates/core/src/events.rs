@@ -20,7 +20,7 @@ pub enum LineClearMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CoreEvent {
+pub(crate) enum CoreEvent {
     LineWrapped {
         row: u16,
     },
