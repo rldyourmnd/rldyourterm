@@ -148,11 +148,10 @@ fn u32_to_rgb(color: u32) -> (u8, u8, u8) {
 }
 
 fn draw_cell_bg(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, bg: u32) {
+    let end_x = (x + CELL_WIDTH).min(width);
     for py in y..(y + CELL_HEIGHT).min(height) {
         let row_start = py * width;
-        for px in x..(x + CELL_WIDTH).min(width) {
-            buffer[row_start + px] = bg;
-        }
+        buffer[row_start + x..row_start + end_x].fill(bg);
     }
 }
 
@@ -219,9 +218,8 @@ fn draw_underline(buffer: &mut [u32], width: usize, height: usize, x: usize, y: 
         return;
     }
     let row_start = line_y * width;
-    for px in x..(x + CELL_WIDTH).min(width) {
-        buffer[row_start + px] = fg;
-    }
+    let end_x = (x + CELL_WIDTH).min(width);
+    buffer[row_start + x..row_start + end_x].fill(fg);
 }
 
 fn draw_strikethrough(
@@ -237,9 +235,8 @@ fn draw_strikethrough(
         return;
     }
     let row_start = line_y * width;
-    for px in x..(x + CELL_WIDTH).min(width) {
-        buffer[row_start + px] = fg;
-    }
+    let end_x = (x + CELL_WIDTH).min(width);
+    buffer[row_start + x..row_start + end_x].fill(fg);
 }
 
 fn draw_cursor(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
