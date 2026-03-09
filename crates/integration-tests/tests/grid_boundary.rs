@@ -245,7 +245,7 @@ fn delete_lines_at_grid_top() {
                 format!("{}\r\n", ch.to_string().repeat(10)).as_bytes(),
             );
         } else {
-            feed_bytes(&mut t, format!("{}", ch.to_string().repeat(10)).as_bytes());
+            feed_bytes(&mut t, ch.to_string().repeat(10).as_bytes());
         }
     }
     // Home cursor, delete 2 lines

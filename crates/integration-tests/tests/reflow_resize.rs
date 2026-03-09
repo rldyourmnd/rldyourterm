@@ -42,7 +42,7 @@ fn shrink_pushes_overflow_to_scrollback() {
     // Shrink to 10 cols - each line becomes 2 rows = 6 rows needed, only 3 available
     t.resize(10, 3);
     // Overflow should go to scrollback
-    assert!(t.scrollback.len() > 0, "overflow must push to scrollback");
+    assert!(!t.scrollback.is_empty(), "overflow must push to scrollback");
     // Grid should show the last 3 rows of the reflowed content
     let visible: Vec<String> = (0..3).map(|r| row(&t, r)).collect();
     // One of the visible rows should contain 'C's

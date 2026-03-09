@@ -35,6 +35,7 @@ for package in packages:
         workspace_packages[name] = package
 
 layer_by_package = {
+    "rldyourterm-integration-tests": "tooling",
     "rldyourterm-terminal-benchmark": "tooling",
     "rldyourterm-app": "app",
     "rldyourterm-ui": "ui",
@@ -51,6 +52,7 @@ layer_by_package = {
 }
 
 allowed_layer_edges = {
+    ("tooling", "core"),
     ("tooling", "features"),
     ("tooling", "services"),
     ("tooling", "foundation"),
