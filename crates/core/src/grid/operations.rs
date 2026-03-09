@@ -67,9 +67,7 @@ impl Grid {
     }
 
     pub fn clear(&mut self) {
-        for cell in &mut self.cells {
-            *cell = Cell::default();
-        }
+        self.cells.fill(Cell::default());
         self.scroll_count = 0;
         self.mark_all_dirty();
     }
@@ -103,7 +101,11 @@ impl Grid {
         let width = self.width as usize;
         let start = row as usize * width;
         let end = start + width;
-        Ok(self.cells[start..end].iter().map(|cell| cell.ch).collect())
+        let mut s = String::with_capacity(width);
+        for cell in &self.cells[start..end] {
+            s.push(cell.ch);
+        }
+        Ok(s)
     }
 
     pub fn scroll_up(&mut self, lines: u16) -> Vec<String> {
@@ -136,15 +138,49 @@ impl Grid {
 
         for row in (height - lines)..height {
             let start = row * width;
-            for cell in &mut self.cells[start..(start + width)] {
-                *cell = Cell::default();
-            }
+            self.cells[start..(start + width)].fill(Cell::default());
         }
 
         let max_scroll = self.height.saturating_sub(1) as usize;
         self.scroll_count = self.scroll_count.saturating_add(lines).min(max_scroll);
         self.mark_all_dirty();
         removed
+    }
+
+    /// Shifts rows up by `lines` and clears the vacated bottom rows.
+    /// Unlike `scroll_up`, does not extract row text - the caller is expected
+    /// to push row data into scrollback directly via `row_cells` beforehand.
+    pub fn scroll_up_discard(&mut self, lines: u16) {
+        if lines == 0 || self.height == 0 {
+            return;
+        }
+
+        let lines = lines.min(self.height);
+        if self.width == 0 || lines == self.height {
+            self.clear();
+            return;
+        }
+
+        let width = self.width as usize;
+        let lines = lines as usize;
+        let height = self.height as usize;
+
+        for dst_row in 0..(height - lines) {
+            let src_row = dst_row + lines;
+            let src_start = src_row * width;
+            let dst_start = dst_row * width;
+            self.cells
+                .copy_within(src_start..(src_start + width), dst_start);
+        }
+
+        for row in (height - lines)..height {
+            let start = row * width;
+            self.cells[start..(start + width)].fill(Cell::default());
+        }
+
+        let max_scroll = self.height.saturating_sub(1) as usize;
+        self.scroll_count = self.scroll_count.saturating_add(lines).min(max_scroll);
+        self.mark_all_dirty();
     }
 
     pub fn scroll_up_region(
@@ -185,9 +221,7 @@ impl Grid {
 
         for row in (bottom + 1 - lines_usize)..=bottom {
             let start = row * width;
-            for cell in &mut self.cells[start..(start + width)] {
-                *cell = Cell::default();
-            }
+            self.cells[start..(start + width)].fill(Cell::default());
         }
 
         // Region scroll invalidates the DMA scroll optimization (which assumes
@@ -225,9 +259,7 @@ impl Grid {
 
         for row in top..(top + lines_usize) {
             let start = row * width;
-            for cell in &mut self.cells[start..(start + width)] {
-                *cell = Cell::default();
-            }
+            self.cells[start..(start + width)].fill(Cell::default());
         }
 
         self.scroll_count = 0;
@@ -267,9 +299,7 @@ impl Grid {
             self.cells.copy_within(src_start..src_end, src_start + cnt);
         }
 
-        for i in col..(col + cnt) {
-            self.cells[row_start + i] = Cell::default();
-        }
+        self.cells[row_start + col..row_start + col + cnt].fill(Cell::default());
         self.mark_row_dirty(row);
     }
 
@@ -288,9 +318,7 @@ impl Grid {
             self.cells.copy_within(src_start..row_start + w, dst_start);
         }
 
-        for i in (w - cnt)..w {
-            self.cells[row_start + i] = Cell::default();
-        }
+        self.cells[row_start + w - cnt..row_start + w].fill(Cell::default());
         self.mark_row_dirty(row);
     }
 
@@ -303,9 +331,7 @@ impl Grid {
         let col = at_col as usize;
         let end = (col + count as usize).min(w);
 
-        for i in col..end {
-            self.cells[row_start + i] = Cell::default();
-        }
+        self.cells[row_start + col..row_start + end].fill(Cell::default());
         self.mark_row_dirty(row);
     }
 
@@ -349,7 +375,7 @@ impl Grid {
     }
 
     pub fn take_dirty_rows(&mut self) -> Vec<u16> {
-        let mut rows = Vec::new();
+        let mut rows = Vec::with_capacity(self.dirty_rows.len());
         for (idx, dirty) in self.dirty_rows.iter_mut().enumerate() {
             if *dirty {
                 rows.push(idx as u16);
@@ -363,16 +389,12 @@ impl Grid {
     /// Clear all dirty flags and reset scroll count without allocating.
     /// Use when the renderer has already consumed `dirty_rows()` by reference.
     pub fn clear_dirty_rows(&mut self) {
-        for dirty in &mut self.dirty_rows {
-            *dirty = false;
-        }
+        self.dirty_rows.fill(false);
         self.scroll_count = 0;
     }
 
     pub fn mark_all_dirty(&mut self) {
-        for dirty in &mut self.dirty_rows {
-            *dirty = true;
-        }
+        self.dirty_rows.fill(true);
     }
 
     fn clear_row_range(
@@ -403,9 +425,7 @@ impl Grid {
         let row_start = row as usize * width;
         let start = row_start + start_col as usize;
         let end = row_start + end_col_exclusive as usize;
-        for cell in &mut self.cells[start..end] {
-            *cell = Cell::default();
-        }
+        self.cells[start..end].fill(Cell::default());
         self.mark_row_dirty(row);
         Ok(())
     }
