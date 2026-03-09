@@ -247,7 +247,11 @@ impl Parser {
         }
 
         if consumed > 0 {
-            self.text_buffer.drain(0..consumed);
+            if consumed == self.text_buffer.len() {
+                self.text_buffer.clear();
+            } else {
+                self.text_buffer.drain(0..consumed);
+            }
         }
 
         if !allow_incomplete_tail && !self.text_buffer.is_empty() {
@@ -263,12 +267,10 @@ fn emit_text(text: &str, actions: &mut Vec<ParserAction>) {
         None => {}
         Some(first) => match chars.next() {
             None => actions.push(ParserAction::Print(first)),
-            Some(second) => {
-                let mut s = String::with_capacity(text.len());
-                s.push(first);
-                s.push(second);
-                s.extend(chars);
-                actions.push(ParserAction::PrintText(s));
+            Some(_) => {
+                // text is already valid UTF-8; to_owned() is a single memcpy
+                // vs the previous char-by-char push+extend rebuild.
+                actions.push(ParserAction::PrintText(text.to_owned()));
             }
         },
     }
