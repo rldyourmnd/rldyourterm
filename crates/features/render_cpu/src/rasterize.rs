@@ -240,18 +240,15 @@ fn draw_strikethrough(
 }
 
 fn draw_cursor(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
+    let end_x = (x + CELL_WIDTH).min(width);
     for glyph_y in 0..CELL_HEIGHT {
         let pixel_y = y + glyph_y;
         if pixel_y >= height {
             break;
         }
-        for glyph_x in 0..CELL_WIDTH {
-            let pixel_x = x + glyph_x;
-            if pixel_x >= width {
-                break;
-            }
-            let index = pixel_y * width + pixel_x;
-            buffer[index] ^= 0x00FF_FFFF;
+        let row_start = pixel_y * width;
+        for pixel in &mut buffer[row_start + x..row_start + end_x] {
+            *pixel ^= 0x00FF_FFFF;
         }
     }
 }
