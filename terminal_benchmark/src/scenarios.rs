@@ -3,11 +3,10 @@ use crate::data::{Workload, WorkloadScale};
 use crate::metrics::IterationStats;
 use crate::report::{BenchmarkSuiteReport, ScenarioReport};
 use anyhow::Result;
-use rldyourterm_core::Parser;
 use rldyourterm_font::GlyphCache;
 use rldyourterm_render_cpu::{CpuRenderer, render_terminal_buffer};
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, MAX_FEED_BYTES_PER_CALL, TerminalState,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, MAX_FEED_BYTES_PER_CALL, Parser, TerminalState,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};

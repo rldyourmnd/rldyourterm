@@ -19,7 +19,6 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rldyourterm-core.workspace = true
 rldyourterm-font.workspace = true
 rldyourterm-render-cpu.workspace = true
 rldyourterm-services.workspace = true
