@@ -66,6 +66,7 @@ pub struct TerminalState {
     pub(super) window_title: String,
     pub(super) cwd: String,
     pub(super) pending_clipboard: Option<(char, String)>,
+    pub(super) pending_bell: bool,
     pub(super) bracketed_paste: bool,
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
@@ -96,6 +97,7 @@ impl TerminalState {
             window_title: String::new(),
             cwd: String::new(),
             pending_clipboard: None,
+            pending_bell: false,
             bracketed_paste: false,
             application_keypad_mode: false,
             application_cursor_keys: false,
@@ -132,6 +134,11 @@ impl TerminalState {
     /// The tuple contains (selection_char, base64_data).
     pub fn take_pending_clipboard(&mut self) -> Option<(char, String)> {
         self.pending_clipboard.take()
+    }
+
+    /// Returns and clears the pending bell flag set by BEL (0x07).
+    pub fn take_pending_bell(&mut self) -> bool {
+        std::mem::replace(&mut self.pending_bell, false)
     }
 
     pub fn bracketed_paste_enabled(&self) -> bool {
