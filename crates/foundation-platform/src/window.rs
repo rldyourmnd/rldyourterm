@@ -1,47 +1,26 @@
-use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rldyourterm_foundation::api::window::{
-    MonitorTiming, WindowConfig, WindowControl, WindowEvent, WindowEventSink, WindowFactory,
+    MonitorTiming, WindowConfig, WindowControl, WindowFactory,
 };
 use rldyourterm_foundation::error::{
     FoundationError, FoundationResult, Recoverability, WindowFailureCode, WindowOperation,
 };
 use rldyourterm_foundation::window::{MonitorTimingReading, WindowHealth};
-use winit::event::WindowEvent as WinitWindowEvent;
+use winit::dpi::{LogicalSize, PhysicalSize, Size};
 use winit::monitor::MonitorHandle;
 use winit::window::Window;
-
-const MAX_QUEUED_WINDOW_EVENTS: usize = 2_048;
-
-#[derive(Debug, Default)]
-struct NoopWindowEventSink;
-
-impl WindowEventSink for NoopWindowEventSink {
-    fn on_event(&self, _event: WindowEvent) {}
-}
 
 #[derive(Debug, Default)]
 struct WindowRuntimeState {
     title: Option<String>,
-    redraw_pending: bool,
-    redraw_event_queued: bool,
     closed: bool,
-    last_position: Option<(i32, i32)>,
-    last_size: Option<(u32, u32)>,
-    last_scale_factor_bits: Option<u64>,
-    last_display_refresh_timing: Option<Option<MonitorTiming>>,
-    events: VecDeque<WindowEvent>,
-    dropped_event_count: usize,
-    queue_overflow_warned: bool,
 }
 
 pub struct PlatformWindowControl {
     window: Mutex<Option<Arc<Window>>>,
     cached_timing: Mutex<Option<MonitorTiming>>,
-    clipboard_text: Mutex<String>,
-    sink: Arc<dyn WindowEventSink>,
     state: Mutex<WindowRuntimeState>,
 }
 
@@ -58,24 +37,14 @@ impl fmt::Debug for PlatformWindowControl {
             .map(|cached| cached.clone())
             .ok()
             .flatten();
-        let clipboard_len = self
-            .clipboard_text
-            .lock()
-            .map(|text| text.len())
-            .unwrap_or_default();
 
         match self.state.lock() {
             Ok(state) => f
                 .debug_struct("PlatformWindowControl")
                 .field("window_attached", &window_attached)
                 .field("cached_timing", &cached_timing)
-                .field("clipboard_len", &clipboard_len)
                 .field("title", &state.title)
-                .field("redraw_pending", &state.redraw_pending)
-                .field("redraw_event_queued", &state.redraw_event_queued)
                 .field("closed", &state.closed)
-                .field("queued_events", &state.events.len())
-                .field("dropped_event_count", &state.dropped_event_count)
                 .finish(),
             Err(_) => f
                 .debug_struct("PlatformWindowControl")
@@ -87,7 +56,7 @@ impl fmt::Debug for PlatformWindowControl {
 
 impl Default for PlatformWindowControl {
     fn default() -> Self {
-        Self::with_sink(None, Arc::new(NoopWindowEventSink))
+        Self::new(None)
     }
 }
 
@@ -97,139 +66,29 @@ impl PlatformWindowControl {
     }
 
     pub fn from_winit_window(window: Arc<Window>) -> Self {
-        Self::with_sink(Some(window), Arc::new(NoopWindowEventSink))
+        Self::new(Some(window))
     }
 
-    fn with_sink(window: Option<Arc<Window>>, sink: Arc<dyn WindowEventSink>) -> Self {
+    fn new(window: Option<Arc<Window>>) -> Self {
         Self {
             window: Mutex::new(window),
             cached_timing: Mutex::new(None),
-            clipboard_text: Mutex::new(String::new()),
-            sink,
             state: Mutex::new(WindowRuntimeState::default()),
         }
     }
 
     fn apply_config(&self, config: &WindowConfig) -> FoundationResult<()> {
         self.set_title_internal(&config.title)?;
-        let _ = (
-            config.width,
-            config.height,
-            config.min_width,
-            config.min_height,
-            config.high_dpi,
-        );
-        Ok(())
-    }
-
-    fn dispatch_events(&self, events: &[WindowEvent]) {
-        for event in events {
-            self.sink.on_event(event.clone());
+        if let Some(window) = self.clone_window(WindowOperation::SetTitle)? {
+            window.set_min_inner_size(window_size(
+                config.min_width,
+                config.min_height,
+                config.high_dpi,
+            ));
+            if let Some(size) = window_size(config.width, config.height, config.high_dpi) {
+                let _ = window.request_inner_size(size);
+            }
         }
-    }
-
-    pub fn monitor_timing_on_window_event(
-        &self,
-        event: &WinitWindowEvent,
-    ) -> FoundationResult<Option<MonitorTiming>> {
-        // winit: redraw is the canonical OS/application redraw join point, and Moved can be
-        // missing on Wayland, so cadence probes must include resize/scale/redraw transitions.
-        let should_sample_timing = matches!(
-            event,
-            WinitWindowEvent::Moved(_)
-                | WinitWindowEvent::Resized(_)
-                | WinitWindowEvent::ScaleFactorChanged { .. }
-                | WinitWindowEvent::RedrawRequested
-        );
-
-        if should_sample_timing {
-            Ok(self.monitor_timing_reading()?.timing)
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn push_winit_event(&self, event: &WinitWindowEvent) -> FoundationResult<()> {
-        let monitor_timing = self.monitor_timing_on_window_event(event)?;
-        let mut dispatched_events = Vec::new();
-
-        let mut state = self.lock_state(WindowOperation::PollSignals)?;
-        let should_queue_display_refresh = match event {
-            WinitWindowEvent::Moved(position) => {
-                let moved_to = (position.x, position.y);
-                if state.last_position != Some(moved_to) {
-                    state.last_position = Some(moved_to);
-                    Self::queue_event(
-                        &mut state,
-                        &mut dispatched_events,
-                        WindowEvent::Moved {
-                            x: position.x,
-                            y: position.y,
-                        },
-                    );
-                }
-                true
-            }
-            WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let scale_factor_bits = scale_factor.to_bits();
-                if state.last_scale_factor_bits != Some(scale_factor_bits) {
-                    state.last_scale_factor_bits = Some(scale_factor_bits);
-                    Self::queue_event(
-                        &mut state,
-                        &mut dispatched_events,
-                        WindowEvent::ScaleFactorChanged {
-                            scale: *scale_factor,
-                        },
-                    );
-                }
-                true
-            }
-            WinitWindowEvent::Resized(size) => {
-                let resized_to = (size.width, size.height);
-                if state.last_size != Some(resized_to) {
-                    state.last_size = Some(resized_to);
-                    Self::queue_event(
-                        &mut state,
-                        &mut dispatched_events,
-                        WindowEvent::Resized {
-                            width: size.width,
-                            height: size.height,
-                            cols: 0,
-                            rows: 0,
-                        },
-                    );
-                }
-                true
-            }
-            WinitWindowEvent::RedrawRequested => {
-                state.redraw_pending = false;
-                Self::queue_redraw_event(&mut state, &mut dispatched_events);
-                true
-            }
-            WinitWindowEvent::Focused(focused) => {
-                Self::queue_event(
-                    &mut state,
-                    &mut dispatched_events,
-                    WindowEvent::Focused(*focused),
-                );
-                false
-            }
-            WinitWindowEvent::CloseRequested => {
-                Self::queue_event(
-                    &mut state,
-                    &mut dispatched_events,
-                    WindowEvent::CloseRequested,
-                );
-                false
-            }
-            _ => false,
-        };
-
-        if should_queue_display_refresh {
-            Self::queue_display_refresh_event(&mut state, &mut dispatched_events, monitor_timing);
-        }
-        drop(state);
-        self.dispatch_events(&dispatched_events);
         Ok(())
     }
 
@@ -324,168 +183,6 @@ impl PlatformWindowControl {
         }
     }
 
-    fn queue_display_refresh_event(
-        state: &mut WindowRuntimeState,
-        dispatched_events: &mut Vec<WindowEvent>,
-        timing: Option<MonitorTiming>,
-    ) {
-        if state.last_display_refresh_timing.as_ref() != Some(&timing) {
-            state.last_display_refresh_timing = Some(timing.clone());
-            let refresh_rate_millihz = timing
-                .as_ref()
-                .and_then(|current| current.refresh_rate_millihz);
-            let monitor_name = timing
-                .as_ref()
-                .and_then(|current| current.monitor_name.clone());
-            Self::queue_event(
-                state,
-                dispatched_events,
-                WindowEvent::DisplayRefreshChanged {
-                    refresh_rate_millihz,
-                    monitor_name,
-                },
-            );
-        }
-    }
-
-    fn queue_redraw_event(
-        state: &mut WindowRuntimeState,
-        dispatched_events: &mut Vec<WindowEvent>,
-    ) {
-        if state.redraw_event_queued {
-            return;
-        }
-        state.redraw_event_queued = true;
-        Self::queue_event(state, dispatched_events, WindowEvent::RedrawRequested);
-    }
-
-    fn queue_event(
-        state: &mut WindowRuntimeState,
-        dispatched_events: &mut Vec<WindowEvent>,
-        event: WindowEvent,
-    ) {
-        Self::coalesce_event_kind(state, &event);
-
-        if state.events.len() >= MAX_QUEUED_WINDOW_EVENTS
-            && Self::drop_oldest_low_priority_event(state).is_none()
-        {
-            Self::record_dropped_event(state, &event);
-            return;
-        }
-        state.events.push_back(event.clone());
-        dispatched_events.push(event);
-    }
-
-    fn coalesce_event_kind(state: &mut WindowRuntimeState, event: &WindowEvent) {
-        if !Self::is_coalescible_event(event) {
-            return;
-        }
-        state
-            .events
-            .retain(|queued| !Self::same_event_kind(queued, event));
-    }
-
-    fn is_coalescible_event(event: &WindowEvent) -> bool {
-        matches!(
-            event,
-            WindowEvent::Moved { .. }
-                | WindowEvent::Resized { .. }
-                | WindowEvent::ScaleFactorChanged { .. }
-                | WindowEvent::DisplayRefreshChanged { .. }
-                | WindowEvent::Focused(_)
-                | WindowEvent::ModifierChanged { .. }
-                | WindowEvent::MouseMove { .. }
-                | WindowEvent::MouseWheel { .. }
-                | WindowEvent::RedrawRequested
-        )
-    }
-
-    fn same_event_kind(a: &WindowEvent, b: &WindowEvent) -> bool {
-        matches!(
-            (a, b),
-            (WindowEvent::CloseRequested, WindowEvent::CloseRequested)
-                | (WindowEvent::Moved { .. }, WindowEvent::Moved { .. })
-                | (WindowEvent::Resized { .. }, WindowEvent::Resized { .. })
-                | (
-                    WindowEvent::ScaleFactorChanged { .. },
-                    WindowEvent::ScaleFactorChanged { .. }
-                )
-                | (
-                    WindowEvent::DisplayRefreshChanged { .. },
-                    WindowEvent::DisplayRefreshChanged { .. }
-                )
-                | (WindowEvent::RedrawRequested, WindowEvent::RedrawRequested)
-                | (WindowEvent::Focused(_), WindowEvent::Focused(_))
-                | (
-                    WindowEvent::ModifierChanged { .. },
-                    WindowEvent::ModifierChanged { .. }
-                )
-                | (WindowEvent::Keyboard { .. }, WindowEvent::Keyboard { .. })
-                | (
-                    WindowEvent::MouseWheel { .. },
-                    WindowEvent::MouseWheel { .. }
-                )
-                | (WindowEvent::MouseMove { .. }, WindowEvent::MouseMove { .. })
-                | (
-                    WindowEvent::MouseButton { .. },
-                    WindowEvent::MouseButton { .. }
-                )
-        )
-    }
-
-    fn is_drop_candidate(event: &WindowEvent) -> bool {
-        matches!(
-            event,
-            WindowEvent::Moved { .. }
-                | WindowEvent::Resized { .. }
-                | WindowEvent::ScaleFactorChanged { .. }
-                | WindowEvent::DisplayRefreshChanged { .. }
-                | WindowEvent::RedrawRequested
-                | WindowEvent::Focused(_)
-                | WindowEvent::ModifierChanged { .. }
-                | WindowEvent::MouseMove { .. }
-                | WindowEvent::MouseWheel { .. }
-        )
-    }
-
-    fn drop_oldest_low_priority_event(state: &mut WindowRuntimeState) -> Option<WindowEvent> {
-        let dropped = if let Some(position) = state.events.iter().position(Self::is_drop_candidate)
-        {
-            state.events.remove(position)
-        } else if let Some(position) = state
-            .events
-            .iter()
-            .position(|event| !matches!(event, WindowEvent::CloseRequested))
-        {
-            state.events.remove(position)
-        } else {
-            None
-        };
-
-        if let Some(event) = dropped.as_ref() {
-            Self::record_dropped_event(state, event);
-        }
-        dropped
-    }
-
-    fn record_dropped_event(state: &mut WindowRuntimeState, event: &WindowEvent) {
-        if matches!(event, WindowEvent::RedrawRequested) {
-            state.redraw_event_queued = false;
-            if !state.closed {
-                state.redraw_pending = true;
-            }
-        }
-        state.dropped_event_count = state.dropped_event_count.saturating_add(1);
-        if !state.queue_overflow_warned {
-            state.queue_overflow_warned = true;
-            tracing::warn!(
-                queue_limit = MAX_QUEUED_WINDOW_EVENTS,
-                dropped_events = state.dropped_event_count,
-                "window event queue reached cap; dropping low-priority events"
-            );
-        }
-    }
-
     fn lock_state(
         &self,
         operation: WindowOperation,
@@ -560,21 +257,6 @@ impl PlatformWindowControl {
         Ok(())
     }
 
-    fn lock_clipboard_text(
-        &self,
-        operation: WindowOperation,
-    ) -> FoundationResult<MutexGuard<'_, String>> {
-        self.clipboard_text.lock().map_err(|_| {
-            FoundationError::window(
-                operation,
-                WindowFailureCode::BoundaryFault,
-                Recoverability::Fatal,
-                "window clipboard lock poisoned",
-                None,
-            )
-        })
-    }
-
     fn read_cached_timing(&self) -> FoundationResult<Option<MonitorTiming>> {
         self.cached_timing
             .lock()
@@ -611,7 +293,7 @@ impl PlatformWindowControl {
 impl WindowControl for PlatformWindowControl {
     fn request_redraw(&self) -> FoundationResult<()> {
         {
-            let mut state = self.lock_state(WindowOperation::RequestRedraw)?;
+            let state = self.lock_state(WindowOperation::RequestRedraw)?;
             if state.closed {
                 return Err(FoundationError::window(
                     WindowOperation::RequestRedraw,
@@ -620,10 +302,6 @@ impl WindowControl for PlatformWindowControl {
                     "request_redraw called after window close",
                     None,
                 ));
-            }
-
-            if !state.redraw_pending && !state.redraw_event_queued {
-                state.redraw_pending = true;
             }
         }
 
@@ -649,66 +327,15 @@ impl WindowControl for PlatformWindowControl {
             }))
     }
 
-    fn clipboard_text(&self) -> FoundationResult<String> {
-        self.lock_clipboard_text(WindowOperation::PollSignals)
-            .map(|text| text.clone())
-    }
-
-    fn set_clipboard_text(&self, text: &str) -> FoundationResult<()> {
-        self.lock_clipboard_text(WindowOperation::PollSignals)
-            .map(|mut current| {
-                *current = text.to_string();
-            })
-    }
-
     fn close(&self) -> FoundationResult<()> {
-        let mut dispatched_events = Vec::new();
         {
             let mut state = self.lock_state(WindowOperation::Close)?;
             if state.closed {
                 return Ok(());
             }
-
             state.closed = true;
-            Self::queue_event(
-                &mut state,
-                &mut dispatched_events,
-                WindowEvent::CloseRequested,
-            );
         }
-        self.clear_window(WindowOperation::Close)?;
-        self.dispatch_events(&dispatched_events);
-        Ok(())
-    }
-
-    fn poll_events(&self) -> FoundationResult<Vec<WindowEvent>> {
-        let mut dispatched_events = Vec::new();
-        let mut state = self.lock_state(WindowOperation::PollSignals)?;
-        if state.redraw_pending && !state.redraw_event_queued {
-            Self::queue_redraw_event(&mut state, &mut dispatched_events);
-            state.redraw_pending = false;
-        }
-
-        let has_redraw_event = state
-            .events
-            .iter()
-            .any(|event| matches!(event, WindowEvent::RedrawRequested));
-        let events: Vec<_> = state.events.drain(..).collect();
-        if has_redraw_event {
-            state.redraw_event_queued = false;
-        }
-        if state.dropped_event_count > 0 {
-            tracing::warn!(
-                dropped_events = state.dropped_event_count,
-                queue_limit = MAX_QUEUED_WINDOW_EVENTS,
-                "window event queue dropped events before poll"
-            );
-            state.dropped_event_count = 0;
-            state.queue_overflow_warned = false;
-        }
-        drop(state);
-        self.dispatch_events(&dispatched_events);
-        Ok(events)
+        self.clear_window(WindowOperation::Close)
     }
 }
 
@@ -730,93 +357,38 @@ impl PlatformWindowFactory {
 }
 
 impl WindowFactory for PlatformWindowFactory {
-    fn init(
-        &self,
-        config: WindowConfig,
-        sink: Box<dyn WindowEventSink>,
-    ) -> FoundationResult<Box<dyn WindowControl>> {
-        let control =
-            PlatformWindowControl::with_sink(self.window.as_ref().map(Arc::clone), Arc::from(sink));
+    fn init(&self, config: WindowConfig) -> FoundationResult<Box<dyn WindowControl>> {
+        let control = PlatformWindowControl::new(self.window.as_ref().map(Arc::clone));
         control.apply_config(&config)?;
         Ok(Box::new(control))
+    }
+}
+
+fn window_size(width: u32, height: u32, high_dpi: bool) -> Option<Size> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    if high_dpi {
+        Some(Size::Logical(LogicalSize::new(
+            f64::from(width),
+            f64::from(height),
+        )))
+    } else {
+        Some(Size::Physical(PhysicalSize::new(width, height)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rldyourterm_foundation::api::window::WindowInput;
-    use winit::dpi::{PhysicalPosition, PhysicalSize};
-
-    #[test]
-    fn request_redraw_is_coalesced_until_polled() {
-        let control = PlatformWindowControl::detached();
-
-        control.request_redraw().expect("first redraw request");
-        control.request_redraw().expect("second redraw request");
-
-        let events = control.poll_events().expect("poll after redraw requests");
-        assert_eq!(events, vec![WindowEvent::RedrawRequested]);
-        assert!(control.poll_events().expect("poll idle").is_empty());
-    }
-
-    #[test]
-    fn moved_event_emits_refresh_change_once_per_timing_sample() {
-        let control = PlatformWindowControl::detached();
-
-        control
-            .push_winit_event(&WinitWindowEvent::Moved(PhysicalPosition::new(10, 20)))
-            .expect("first moved event");
-        assert_eq!(
-            control.poll_events().expect("poll first moved"),
-            vec![
-                WindowEvent::Moved { x: 10, y: 20 },
-                WindowEvent::DisplayRefreshChanged {
-                    refresh_rate_millihz: None,
-                    monitor_name: None,
-                },
-            ]
-        );
-
-        control
-            .push_winit_event(&WinitWindowEvent::Moved(PhysicalPosition::new(11, 20)))
-            .expect("second moved event");
-        assert_eq!(
-            control.poll_events().expect("poll second moved"),
-            vec![WindowEvent::Moved { x: 11, y: 20 }]
-        );
-
-        control
-            .push_winit_event(&WinitWindowEvent::Resized(PhysicalSize::new(1280, 720)))
-            .expect("resize event");
-        assert_eq!(
-            control.poll_events().expect("poll resize"),
-            vec![WindowEvent::Resized {
-                width: 1280,
-                height: 720,
-                cols: 0,
-                rows: 0,
-            }]
-        );
-    }
 
     #[test]
     fn close_is_idempotent_and_blocks_followup_redraw_requests() {
         let control = PlatformWindowControl::detached();
 
         control.close().expect("first close");
-        assert_eq!(
-            control.poll_events().expect("poll close"),
-            vec![WindowEvent::CloseRequested]
-        );
-
         control.close().expect("second close");
-        assert!(
-            control
-                .poll_events()
-                .expect("poll after second close")
-                .is_empty()
-        );
 
         let error = control
             .request_redraw()
@@ -830,172 +402,31 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_round_trip_is_deterministic() {
-        let control = PlatformWindowControl::detached();
-        control
-            .set_clipboard_text("wave3")
-            .expect("set clipboard text");
+    fn apply_config_uses_high_dpi_as_logical_size_policy() {
         assert_eq!(
-            control.clipboard_text().expect("get clipboard text"),
-            "wave3"
+            window_size(640, 480, true),
+            Some(Size::Logical(LogicalSize::new(640.0, 480.0)))
         );
+        assert_eq!(
+            window_size(640, 480, false),
+            Some(Size::Physical(PhysicalSize::new(640, 480)))
+        );
+        assert_eq!(window_size(0, 480, true), None);
+        assert_eq!(window_size(640, 0, false), None);
     }
 
     #[test]
-    fn queue_coalesces_high_frequency_event_kinds() {
+    fn detached_control_reports_unavailable_monitor_timing() {
         let control = PlatformWindowControl::detached();
-        let mut dispatched = Vec::new();
-        let mut state = control
-            .lock_state(WindowOperation::PollSignals)
-            .expect("lock state");
 
-        for x in 0..8 {
-            PlatformWindowControl::queue_event(
-                &mut state,
-                &mut dispatched,
-                WindowEvent::Moved { x, y: 1 },
-            );
-            PlatformWindowControl::queue_event(
-                &mut state,
-                &mut dispatched,
-                WindowEvent::MouseMove {
-                    x: x as f64,
-                    y: 2.0,
-                },
-            );
-        }
-
-        let moved_count = state
-            .events
-            .iter()
-            .filter(|event| matches!(event, WindowEvent::Moved { .. }))
-            .count();
-        let mouse_move_count = state
-            .events
-            .iter()
-            .filter(|event| matches!(event, WindowEvent::MouseMove { .. }))
-            .count();
-
-        assert_eq!(moved_count, 1);
-        assert_eq!(mouse_move_count, 1);
-    }
-
-    #[test]
-    fn queue_is_hard_capped_even_for_non_coalescible_events() {
-        let control = PlatformWindowControl::detached();
-        let mut dispatched = Vec::new();
-        let mut state = control
-            .lock_state(WindowOperation::PollSignals)
-            .expect("lock state");
-
-        for idx in 0..(MAX_QUEUED_WINDOW_EVENTS + 64) {
-            PlatformWindowControl::queue_event(
-                &mut state,
-                &mut dispatched,
-                WindowEvent::Keyboard {
-                    input: WindowInput::Key {
-                        key_code: idx as u32,
-                        name: format!("k{idx}"),
-                        pressed: true,
-                        repeat: false,
-                    },
-                },
-            );
-        }
-
-        assert_eq!(state.events.len(), MAX_QUEUED_WINDOW_EVENTS);
-        assert_eq!(state.dropped_event_count, 64);
-    }
-
-    #[test]
-    fn dropped_redraw_event_is_rearmed_for_next_poll() {
-        let control = PlatformWindowControl::detached();
-        let mut dispatched = Vec::new();
-        {
-            let mut state = control
-                .lock_state(WindowOperation::PollSignals)
-                .expect("lock state");
-
-            for idx in 0..(MAX_QUEUED_WINDOW_EVENTS - 1) {
-                PlatformWindowControl::queue_event(
-                    &mut state,
-                    &mut dispatched,
-                    WindowEvent::Keyboard {
-                        input: WindowInput::Key {
-                            key_code: idx as u32,
-                            name: format!("k{idx}"),
-                            pressed: true,
-                            repeat: false,
-                        },
-                    },
-                );
+        assert_eq!(
+            control
+                .current_monitor_timing()
+                .expect("timing must resolve"),
+            MonitorTiming {
+                monitor_name: None,
+                refresh_rate_millihz: None,
             }
-
-            PlatformWindowControl::queue_redraw_event(&mut state, &mut dispatched);
-            assert!(state.redraw_event_queued);
-            assert_eq!(state.events.len(), MAX_QUEUED_WINDOW_EVENTS);
-
-            PlatformWindowControl::queue_event(
-                &mut state,
-                &mut dispatched,
-                WindowEvent::Keyboard {
-                    input: WindowInput::Key {
-                        key_code: 999_999,
-                        name: "overflow".to_string(),
-                        pressed: true,
-                        repeat: false,
-                    },
-                },
-            );
-
-            assert!(state.redraw_pending);
-            assert!(!state.redraw_event_queued);
-        }
-
-        let polled = control.poll_events().expect("poll events");
-        assert!(
-            polled
-                .iter()
-                .any(|event| matches!(event, WindowEvent::RedrawRequested)),
-            "redraw must be restored after overflow dropped a queued redraw event"
-        );
-    }
-
-    #[test]
-    fn overflow_does_not_evict_close_requested_event() {
-        let control = PlatformWindowControl::detached();
-        let mut dispatched = Vec::new();
-        let mut state = control
-            .lock_state(WindowOperation::PollSignals)
-            .expect("lock state");
-
-        PlatformWindowControl::queue_event(
-            &mut state,
-            &mut dispatched,
-            WindowEvent::CloseRequested,
-        );
-
-        for idx in 0..(MAX_QUEUED_WINDOW_EVENTS + 16) {
-            PlatformWindowControl::queue_event(
-                &mut state,
-                &mut dispatched,
-                WindowEvent::Keyboard {
-                    input: WindowInput::Key {
-                        key_code: idx as u32,
-                        name: format!("kbd-{idx}"),
-                        pressed: true,
-                        repeat: false,
-                    },
-                },
-            );
-        }
-
-        assert!(
-            state
-                .events
-                .iter()
-                .any(|event| matches!(event, WindowEvent::CloseRequested)),
-            "close request must be retained under queue pressure"
         );
     }
 }

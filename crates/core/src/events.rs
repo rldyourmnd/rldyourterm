@@ -49,6 +49,16 @@ pub enum CoreEvent {
     TerminalResponse {
         data: Vec<u8>,
     },
+    CurrentWorkingDirectoryChanged {
+        path: String,
+    },
+    ClipboardSetRequested {
+        selection: char,
+        base64_data: String,
+    },
+    ShellMarkerReceived {
+        kind: crate::parser::ShellMarkerKind,
+    },
     UnsupportedSequenceIgnored {
         sequence: String,
     },

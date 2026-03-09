@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 
+use crate::grid::Cell;
+
 pub const MAX_SCROLLBACK_CAP: usize = 50_000;
-pub const DEFAULT_SCROLLBACK_BYTE_CAP: usize = 512 * 1024 * 1024;
+pub(crate) const DEFAULT_SCROLLBACK_BYTE_CAP: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scrollback {
@@ -81,6 +83,24 @@ impl Scrollback {
             dropped += 1;
         }
         dropped
+    }
+
+    /// Push a row of cells directly into scrollback, avoiding an intermediate
+    /// `row_string` allocation in the scroll hot path.
+    pub fn push_from_cells(&mut self, cells: &[Cell]) -> usize {
+        if self.cap == 0 || self.byte_cap == 0 {
+            return 1;
+        }
+
+        let mut line = String::with_capacity(cells.len());
+        for cell in cells {
+            if cell.width == 0 {
+                continue;
+            }
+            line.push(cell.ch);
+        }
+
+        self.push(line)
     }
 
     pub fn get(&self, index: usize) -> Option<&str> {
@@ -173,5 +193,48 @@ mod tests {
         assert_eq!(scrollback.byte_len(), 4);
         scrollback.clear();
         assert_eq!(scrollback.byte_len(), 0);
+    }
+
+    #[test]
+    fn push_from_cells_skips_continuation_cells() {
+        use crate::grid::{Attrs, Cell};
+
+        let cells = vec![
+            Cell {
+                ch: 'A',
+                attrs: Attrs::default(),
+                width: 1,
+            },
+            Cell {
+                ch: '\u{6F22}',
+                attrs: Attrs::default(),
+                width: 2,
+            },
+            Cell {
+                ch: '\u{6F22}',
+                attrs: Attrs::default(),
+                width: 0,
+            }, // continuation
+            Cell {
+                ch: 'B',
+                attrs: Attrs::default(),
+                width: 1,
+            },
+        ];
+        let mut scrollback = Scrollback::new(10);
+        assert_eq!(scrollback.push_from_cells(&cells), 0);
+        // Continuation cell (width=0) should be skipped: "A漢B"
+        assert_eq!(scrollback.get(0), Some("A\u{6F22}B"));
+    }
+
+    #[test]
+    fn push_from_cells_handles_all_blanks() {
+        use crate::grid::Cell;
+
+        let cells = vec![Cell::default(); 5];
+        let mut scrollback = Scrollback::new(10);
+        assert_eq!(scrollback.push_from_cells(&cells), 0);
+        // All blanks get trimmed by push()
+        assert_eq!(scrollback.get(0), Some(""));
     }
 }
