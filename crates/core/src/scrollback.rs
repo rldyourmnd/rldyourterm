@@ -58,7 +58,7 @@ impl Scrollback {
 
     pub fn push(&mut self, mut line: String) -> usize {
         if self.cap == 0 || self.byte_cap == 0 {
-            return 1;
+            return 0;
         }
 
         // Keep logical text while dropping right-side padding cells to reduce RAM.
@@ -70,7 +70,7 @@ impl Scrollback {
         }
 
         if line.len() > self.byte_cap {
-            return 1;
+            return 0;
         }
 
         self.byte_len = self.byte_len.saturating_add(line.len());
@@ -89,7 +89,7 @@ impl Scrollback {
     /// `row_string` allocation in the scroll hot path.
     pub fn push_from_cells(&mut self, cells: &[Cell]) -> usize {
         if self.cap == 0 || self.byte_cap == 0 {
-            return 1;
+            return 0;
         }
 
         let mut line = String::with_capacity(cells.len());
@@ -133,8 +133,8 @@ mod tests {
     fn cap_zero_discards_every_line() {
         let mut scrollback = Scrollback::new(0);
 
-        assert_eq!(scrollback.push("l1".to_string()), 1);
-        assert_eq!(scrollback.push("l2".to_string()), 1);
+        assert_eq!(scrollback.push("l1".to_string()), 0);
+        assert_eq!(scrollback.push("l2".to_string()), 0);
         assert!(scrollback.is_empty());
     }
 
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn oversized_line_is_dropped_when_it_exceeds_byte_budget() {
         let mut scrollback = Scrollback::with_byte_cap(10, 3);
-        assert_eq!(scrollback.push("🚀".to_string()), 1);
+        assert_eq!(scrollback.push("🚀".to_string()), 0);
         assert!(scrollback.is_empty());
         assert_eq!(scrollback.byte_len(), 0);
     }
@@ -178,7 +178,7 @@ mod tests {
         let mut scrollback = Scrollback::with_byte_cap(10, 6);
         assert_eq!(scrollback.push("ab".to_string()), 0);
         assert_eq!(scrollback.push("cd".to_string()), 0);
-        assert_eq!(scrollback.push("toolong".to_string()), 1);
+        assert_eq!(scrollback.push("toolong".to_string()), 0);
 
         assert_eq!(scrollback.len(), 2);
         assert_eq!(scrollback.get(0), Some("ab"));
