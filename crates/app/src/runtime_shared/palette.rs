@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use tracing::warn;

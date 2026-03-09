@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use crate::events::IngestDegradeReason;
 
 use super::{MAX_CSI_LEN, MAX_OSC_LEN, ParseState, Parser, ParserAction, REPLACEMENT_CHAR};

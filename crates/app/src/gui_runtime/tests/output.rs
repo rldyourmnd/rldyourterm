@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::super::{
     CHILD_EXIT_DRAIN_MAX_WAIT, MAX_FEED_BYTES_PER_CALL, OUTPUT_BATCH_MAX_BYTES,
     OUTPUT_DRAIN_CRITICAL_MAX_BYTES_PER_TICK, OUTPUT_DRAIN_ELEVATED_MAX_BYTES_PER_TICK,

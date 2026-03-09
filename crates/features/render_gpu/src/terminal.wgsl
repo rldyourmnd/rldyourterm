@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 // Terminal cell renderer — instanced quads with glyph atlas sampling.
 // Each instance is a grid cell; 6 vertices per quad (2 triangles).
 // Supports text attributes (bold, italic, underline, double underline, overline,

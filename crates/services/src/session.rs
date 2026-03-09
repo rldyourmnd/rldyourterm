@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use crate::error::{BoundaryClassification, BoundarySeverity, BoundaryStage, ServiceError};
 
 pub const DEFAULT_RECOVERABLE_BOUNDARY_BUDGET: u8 = 3;

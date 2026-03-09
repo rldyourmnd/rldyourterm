@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use anyhow::{Result, anyhow};
 use rldyourterm_foundation::api::pty::PtyIo;
 use rldyourterm_services::session::{

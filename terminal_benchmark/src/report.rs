@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use crate::cli::OutputFormatArg;
 use crate::data::WorkloadSummary;
 use crate::metrics::IterationStats;
