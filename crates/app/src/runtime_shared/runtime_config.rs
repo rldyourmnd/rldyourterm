@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 pub(crate) const DEFAULT_REFRESH_RATE_MILLIHZ: u32 = 60_000;
 
 pub(crate) fn sanitize_refresh_rate_millihz(refresh_rate_millihz: u32) -> u32 {

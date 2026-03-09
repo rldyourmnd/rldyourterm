@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::super::encode_winit_key_event;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 

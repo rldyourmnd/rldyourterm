@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 pub(crate) fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
     1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
 }

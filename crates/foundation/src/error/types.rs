@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 pub type FoundationResult<T> = std::result::Result<T, super::FoundationError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

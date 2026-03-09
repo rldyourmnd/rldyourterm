@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::{
     JoinThreadOutcome, READ_PUMP_FLUSH_INTERVAL, READ_PUMP_FLUSH_MAX_BYTES, derive_poll_timeouts,
     dispatch_runtime_palette_command, ensure_single_window, fatal_pty_boundary_failure,

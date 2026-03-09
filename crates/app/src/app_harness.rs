@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use anyhow::{Context, Result, anyhow};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
 use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode, RenderTransitionReason};

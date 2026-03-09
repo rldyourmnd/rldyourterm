@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use rldyourterm_core::TerminalState;
 use rldyourterm_integration_tests::{feed_bytes, term, term_sized};
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use rldyourterm_foundation::api::diagnostics::{
     DiagnosticConfig as FoundationDiagnosticConfig, DiagnosticEvent as FoundationDiagnosticEvent,
     DiagnosticKind as FoundationDiagnosticKind, DiagnosticLayer as FoundationDiagnosticLayer,

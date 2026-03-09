@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::*;
 use crate::error::{BoundaryClassification, BoundarySeverity, BoundaryStage, ServiceError};
 use rldyourterm_foundation::error::{
