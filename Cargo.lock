@@ -2012,6 +2012,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rldyourterm-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "rldyourterm-core",
+]
+
+[[package]]
 name = "rldyourterm-render-cpu"
 version = "0.1.0"
 dependencies = [

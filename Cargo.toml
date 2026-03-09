@@ -12,6 +12,7 @@ members = [
   "crates/features/diagnostics",
   "crates/ui",
   "crates/app",
+  "crates/integration-tests",
   "terminal_benchmark",
 ]
 resolver = "2"
