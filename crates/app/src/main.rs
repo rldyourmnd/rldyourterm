@@ -417,10 +417,17 @@ fn shell_available_on_path(name: &str) -> bool {
         return false;
     };
     std::env::split_paths(&path_value).any(|path| {
-        let shell = path.join(name);
-        let shell_exe = path.join(format!("{name}.exe"));
-        shell.is_file() || shell_exe.is_file()
+        let candidate = path.join(name);
+        is_executable_file(&candidate)
     })
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match path.metadata() {
+        Ok(meta) => meta.is_file() && (meta.permissions().mode() & 0o111 != 0),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
