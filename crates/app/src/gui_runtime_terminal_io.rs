@@ -105,6 +105,9 @@ impl GuiRuntimeApp {
             return;
         }
 
+        // Clear text selection on any key press that produces PTY input.
+        self.clear_selection();
+
         let bytes = shared_encode_winit_key_event(event, self.modifiers);
 
         if let Some(ref bytes) = bytes {

@@ -335,6 +335,8 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
         &mut dirty_rows_scratch,
         true,
         0,
+        u32::MAX,
+        u32::MAX,
     );
     let elapsed = start.elapsed();
     black_box(buffer[0]);

@@ -32,6 +32,7 @@ impl GpuRenderer {
     /// (0 = live view, >0 = user scrolled back into history).
     /// Only dirty rows are re-prepared on the CPU and uploaded to the GPU buffer.
     /// The GPU buffer retains previous frame data for clean rows.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_frame(
         &mut self,
         terminal: &TerminalState,
@@ -39,6 +40,8 @@ impl GpuRenderer {
         scroll_count: usize,
         blink_visible: bool,
         viewport_offset: usize,
+        selection_start: u32,
+        selection_end: u32,
     ) -> Result<(), GpuRenderError> {
         let backend = self
             .backend
@@ -174,10 +177,11 @@ impl GpuRenderer {
             cursor_row,
             cursor_col,
             cursor_visible,
-            selection_start: SELECTION_NONE,
-            selection_end: SELECTION_NONE,
+            selection_start,
+            selection_end,
             blink_visible: u32::from(blink_visible),
-            _pad: [0; 2],
+            cursor_shape: terminal.cursor_shape() as u32,
+            _pad: 0,
         };
         backend.queue.write_buffer(
             &backend.grid_uniform_buffer,

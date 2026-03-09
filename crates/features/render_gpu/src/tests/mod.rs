@@ -353,7 +353,7 @@ fn render_frame_returns_backend_unavailable_when_uninitialized() {
     let terminal = TerminalState::new(80, 24, 100);
     let dirty = vec![true; 24];
     assert_eq!(
-        renderer.render_frame(&terminal, &dirty, 0, true, 0),
+        renderer.render_frame(&terminal, &dirty, 0, true, 0, u32::MAX, u32::MAX),
         Err(GpuRenderError::BackendUnavailable)
     );
 }

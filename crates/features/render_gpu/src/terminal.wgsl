@@ -19,8 +19,8 @@ struct GridUniforms {
     selection_start: u32,
     selection_end: u32,
     blink_visible: u32,
+    cursor_shape: u32,
     _pad0: u32,
-    _pad1: u32,
 };
 
 struct CellInstance {
@@ -172,12 +172,32 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Cursor: invert at cursor position (flat index comparison)
+    // Cursor: shape-aware rendering (DECSCUSR)
+    // Shapes: 0/1=blinking block, 2=steady block, 3=blinking underline,
+    // 4=steady underline, 5=blinking bar, 6=steady bar.
     let cursor_index = grid.cursor_row * grid.grid_cols + grid.cursor_col;
     if grid.cursor_visible != 0u && in.instance == cursor_index {
-        let tmp = fg;
-        fg = bg;
-        bg = tmp;
+        let shape = grid.cursor_shape;
+        let is_blinking = (shape == 0u || (shape & 1u) != 0u);
+        let cursor_on = !is_blinking || grid.blink_visible != 0u;
+
+        if cursor_on {
+            let is_underline = (shape == 3u || shape == 4u);
+            let is_bar = (shape == 5u || shape == 6u);
+
+            var in_cursor = true;
+            if is_underline {
+                in_cursor = in.cell_pos.y > 0.875;
+            } else if is_bar {
+                in_cursor = in.cell_pos.x < 0.25;
+            }
+
+            if in_cursor {
+                let tmp = fg;
+                fg = bg;
+                bg = tmp;
+            }
+        }
     }
 
     // Glyph coverage from R8Unorm atlas
