@@ -87,7 +87,8 @@ fn stress_grid_uniforms_cursor_boundary_values() {
             selection_start: SELECTION_NONE,
             selection_end: SELECTION_NONE,
             blink_visible: 1,
-            _pad: [0; 2],
+            cursor_shape: 0,
+            _pad: 0,
         };
         let bytes = bytemuck::bytes_of(&uniforms);
         assert_eq!(bytes.len(), 64);

@@ -146,6 +146,8 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
         &mut dirty_rows,
         true,
         0,
+        u32::MAX,
+        u32::MAX,
     );
 
     assert!(

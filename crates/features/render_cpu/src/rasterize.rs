@@ -18,6 +18,8 @@ pub fn render_terminal_buffer(
     dirty_rows_scratch: &mut Vec<u16>,
     blink_visible: bool,
     viewport_offset: usize,
+    selection_start: u32,
+    selection_end: u32,
 ) {
     if width == 0 || height == 0 {
         return;
@@ -116,6 +118,25 @@ pub fn render_terminal_buffer(
         }
     }
 
+    // Selection highlight: invert colors for selected cell range.
+    if selection_start != u32::MAX {
+        let sel_lo = selection_start.min(selection_end);
+        let sel_hi = selection_start.max(selection_end);
+        for flat_idx in sel_lo..=sel_hi {
+            let sel_row = (flat_idx / grid_cols as u32) as usize;
+            let sel_col = (flat_idx % grid_cols as u32) as usize;
+            if sel_row < visible_rows && sel_col < visible_cols {
+                draw_cell_invert(
+                    buffer,
+                    width,
+                    height,
+                    sel_col * CELL_WIDTH,
+                    sel_row * CELL_HEIGHT,
+                );
+            }
+        }
+    }
+
     if viewport_offset == 0 && terminal.cursor.visible {
         let cursor_row = terminal.cursor.row as usize;
         let cursor_col = terminal.cursor.col as usize;
@@ -126,6 +147,8 @@ pub fn render_terminal_buffer(
                 height,
                 cursor_col * CELL_WIDTH,
                 cursor_row * CELL_HEIGHT,
+                terminal.cursor_shape(),
+                blink_visible,
             );
         }
     }
@@ -359,7 +382,8 @@ fn draw_overline(buffer: &mut [u32], width: usize, height: usize, x: usize, y: u
     buffer[row_start + x..row_start + end_x].fill(fg);
 }
 
-fn draw_cursor(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
+/// Invert a full cell for selection highlighting.
+fn draw_cell_invert(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
     let end_x = (x + CELL_WIDTH).min(width);
     for glyph_y in 0..CELL_HEIGHT {
         let pixel_y = y + glyph_y;
@@ -368,6 +392,52 @@ fn draw_cursor(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usi
         }
         let row_start = pixel_y * width;
         for pixel in &mut buffer[row_start + x..row_start + end_x] {
+            *pixel ^= 0x00FF_FFFF;
+        }
+    }
+}
+
+/// Draw cursor with DECSCUSR shape support.
+/// Shapes: 0/1=blinking block, 2=steady block, 3=blinking underline,
+/// 4=steady underline, 5=blinking bar, 6=steady bar.
+fn draw_cursor(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    cursor_shape: u8,
+    blink_visible: bool,
+) {
+    // Blinking: shapes 0,1,3,5 use blink timer; 2,4,6 are steady.
+    let is_blinking = cursor_shape == 0 || cursor_shape % 2 == 1;
+    if is_blinking && !blink_visible {
+        return;
+    }
+
+    let (y_start, y_end, x_start, x_end) = match cursor_shape {
+        3 | 4 => {
+            // Underline: bottom 2px of cell.
+            let ul_start = CELL_HEIGHT.saturating_sub(2);
+            (ul_start, CELL_HEIGHT, x, (x + CELL_WIDTH).min(width))
+        }
+        5 | 6 => {
+            // Bar: left 2px of cell.
+            (0, CELL_HEIGHT, x, (x + 2).min(width))
+        }
+        _ => {
+            // Block (0/1/2 and unknown): full cell.
+            (0, CELL_HEIGHT, x, (x + CELL_WIDTH).min(width))
+        }
+    };
+
+    for glyph_y in y_start..y_end {
+        let pixel_y = y + glyph_y;
+        if pixel_y >= height {
+            break;
+        }
+        let row_start = pixel_y * width;
+        for pixel in &mut buffer[row_start + x_start..row_start + x_end] {
             *pixel ^= 0x00FF_FFFF;
         }
     }

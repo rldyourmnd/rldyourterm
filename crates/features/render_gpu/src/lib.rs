@@ -107,8 +107,8 @@ const ATTR_CONTINUATION: u32 = 1 << 25;
 const ATTR_DOUBLE_UNDERLINE: u32 = 1 << 26;
 const ATTR_OVERLINE: u32 = 1 << 27;
 
-// Sentinel value indicating no active selection (u32::MAX).
-const SELECTION_NONE: u32 = u32::MAX;
+/// Sentinel value indicating no active selection (u32::MAX).
+pub const SELECTION_NONE: u32 = u32::MAX;
 // Matches ui::DEFAULT_TERMINAL_COLS * ui::DEFAULT_TERMINAL_ROWS for initial buffer sizing.
 const INITIAL_CELL_BUFFER_CAPACITY: usize = 120 * 32;
 const CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR: usize = 4;
@@ -133,7 +133,8 @@ struct GridUniforms {
     selection_start: u32,
     selection_end: u32,
     blink_visible: u32,
-    _pad: [u32; 2],
+    cursor_shape: u32,
+    _pad: u32,
 }
 
 #[repr(C)]
