@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use rldyourterm_core::{MouseFormat, MouseMode, TerminalState};
 use rldyourterm_integration_tests::{feed, feed_bytes, row, term, term_sized};
 

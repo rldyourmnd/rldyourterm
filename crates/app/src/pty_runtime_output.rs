@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::*;
 
 pub(super) fn is_stdout_disconnect_error(error: &io::Error) -> bool {

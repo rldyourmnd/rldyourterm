@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::super::{
     DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling, MonitorAffectingWindowEvent,
     cadence_resync_command_for_monitor_event, dispatch_gpu_failure_command,

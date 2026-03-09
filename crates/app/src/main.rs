@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use std::{io::IsTerminal, sync::Arc};
 
 use crate::runtime_shared::runtime_config::DEFAULT_REFRESH_RATE_MILLIHZ;

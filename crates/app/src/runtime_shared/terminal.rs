@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use rldyourterm_services::terminal::{MAX_FEED_BYTES_PER_CALL, TerminalState};
 
 pub(crate) const fn terminal_feed_max_bytes_per_call() -> usize {

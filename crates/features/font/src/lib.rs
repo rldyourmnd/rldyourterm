@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use font8x8::{BLOCK_FONTS, BOX_FONTS, UnicodeFonts};
 use fontdue::{Font, FontSettings};
 use std::collections::{HashMap, VecDeque};

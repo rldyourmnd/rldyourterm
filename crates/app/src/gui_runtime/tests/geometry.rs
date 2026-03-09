@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
 use super::super::{
     MAX_FRAMEBUFFER_HEIGHT, MAX_FRAMEBUFFER_PIXELS, MAX_FRAMEBUFFER_WIDTH, MAX_VIEWPORT_CELLS,
     MAX_VIEWPORT_COLS, MAX_VIEWPORT_ROWS, ViewportGeometry, cap_framebuffer_extent,
