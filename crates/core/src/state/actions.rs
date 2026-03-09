@@ -368,19 +368,27 @@ impl TerminalState {
     }
 
     fn push_scrolled_lines(&mut self, lines: u16, events: &mut Vec<CoreEvent>) {
-        let removed = self.grid.scroll_up(lines);
-        if removed.is_empty() {
+        if lines == 0 || self.grid.is_empty() {
             return;
         }
 
-        events.push(CoreEvent::GridScrolled {
-            lines: removed.len() as u16,
-        });
+        let effective_lines = lines.min(self.grid.height());
 
+        // Push rows directly from cell data into scrollback, avoiding the
+        // intermediate Vec<String> allocation that scroll_up would create.
         let mut dropped = 0usize;
-        for line in removed {
-            dropped += self.scrollback.push(line);
+        for row in 0..effective_lines {
+            if let Ok(cells) = self.grid.row_cells(row) {
+                dropped += self.scrollback.push_from_cells(cells);
+            }
         }
+
+        // Shift remaining rows up and clear vacated bottom rows.
+        self.grid.scroll_up_discard(effective_lines);
+
+        events.push(CoreEvent::GridScrolled {
+            lines: effective_lines,
+        });
         if dropped > 0 {
             events.push(CoreEvent::ScrollbackTrimmed { dropped });
         }

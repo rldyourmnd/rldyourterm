@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use crate::grid::Cell;
+
 pub const MAX_SCROLLBACK_CAP: usize = 50_000;
 pub(crate) const DEFAULT_SCROLLBACK_BYTE_CAP: usize = 512 * 1024 * 1024;
 
@@ -81,6 +83,21 @@ impl Scrollback {
             dropped += 1;
         }
         dropped
+    }
+
+    /// Push a row of cells directly into scrollback, avoiding an intermediate
+    /// `row_string` allocation in the scroll hot path.
+    pub fn push_from_cells(&mut self, cells: &[Cell]) -> usize {
+        if self.cap == 0 || self.byte_cap == 0 {
+            return 1;
+        }
+
+        let mut line = String::with_capacity(cells.len());
+        for cell in cells {
+            line.push(cell.ch);
+        }
+
+        self.push(line)
     }
 
     pub fn get(&self, index: usize) -> Option<&str> {
