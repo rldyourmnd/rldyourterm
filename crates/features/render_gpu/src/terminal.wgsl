@@ -1,6 +1,7 @@
 // Terminal cell renderer — instanced quads with glyph atlas sampling.
 // Each instance is a grid cell; 6 vertices per quad (2 triangles).
-// Supports text attributes (bold, italic, underline, strikethrough, dim, inverse),
+// Supports text attributes (bold, italic, underline, double underline, overline,
+// strikethrough, dim, inverse, blink, hidden, wide chars, custom underline color),
 // selection highlighting via uniforms, and blink via timer uniform.
 
 struct GridUniforms {
@@ -26,17 +27,23 @@ struct CellInstance {
     atlas_and_flags: u32,
     fg_color: u32,
     bg_color: u32,
-    _pad: u32,
+    underline_color: u32,
 };
 
 // Attribute flag bits in upper bits of atlas_and_flags.
 const ATLAS_MASK: u32      = 0xFFFFu;
-const BOLD_BIT: u32        = 0x10000u;
-const ITALIC_BIT: u32      = 0x20000u;
-const UNDERLINE_BIT: u32   = 0x40000u;
-const STRIKE_BIT: u32      = 0x80000u;
-const DIM_BIT: u32         = 0x100000u;
-const INVERSE_BIT: u32     = 0x200000u;
+const BOLD_BIT: u32        = 0x10000u;   // bit 16
+const ITALIC_BIT: u32      = 0x20000u;   // bit 17
+const UNDERLINE_BIT: u32   = 0x40000u;   // bit 18
+const STRIKE_BIT: u32      = 0x80000u;   // bit 19
+const DIM_BIT: u32         = 0x100000u;  // bit 20
+const INVERSE_BIT: u32     = 0x200000u;  // bit 21
+const BLINK_BIT: u32       = 0x400000u;  // bit 22
+const HIDDEN_BIT: u32      = 0x800000u;  // bit 23
+const WIDE_BIT: u32        = 0x1000000u; // bit 24
+const CONT_BIT: u32        = 0x2000000u; // bit 25
+const DBL_UL_BIT: u32      = 0x4000000u; // bit 26
+const OVERLINE_BIT: u32    = 0x8000000u; // bit 27
 
 // Selection sentinel: no active selection.
 const SEL_NONE: u32 = 0xFFFFFFFFu;
@@ -57,6 +64,7 @@ struct VertexOutput {
     @location(3) @interpolate(flat) atlas_and_flags: u32,
     @location(4) @interpolate(flat) fg_color: u32,
     @location(5) @interpolate(flat) bg_color: u32,
+    @location(6) @interpolate(flat) underline_color: u32,
 };
 
 @vertex
@@ -79,7 +87,12 @@ fn vs_main(
 
     let cell = cells[instance_index];
 
-    var px = (f32(col) + corner.x) * grid.cell_width;
+    // Wide character: double quad width to span 2 grid columns (CJK/emoji).
+    var cell_span = grid.cell_width;
+    if (cell.atlas_and_flags & WIDE_BIT) != 0u {
+        cell_span = grid.cell_width * 2.0;
+    }
+    var px = f32(col) * grid.cell_width + corner.x * cell_span;
     let py = (f32(row) + corner.y) * grid.cell_height;
 
     // Italic: screen-space shear — shift top vertices rightward (SGR 3).
@@ -106,6 +119,7 @@ fn vs_main(
     out.atlas_and_flags = cell.atlas_and_flags;
     out.fg_color = cell.fg_color;
     out.bg_color = cell.bg_color;
+    out.underline_color = cell.underline_color;
     return out;
 }
 
@@ -120,6 +134,11 @@ fn unpack_rgb(packed: u32) -> vec3<f32> {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let flags = in.atlas_and_flags;
+
+    // Continuation cell: discard to preserve wide cell's glyph underneath.
+    if (flags & CONT_BIT) != 0u {
+        discard;
+    }
 
     var fg = unpack_rgb(in.fg_color);
     var bg = unpack_rgb(in.bg_color);
@@ -166,21 +185,46 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         glyph_alpha = max(glyph_alpha, bold_alpha);
     }
 
+    // Blink: hide glyph when blink timer is off (SGR 5/6)
+    if (flags & BLINK_BIT) != 0u && grid.blink_visible == 0u {
+        glyph_alpha = 0.0;
+    }
+
+    // Hidden: render as invisible - fg becomes bg (SGR 8)
+    if (flags & HIDDEN_BIT) != 0u {
+        fg = bg;
+    }
+
+    // Decoration color for underline/double underline (SGR 58 or fallback to fg).
+    let decoration_color = select(fg, unpack_rgb(in.underline_color), in.underline_color != 0u);
+
+    // Track underline decoration zone for custom underline_color compositing.
+    var decoration_alpha: f32 = 0.0;
+
     // Underline: 1px solid line at bottom of cell (SGR 4)
     if (flags & UNDERLINE_BIT) != 0u && in.cell_pos.y > 0.9375 {
+        decoration_alpha = 1.0;
+    }
+
+    // Double underline: two 1px lines near cell bottom (SGR 21)
+    if (flags & DBL_UL_BIT) != 0u {
+        if (in.cell_pos.y > 0.8125 && in.cell_pos.y < 0.875) || in.cell_pos.y > 0.9375 {
+            decoration_alpha = 1.0;
+        }
+    }
+
+    // Overline: 1px line at top of cell (SGR 53) — uses fg color
+    if (flags & OVERLINE_BIT) != 0u && in.cell_pos.y < 0.0625 {
         glyph_alpha = 1.0;
     }
 
-    // Strikethrough: 1px line at middle of cell (SGR 9)
+    // Strikethrough: 1px line at middle of cell (SGR 9) — uses fg color
     if (flags & STRIKE_BIT) != 0u && in.cell_pos.y > 0.46875 && in.cell_pos.y < 0.53125 {
         glyph_alpha = 1.0;
     }
 
-    // Blink: hide glyph when blink timer is off (SGR 5)
-    // Blink flag would be bit 22 if set — for now blink_visible controls
-    // global blink state for future per-cell blink support.
-
-    // Composite foreground glyph over background
-    let color = mix(bg, fg, glyph_alpha);
+    // Composite: glyph over background, then underline decoration over result.
+    var color = mix(bg, fg, glyph_alpha);
+    color = mix(color, decoration_color, decoration_alpha);
     return vec4<f32>(color, 1.0);
 }

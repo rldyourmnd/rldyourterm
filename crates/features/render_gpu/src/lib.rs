@@ -100,6 +100,12 @@ const ATTR_UNDERLINE: u32 = 1 << 18;
 const ATTR_STRIKETHROUGH: u32 = 1 << 19;
 const ATTR_DIM: u32 = 1 << 20;
 const ATTR_INVERSE: u32 = 1 << 21;
+const ATTR_BLINK: u32 = 1 << 22;
+const ATTR_HIDDEN: u32 = 1 << 23;
+const ATTR_WIDE: u32 = 1 << 24;
+const ATTR_CONTINUATION: u32 = 1 << 25;
+const ATTR_DOUBLE_UNDERLINE: u32 = 1 << 26;
+const ATTR_OVERLINE: u32 = 1 << 27;
 
 // Sentinel value indicating no active selection (u32::MAX).
 const SELECTION_NONE: u32 = u32::MAX;
@@ -160,8 +166,10 @@ struct GpuBackend {
     cell_instances: Vec<CellInstance>,
     glyph_cache: GlyphCache,
     char_to_slot: HashMap<char, u16>,
+    slot_to_char: Vec<Option<char>>,
+    slot_last_used: Vec<u64>,
+    frame_counter: u64,
     next_atlas_slot: u16,
-    atlas_full_warned: bool,
     surface_state: SurfaceRuntimeState,
     underutilized_frame_streak: u16,
 }

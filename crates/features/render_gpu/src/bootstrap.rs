@@ -83,8 +83,13 @@ impl GpuRenderer {
         surface.configure(&device, &config);
 
         let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-        let (atlas_texture, char_to_slot, next_atlas_slot) =
-            build_glyph_atlas(&device, &queue, &mut glyph_cache);
+        let atlas::AtlasBuildResult {
+            texture: atlas_texture,
+            char_to_slot,
+            slot_to_char,
+            slot_last_used,
+            next_slot: next_atlas_slot,
+        } = build_glyph_atlas(&device, &queue, &mut glyph_cache);
 
         debug!(
             glyph_count = char_to_slot.len(),
@@ -117,6 +122,10 @@ impl GpuRenderer {
                 })
             });
 
+            // SAFETY: `fallback: true` ensures the driver discards corrupt or incompatible
+            // cache data and falls back to normal compilation instead of producing undefined
+            // behavior. The cache blob is loaded from a user-local directory that only this
+            // process writes to, so third-party tampering is not a supported threat model.
             unsafe {
                 Some(
                     device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
@@ -314,8 +323,10 @@ impl GpuRenderer {
             ],
             glyph_cache,
             char_to_slot,
+            slot_to_char,
+            slot_last_used,
+            frame_counter: 0,
             next_atlas_slot,
-            atlas_full_warned: false,
             surface_state: SurfaceRuntimeState::default(),
             underutilized_frame_streak: 0,
         });

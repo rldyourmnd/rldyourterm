@@ -353,7 +353,7 @@ fn render_frame_returns_backend_unavailable_when_uninitialized() {
     let terminal = TerminalState::new(80, 24, 100);
     let dirty = vec![true; 24];
     assert_eq!(
-        renderer.render_frame(&terminal, &dirty, 0),
+        renderer.render_frame(&terminal, &dirty, 0, true, 0),
         Err(GpuRenderError::BackendUnavailable)
     );
 }
@@ -497,4 +497,89 @@ fn gpu_render_error_mapping_is_deterministic() {
         GpuRenderError::BackendUnavailable.failure_kind(),
         GpuFailureKind::DeviceLost
     );
+}
+
+#[test]
+fn pack_cell_flags_sets_double_underline_bit() {
+    let attrs = Attrs {
+        double_underline: true,
+        ..Attrs::default()
+    };
+    let flags = pack_cell_flags(42, &attrs);
+    assert_eq!(flags & 0xFFFF, 42, "lower 16 bits = slot");
+    assert_ne!(
+        flags & ATTR_DOUBLE_UNDERLINE,
+        0,
+        "double_underline bit must be set"
+    );
+    assert_eq!(
+        flags & ATTR_UNDERLINE,
+        0,
+        "single underline must not be set"
+    );
+}
+
+#[test]
+fn pack_cell_flags_sets_overline_bit() {
+    let attrs = Attrs {
+        overline: true,
+        ..Attrs::default()
+    };
+    let flags = pack_cell_flags(0, &attrs);
+    assert_ne!(flags & ATTR_OVERLINE, 0, "overline bit must be set");
+}
+
+#[test]
+fn pack_cell_flags_wide_and_continuation_are_independent_of_attrs() {
+    // ATTR_WIDE and ATTR_CONTINUATION are set per-cell in write_row_instances,
+    // not by pack_cell_flags. Verify attrs alone don't set them.
+    let all_attrs = Attrs {
+        bold: true,
+        italic: true,
+        underline: true,
+        strikethrough: true,
+        dim: true,
+        inverse: true,
+        blink: true,
+        hidden: true,
+        double_underline: true,
+        overline: true,
+        ..Attrs::default()
+    };
+    let flags = pack_cell_flags(0, &all_attrs);
+    assert_eq!(flags & ATTR_WIDE, 0, "ATTR_WIDE must not be set by attrs");
+    assert_eq!(
+        flags & ATTR_CONTINUATION,
+        0,
+        "ATTR_CONTINUATION must not be set by attrs"
+    );
+}
+
+#[test]
+fn pack_cell_flags_all_bits_combined() {
+    let attrs = Attrs {
+        bold: true,
+        italic: true,
+        underline: true,
+        strikethrough: true,
+        dim: true,
+        inverse: true,
+        blink: true,
+        hidden: true,
+        double_underline: true,
+        overline: true,
+        ..Attrs::default()
+    };
+    let flags = pack_cell_flags(0xFFFF, &attrs);
+    assert_ne!(flags & ATTR_BOLD, 0);
+    assert_ne!(flags & ATTR_ITALIC, 0);
+    assert_ne!(flags & ATTR_UNDERLINE, 0);
+    assert_ne!(flags & ATTR_STRIKETHROUGH, 0);
+    assert_ne!(flags & ATTR_DIM, 0);
+    assert_ne!(flags & ATTR_INVERSE, 0);
+    assert_ne!(flags & ATTR_BLINK, 0);
+    assert_ne!(flags & ATTR_HIDDEN, 0);
+    assert_ne!(flags & ATTR_DOUBLE_UNDERLINE, 0);
+    assert_ne!(flags & ATTR_OVERLINE, 0);
+    assert_eq!(flags & 0xFFFF, 0xFFFF, "slot bits preserved");
 }

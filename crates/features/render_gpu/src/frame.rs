@@ -28,6 +28,8 @@ impl GpuRenderer {
     ///
     /// `dirty_rows` indicates which grid rows changed since last render.
     /// `scroll_count` is lines scrolled since last frame (for GPU DMA scroll optimization).
+    /// `viewport_offset` is the number of scrollback lines to show at the top of the viewport
+    /// (0 = live view, >0 = user scrolled back into history).
     /// Only dirty rows are re-prepared on the CPU and uploaded to the GPU buffer.
     /// The GPU buffer retains previous frame data for clean rows.
     pub fn render_frame(
@@ -35,11 +37,15 @@ impl GpuRenderer {
         terminal: &TerminalState,
         dirty_rows: &[bool],
         scroll_count: usize,
+        blink_visible: bool,
+        viewport_offset: usize,
     ) -> Result<(), GpuRenderError> {
         let backend = self
             .backend
             .as_mut()
             .ok_or(GpuRenderError::BackendUnavailable)?;
+
+        backend.frame_counter = backend.frame_counter.wrapping_add(1);
 
         let grid_cols = terminal.grid.width() as usize;
         let grid_rows = terminal.grid.height() as usize;
@@ -49,10 +55,27 @@ impl GpuRenderer {
             return Ok(());
         }
 
+        // When viewing scrollback, cursor is hidden and all rows need full recompositing.
+        let viewing_scrollback = viewport_offset > 0;
+        let effective_offset = viewport_offset.min(terminal.scrollback.len());
+        let sb_rows = if viewing_scrollback {
+            effective_offset.min(grid_rows)
+        } else {
+            0
+        };
+
         let cursor_row = terminal.cursor.row as u32;
         let cursor_col = terminal.cursor.col as u32;
-        let cursor_visible = u32::from(terminal.cursor.visible);
-        let content_dirty = dirty_rows.iter().any(|&d| d);
+        let cursor_visible = if viewing_scrollback {
+            0
+        } else {
+            u32::from(terminal.cursor.visible)
+        };
+        let content_dirty = if viewing_scrollback {
+            true
+        } else {
+            dirty_rows.iter().any(|&d| d)
+        };
         let cursor_changed = cursor_row != self.last_cursor_row
             || cursor_col != self.last_cursor_col
             || cursor_visible != self.last_cursor_visible;
@@ -69,7 +92,34 @@ impl GpuRenderer {
         let row_byte_size = grid_cols * std::mem::size_of::<CellInstance>();
         let mut scroll_dma: Option<(u64, u64)> = None;
 
-        if force_full_upload {
+        if viewing_scrollback {
+            // Scrollback view: compose scrollback lines at top, grid rows below.
+            for display_row in 0..sb_rows {
+                let sb_line_idx = terminal.scrollback.len() - effective_offset + display_row;
+                if let Some(line) = terminal.scrollback.get(sb_line_idx) {
+                    backend.write_scrollback_row_instances(line, display_row, grid_cols);
+                } else {
+                    let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
+                    let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
+                    let row_offset = display_row * grid_cols;
+                    backend.cell_instances[row_offset..row_offset + grid_cols].fill(CellInstance {
+                        atlas_and_flags: 0,
+                        fg_color: default_fg,
+                        bg_color: default_bg,
+                        _pad: 0,
+                    });
+                }
+            }
+            for grid_row in 0..(grid_rows - sb_rows) {
+                let display_row = sb_rows + grid_row;
+                backend.write_row_instances(terminal, grid_row, display_row, grid_cols);
+            }
+            backend.queue.write_buffer(
+                &backend.cell_buffer,
+                0,
+                bytemuck::cast_slice(&backend.cell_instances[..cell_count]),
+            );
+        } else if force_full_upload {
             backend.prepare_all_rows(terminal);
             backend.queue.write_buffer(
                 &backend.cell_buffer,
@@ -78,7 +128,8 @@ impl GpuRenderer {
             );
         }
 
-        if !force_full_upload && scroll_count > 0 && scroll_count < grid_rows {
+        if !viewing_scrollback && !force_full_upload && scroll_count > 0 && scroll_count < grid_rows
+        {
             let copy_rows = grid_rows - scroll_count;
             let first_new_row = grid_rows - scroll_count;
             let src_start = scroll_count * grid_cols;
@@ -86,7 +137,7 @@ impl GpuRenderer {
             backend.cell_instances.copy_within(src_start..src_end, 0);
 
             for row in first_new_row..grid_rows {
-                backend.write_row_instances(terminal, row, grid_cols);
+                backend.write_row_instances(terminal, row, row, grid_cols);
             }
 
             let upload_offset = (first_new_row * row_byte_size) as u64;
@@ -107,7 +158,7 @@ impl GpuRenderer {
                 &mut backend.cell_bind_group,
                 &mut backend.cell_bind_group_back,
             );
-        } else if !force_full_upload {
+        } else if !viewing_scrollback && !force_full_upload {
             prepare_and_upload_dirty_rows(backend, terminal, dirty_rows, grid_cols, row_byte_size);
         }
 
@@ -125,7 +176,7 @@ impl GpuRenderer {
             cursor_visible,
             selection_start: SELECTION_NONE,
             selection_end: SELECTION_NONE,
-            blink_visible: 1,
+            blink_visible: u32::from(blink_visible),
             _pad: [0; 2],
         };
         backend.queue.write_buffer(

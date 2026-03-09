@@ -1,6 +1,6 @@
 use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::debug;
 
 use crate::{CELL_HEIGHT, CELL_WIDTH};
 
@@ -36,15 +36,27 @@ pub(crate) fn write_glyph_to_atlas(atlas_data: &mut [u8], slot: u16, cell_buf: &
     }
 }
 
+/// Result of building the GPU glyph atlas texture.
+pub(crate) struct AtlasBuildResult {
+    pub texture: wgpu::Texture,
+    pub char_to_slot: HashMap<char, u16>,
+    pub slot_to_char: Vec<Option<char>>,
+    pub slot_last_used: Vec<u64>,
+    pub next_slot: u16,
+}
+
 pub(crate) fn build_glyph_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     glyph_cache: &mut GlyphCache,
-) -> (wgpu::Texture, HashMap<char, u16>, u16) {
+) -> AtlasBuildResult {
     let mut atlas_data = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
     let mut char_to_slot: HashMap<char, u16> = HashMap::new();
+    let mut slot_to_char: Vec<Option<char>> = vec![None; ATLAS_SLOTS];
+    let slot_last_used: Vec<u64> = vec![0; ATLAS_SLOTS];
 
     char_to_slot.insert(' ', 0);
+    slot_to_char[0] = Some(' ');
     let mut next_slot: u16 = 1;
 
     let ranges: &[(u32, u32)] = &[(0x0020, 0x007F), (0x2500, 0x257F), (0x2580, 0x259F)];
@@ -64,6 +76,7 @@ pub(crate) fn build_glyph_atlas(
                 let cell_buf = rasterize_for_atlas(glyph_cache, ch);
                 write_glyph_to_atlas(&mut atlas_data, next_slot, &cell_buf);
                 char_to_slot.insert(ch, next_slot);
+                slot_to_char[next_slot as usize] = Some(ch);
                 next_slot += 1;
             }
         }
@@ -104,7 +117,13 @@ pub(crate) fn build_glyph_atlas(
         },
     );
 
-    (texture, char_to_slot, next_slot)
+    AtlasBuildResult {
+        texture,
+        char_to_slot,
+        slot_to_char,
+        slot_last_used,
+        next_slot,
+    }
 }
 
 pub(crate) fn upload_glyph_to_atlas(
@@ -144,33 +163,48 @@ pub(crate) fn upload_glyph_to_atlas(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn ensure_glyph_in_atlas(
     ch: char,
     glyph_cache: &mut GlyphCache,
     char_to_slot: &mut HashMap<char, u16>,
+    slot_to_char: &mut [Option<char>],
+    slot_last_used: &mut [u64],
+    frame_counter: u64,
     next_slot: &mut u16,
-    atlas_full_warned: &mut bool,
     atlas_texture: &wgpu::Texture,
     queue: &wgpu::Queue,
 ) -> u16 {
     if let Some(&slot) = char_to_slot.get(&ch) {
+        slot_last_used[slot as usize] = frame_counter;
         return slot;
     }
-    if (*next_slot as usize) >= ATLAS_SLOTS {
-        if !*atlas_full_warned {
-            warn!(
-                ch = ?ch,
-                slots = ATLAS_SLOTS,
-                "glyph atlas full; character rendered as blank"
-            );
-            *atlas_full_warned = true;
+
+    let slot = if (*next_slot as usize) < ATLAS_SLOTS {
+        let s = *next_slot;
+        *next_slot = s + 1;
+        s
+    } else {
+        // LRU eviction: find the slot with the smallest last_used (skip slot 0 = blank)
+        let evict_slot = (1..ATLAS_SLOTS)
+            .min_by_key(|&i| slot_last_used[i])
+            .unwrap_or(1) as u16;
+
+        if let Some(old_ch) = slot_to_char[evict_slot as usize].take() {
+            char_to_slot.remove(&old_ch);
         }
-        return 0;
-    }
+        debug!(
+            evicted_slot = evict_slot,
+            new_char = ?ch,
+            "atlas LRU eviction"
+        );
+        evict_slot
+    };
+
     let cell_buf = rasterize_for_atlas(glyph_cache, ch);
-    let slot = *next_slot;
     upload_glyph_to_atlas(queue, atlas_texture, slot, &cell_buf);
     char_to_slot.insert(ch, slot);
-    *next_slot = slot + 1;
+    slot_to_char[slot as usize] = Some(ch);
+    slot_last_used[slot as usize] = frame_counter;
     slot
 }

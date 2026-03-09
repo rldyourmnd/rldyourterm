@@ -1,5 +1,6 @@
 use super::{
-    ATTR_BOLD, ATTR_DIM, ATTR_INVERSE, ATTR_ITALIC, ATTR_STRIKETHROUGH, ATTR_UNDERLINE,
+    ATTR_BLINK, ATTR_BOLD, ATTR_CONTINUATION, ATTR_DIM, ATTR_DOUBLE_UNDERLINE, ATTR_HIDDEN,
+    ATTR_INVERSE, ATTR_ITALIC, ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE,
     CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD, CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR, CELL_HEIGHT,
     CELL_WIDTH, CellInstance, Color, DEFAULT_BG, DEFAULT_FG, GpuBackend,
     INITIAL_CELL_BUFFER_CAPACITY, TerminalState, color_to_u32,
@@ -27,6 +28,18 @@ pub(super) fn pack_cell_flags(slot: u16, attrs: &super::Attrs) -> u32 {
     }
     if attrs.inverse {
         flags |= ATTR_INVERSE;
+    }
+    if attrs.blink {
+        flags |= ATTR_BLINK;
+    }
+    if attrs.hidden {
+        flags |= ATTR_HIDDEN;
+    }
+    if attrs.double_underline {
+        flags |= ATTR_DOUBLE_UNDERLINE;
+    }
+    if attrs.overline {
+        flags |= ATTR_OVERLINE;
     }
     flags
 }
@@ -84,22 +97,39 @@ impl GpuBackend {
         let rows = terminal.grid.height() as usize;
         let cols = terminal.grid.width() as usize;
         for row in 0..rows {
-            self.write_row_instances(terminal, row, cols);
+            self.write_row_instances(terminal, row, row, cols);
         }
     }
 
+    /// Write grid row `grid_row` into `cell_instances` at display position `display_row`.
+    /// When `grid_row == display_row`, behavior is identical to a single-row prepare.
+    /// During scrollback viewing, `display_row` shifts grid rows down to make room for
+    /// scrollback content at the top of the viewport.
     pub(super) fn write_row_instances(
         &mut self,
         terminal: &TerminalState,
-        row: usize,
+        grid_row: usize,
+        display_row: usize,
         cols: usize,
     ) {
-        let row_offset = row * cols;
-        if let Ok(row_cells) = terminal.grid.row_cells(row as u16) {
+        let row_offset = display_row * cols;
+        if let Ok(row_cells) = terminal.grid.row_cells(grid_row as u16) {
             for (col, cell) in row_cells.iter().take(cols).enumerate() {
                 let attrs = &cell.attrs;
                 let fg = color_to_u32(attrs.fg, DEFAULT_FG);
                 let bg = color_to_u32(attrs.bg, DEFAULT_BG);
+
+                // Continuation cells (width=0) are discarded in the shader;
+                // the owning wide cell's 2x quad covers their screen area.
+                if cell.width == 0 {
+                    self.cell_instances[row_offset + col] = CellInstance {
+                        atlas_and_flags: ATTR_CONTINUATION,
+                        fg_color: fg,
+                        bg_color: bg,
+                        _pad: 0,
+                    };
+                    continue;
+                }
 
                 let slot = if cell.ch == ' ' {
                     0u16
@@ -108,18 +138,36 @@ impl GpuBackend {
                         cell.ch,
                         &mut self.glyph_cache,
                         &mut self.char_to_slot,
+                        &mut self.slot_to_char,
+                        &mut self.slot_last_used,
+                        self.frame_counter,
                         &mut self.next_atlas_slot,
-                        &mut self.atlas_full_warned,
                         &self.atlas_texture,
                         &self.queue,
                     )
                 };
 
+                let mut packed = pack_cell_flags(slot, attrs);
+                if cell.width == 2 {
+                    packed |= ATTR_WIDE;
+                }
+
+                // Resolve underline decoration color for shader (SGR 58).
+                let ul_color = if attrs.underline || attrs.double_underline {
+                    if attrs.underline_color == Color::Default {
+                        fg
+                    } else {
+                        color_to_u32(attrs.underline_color, DEFAULT_FG)
+                    }
+                } else {
+                    0
+                };
+
                 self.cell_instances[row_offset + col] = CellInstance {
-                    atlas_and_flags: pack_cell_flags(slot, attrs),
+                    atlas_and_flags: packed,
                     fg_color: fg,
                     bg_color: bg,
-                    _pad: 0,
+                    _pad: ul_color,
                 };
             }
         } else {
@@ -131,6 +179,49 @@ impl GpuBackend {
                 bg_color: default_bg,
                 _pad: 0,
             });
+        }
+    }
+
+    /// Write a scrollback text line into `cell_instances` at `display_row`.
+    /// Scrollback lines have no cell attributes — all chars use default fg/bg.
+    pub(super) fn write_scrollback_row_instances(
+        &mut self,
+        line: &str,
+        display_row: usize,
+        cols: usize,
+    ) {
+        let row_offset = display_row * cols;
+        let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
+        let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
+        let blank = CellInstance {
+            atlas_and_flags: 0,
+            fg_color: default_fg,
+            bg_color: default_bg,
+            _pad: 0,
+        };
+        self.cell_instances[row_offset..row_offset + cols].fill(blank);
+
+        for (col, ch) in line.chars().take(cols).enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            let slot = ensure_glyph_in_atlas(
+                ch,
+                &mut self.glyph_cache,
+                &mut self.char_to_slot,
+                &mut self.slot_to_char,
+                &mut self.slot_last_used,
+                self.frame_counter,
+                &mut self.next_atlas_slot,
+                &self.atlas_texture,
+                &self.queue,
+            );
+            self.cell_instances[row_offset + col] = CellInstance {
+                atlas_and_flags: slot as u32,
+                fg_color: default_fg,
+                bg_color: default_bg,
+                _pad: 0,
+            };
         }
     }
 }
@@ -259,7 +350,7 @@ pub(super) fn prepare_and_upload_dirty_rows(
             if range_start.is_none() {
                 range_start = Some(row);
             }
-            backend.write_row_instances(terminal, row, grid_cols);
+            backend.write_row_instances(terminal, row, row, grid_cols);
             continue;
         }
 
