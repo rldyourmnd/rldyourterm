@@ -155,6 +155,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         bg = tmp;
     }
 
+    // Hidden: render as invisible - fg becomes bg (SGR 8)
+    // Applied before selection/cursor so the cursor remains visible on hidden cells
+    if (flags & HIDDEN_BIT) != 0u {
+        fg = bg;
+    }
+
     // Selection highlight: invert colors for selected range
     if grid.selection_start != SEL_NONE {
         let sel_lo = min(grid.selection_start, grid.selection_end);
@@ -188,11 +194,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Blink: hide glyph when blink timer is off (SGR 5/6)
     if (flags & BLINK_BIT) != 0u && grid.blink_visible == 0u {
         glyph_alpha = 0.0;
-    }
-
-    // Hidden: render as invisible - fg becomes bg (SGR 8)
-    if (flags & HIDDEN_BIT) != 0u {
-        fg = bg;
     }
 
     // Decoration color for underline/double underline (SGR 58 or fallback to fg).

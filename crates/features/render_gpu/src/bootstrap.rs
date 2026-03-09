@@ -317,7 +317,7 @@ impl GpuRenderer {
                     atlas_and_flags: 0,
                     fg_color: 0,
                     bg_color: 0,
-                    _pad: 0
+                    underline_color: 0,
                 };
                 initial_capacity
             ],
