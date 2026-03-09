@@ -25,7 +25,12 @@ pub struct Attrs {
     pub dim: bool,
     pub italic: bool,
     pub underline: bool,
+    pub double_underline: bool,
+    pub overline: bool,
+    pub underline_color: Color,
     pub inverse: bool,
+    pub hidden: bool,
+    pub blink: bool,
     pub strikethrough: bool,
 }
 
@@ -33,6 +38,7 @@ pub struct Attrs {
 pub struct Cell {
     pub ch: char,
     pub attrs: Attrs,
+    pub width: u8,
 }
 
 impl Default for Cell {
@@ -40,6 +46,7 @@ impl Default for Cell {
         Self {
             ch: BLANK_CHAR,
             attrs: Attrs::default(),
+            width: 1,
         }
     }
 }
@@ -119,5 +126,9 @@ pub struct Grid {
     pub(super) height: u16,
     pub(super) cells: Vec<Cell>,
     pub(super) dirty_rows: Vec<bool>,
+    /// Per-row soft-wrap flag. `wrapped[r] == true` means row `r` is a continuation
+    /// of the previous row's content (caused by auto-wrap, not an explicit newline).
+    /// Used by `resize_with_reflow` to merge logical lines during width changes.
+    pub(super) wrapped: Vec<bool>,
     pub(super) scroll_count: usize,
 }

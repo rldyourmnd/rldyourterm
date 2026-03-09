@@ -1,3 +1,5 @@
+use crate::scrollback::Scrollback;
+
 use super::{ANSI_PALETTE, Attrs, Cell, Color, Grid};
 
 #[test]
@@ -300,4 +302,146 @@ fn resize_resets_dirty_to_new_height() {
     grid.resize(5, 6);
     assert_eq!(grid.dirty_rows().len(), 6);
     assert!(grid.dirty_rows().iter().all(|&d| d));
+}
+
+// ── Reflow tests ────────────────────────────────────────────
+
+#[test]
+fn reflow_shrink_width_wraps_long_line() {
+    let mut grid = Grid::new(6, 3);
+    // Write "ABCDEF" across row 0
+    for (i, ch) in "ABCDEF".chars().enumerate() {
+        let _ = grid.put_char(0, i as u16, ch, Attrs::default());
+    }
+    let mut scrollback = Scrollback::new(100);
+    let (cr, cc) = grid.resize_with_reflow(3, 3, 0, 5, &mut scrollback);
+    // Row 0 should have "ABC", row 1 should have "DEF" (wrapped)
+    assert_eq!(grid.get_char(0, 0).unwrap(), 'A');
+    assert_eq!(grid.get_char(0, 2).unwrap(), 'C');
+    assert_eq!(grid.get_char(1, 0).unwrap(), 'D');
+    assert_eq!(grid.get_char(1, 2).unwrap(), 'F');
+    assert!(grid.is_row_wrapped(1));
+    assert!(!grid.is_row_wrapped(0));
+    // Cursor was at col 5 in width 6 → should be at (1, 2) in width 3
+    assert_eq!(cr, 1);
+    assert_eq!(cc, 2);
+}
+
+#[test]
+fn reflow_expand_width_merges_wrapped_rows() {
+    let mut grid = Grid::new(3, 4);
+    // Row 0: "ABC"
+    for (i, ch) in "ABC".chars().enumerate() {
+        let _ = grid.put_char(0, i as u16, ch, Attrs::default());
+    }
+    // Row 1: "DEF" (wrapped continuation)
+    for (i, ch) in "DEF".chars().enumerate() {
+        let _ = grid.put_char(1, i as u16, ch, Attrs::default());
+    }
+    grid.set_row_wrapped(1, true);
+
+    let mut scrollback = Scrollback::new(100);
+    let (cr, cc) = grid.resize_with_reflow(6, 4, 1, 2, &mut scrollback);
+    // Merged into single row: "ABCDEF"
+    assert_eq!(grid.get_char(0, 0).unwrap(), 'A');
+    assert_eq!(grid.get_char(0, 3).unwrap(), 'D');
+    assert_eq!(grid.get_char(0, 5).unwrap(), 'F');
+    // Row 1 should be empty
+    assert_eq!(grid.get_char(1, 0).unwrap(), ' ');
+    assert!(!grid.is_row_wrapped(1));
+    // Cursor at (1,2) in old grid → offset 5 in logical line → (0,5) in new
+    assert_eq!(cr, 0);
+    assert_eq!(cc, 5);
+}
+
+#[test]
+fn reflow_overflow_pushes_to_scrollback() {
+    let mut grid = Grid::new(4, 2);
+    // Row 0: "ABCD"
+    for (i, ch) in "ABCD".chars().enumerate() {
+        let _ = grid.put_char(0, i as u16, ch, Attrs::default());
+    }
+    // Row 1: "EFGH"
+    for (i, ch) in "EFGH".chars().enumerate() {
+        let _ = grid.put_char(1, i as u16, ch, Attrs::default());
+    }
+
+    let mut scrollback = Scrollback::new(100);
+    // Shrink to width 2, height 2 → each 4-char line becomes 2 rows, total 4 rows for 2 slots
+    let (_cr, _cc) = grid.resize_with_reflow(2, 2, 1, 3, &mut scrollback);
+    // 2 overflow rows pushed to scrollback
+    assert_eq!(scrollback.len(), 2);
+    // Visible grid should have last 2 rows
+    assert_eq!(grid.get_char(0, 0).unwrap(), 'E');
+    assert_eq!(grid.get_char(1, 0).unwrap(), 'G');
+}
+
+#[test]
+fn reflow_preserves_hard_line_breaks() {
+    let mut grid = Grid::new(4, 3);
+    // Row 0: "AB" (not full width, not wrapped)
+    let _ = grid.put_char(0, 0, 'A', Attrs::default());
+    let _ = grid.put_char(0, 1, 'B', Attrs::default());
+    // Row 1: "CD" (separate logical line - hard break)
+    let _ = grid.put_char(1, 0, 'C', Attrs::default());
+    let _ = grid.put_char(1, 1, 'D', Attrs::default());
+    // wrapped[1] = false (default, hard break)
+
+    let mut scrollback = Scrollback::new(100);
+    let (_cr, _cc) = grid.resize_with_reflow(8, 3, 0, 0, &mut scrollback);
+    // Two separate logical lines, each on its own row (not merged)
+    assert_eq!(grid.get_char(0, 0).unwrap(), 'A');
+    assert_eq!(grid.get_char(0, 1).unwrap(), 'B');
+    assert_eq!(grid.get_char(0, 2).unwrap(), ' '); // not merged with row 1
+    assert_eq!(grid.get_char(1, 0).unwrap(), 'C');
+    assert_eq!(grid.get_char(1, 1).unwrap(), 'D');
+}
+
+#[test]
+fn reflow_same_size_is_noop() {
+    let mut grid = Grid::new(5, 3);
+    let _ = grid.put_char(0, 0, 'X', Attrs::default());
+    let mut scrollback = Scrollback::new(100);
+    let (cr, cc) = grid.resize_with_reflow(5, 3, 0, 0, &mut scrollback);
+    assert_eq!(cr, 0);
+    assert_eq!(cc, 0);
+    assert_eq!(grid.get_char(0, 0).unwrap(), 'X');
+}
+
+#[test]
+fn reflow_wrapped_flag_propagates_through_scroll() {
+    let mut grid = Grid::new(3, 3);
+    grid.set_row_wrapped(2, true);
+    assert!(grid.is_row_wrapped(2));
+    // Scroll up should shift wrapped flags
+    grid.scroll_up_discard(1);
+    // Row 2 → row 1, new row 2 is cleared
+    assert!(grid.is_row_wrapped(1));
+    assert!(!grid.is_row_wrapped(2));
+}
+
+#[test]
+fn reflow_cursor_on_continuation_cell_snaps_to_wide_column() {
+    let mut grid = Grid::new(10, 2);
+    // Place a wide char at (0, 4) with continuation at (0, 5)
+    let _ = grid.put_char_with_width(0, 4, '\u{6F22}', Attrs::default(), 2);
+    let mut scrollback = Scrollback::new(100);
+    // Cursor at col=5 (continuation cell); resize to 8 to trigger reflow
+    let (cr, cc) = grid.resize_with_reflow(8, 2, 0, 5, &mut scrollback);
+    assert_eq!(cr, 0);
+    // Cursor should snap to col 4 (owning wide cell's start position)
+    assert_eq!(cc, 4);
+}
+
+#[test]
+fn reflow_cursor_on_trailing_blank_clamps_after_trim() {
+    let mut grid = Grid::new(10, 2);
+    let _ = grid.put_char(0, 0, 'A', Attrs::default());
+    let _ = grid.put_char(0, 1, 'B', Attrs::default());
+    let mut scrollback = Scrollback::new(100);
+    // Cursor at col=9 (trailing blank); resize to 5 to trigger reflow
+    let (cr, cc) = grid.resize_with_reflow(5, 2, 0, 9, &mut scrollback);
+    assert_eq!(cr, 0);
+    // After trimming trailing blanks, cursor should clamp within content bounds
+    assert!(cc <= 1, "cursor col {cc} should clamp to content end");
 }

@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthChar;
+
 use crate::{
     events::{CoreEvent, DisplayClearMode, LineClearMode},
     grid::{Attrs, Color, Grid},
@@ -13,6 +15,7 @@ impl TerminalState {
         }
 
         let width = self.grid.width();
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1) as u8;
 
         // VT100 deferred wrap: if wrap_pending is set from a previous print
         // at the last column, execute the actual wrap now before printing.
@@ -27,6 +30,35 @@ impl TerminalState {
             } else {
                 self.cursor.row = row + 1;
             }
+            // Mark the new row as a soft-wrap continuation
+            self.grid.set_row_wrapped(self.cursor.row, true);
+        }
+
+        // Wide char that doesn't fit at end of line: wrap first
+        if char_width == 2 && self.cursor.col + 1 >= width {
+            if self.auto_wrap {
+                let row = self.cursor.row;
+                events.push(CoreEvent::LineWrapped { row });
+                self.cursor.col = 0;
+                if row >= self.scroll_bottom() {
+                    self.scroll_up_at_bottom(1, events);
+                    self.cursor.row = self.scroll_bottom();
+                } else {
+                    self.cursor.row = row + 1;
+                }
+                // Mark the new row as a soft-wrap continuation
+                self.grid.set_row_wrapped(self.cursor.row, true);
+            } else {
+                // No-wrap mode: can't fit wide char, treat as 1-width
+                let height = self.grid.height();
+                let row = self.cursor.row.min(height.saturating_sub(1));
+                let col = self.cursor.col.min(width.saturating_sub(1));
+                self.cursor.row = row;
+                self.cursor.col = col;
+                let _ = self.grid.put_char(row, col, ch, self.pen);
+                self.last_printed_char = Some(ch);
+                return;
+            }
         }
 
         let height = self.grid.height();
@@ -35,17 +67,47 @@ impl TerminalState {
         self.cursor.row = row;
         self.cursor.col = col;
 
-        let _ = self.grid.put_char(row, col, ch, self.pen);
+        let _ = self
+            .grid
+            .put_char_with_width(row, col, ch, self.pen, char_width);
+        self.last_printed_char = Some(ch);
 
-        if col + 1 >= width {
+        let advance = col.saturating_add(char_width as u16);
+        if advance >= width {
             if self.auto_wrap {
-                // Deferred wrap: stay at last column, set pending flag.
-                // The wrap will execute on the next printable character.
                 self.cursor.wrap_pending = true;
+                self.cursor.col = width.saturating_sub(1);
             }
-            // In both auto_wrap and no-wrap mode, cursor stays at last column
         } else {
-            self.cursor.col = col + 1;
+            self.cursor.col = advance;
+        }
+    }
+
+    pub(super) fn apply_repeat_last_char(&mut self, count: u16, events: &mut Vec<CoreEvent>) {
+        if let Some(ch) = self.last_printed_char {
+            for _ in 0..count {
+                self.apply_print(ch, events);
+            }
+        }
+    }
+
+    pub(super) fn apply_horizontal_tab_set(&mut self) {
+        let col = self.cursor.col as usize;
+        if col < self.tab_stops.len() {
+            self.tab_stops[col] = true;
+        }
+    }
+
+    pub(super) fn apply_tab_clear(&mut self, mode: u16) {
+        match mode {
+            0 => {
+                let col = self.cursor.col as usize;
+                if col < self.tab_stops.len() {
+                    self.tab_stops[col] = false;
+                }
+            }
+            3 => self.tab_stops.fill(false),
+            _ => {}
         }
     }
 
@@ -95,8 +157,16 @@ impl TerminalState {
             return;
         }
         self.cursor.wrap_pending = false;
-        let next_tab = (self.cursor.col / 8).saturating_add(1).saturating_mul(8);
-        self.cursor.col = next_tab.min(self.grid.width().saturating_sub(1));
+        let max_col = self.grid.width().saturating_sub(1);
+        let start = (self.cursor.col as usize).saturating_add(1);
+        let width = self.grid.width() as usize;
+        for col in start..width {
+            if self.tab_stops.get(col).copied().unwrap_or(false) {
+                self.cursor.col = (col as u16).min(max_col);
+                return;
+            }
+        }
+        self.cursor.col = max_col;
     }
 
     pub(super) fn apply_cursor_relative(
@@ -203,15 +273,26 @@ impl TerminalState {
                 2 => self.pen.dim = true,
                 3 => self.pen.italic = true,
                 4 => self.pen.underline = true,
+                5 | 6 => self.pen.blink = true,
                 7 => self.pen.inverse = true,
+                8 => self.pen.hidden = true,
                 9 => self.pen.strikethrough = true,
+                21 => {
+                    self.pen.underline = false;
+                    self.pen.double_underline = true;
+                }
                 22 => {
                     self.pen.bold = false;
                     self.pen.dim = false;
                 }
                 23 => self.pen.italic = false,
-                24 => self.pen.underline = false,
+                24 => {
+                    self.pen.underline = false;
+                    self.pen.double_underline = false;
+                }
+                25 => self.pen.blink = false,
                 27 => self.pen.inverse = false,
+                28 => self.pen.hidden = false,
                 29 => self.pen.strikethrough = false,
                 30..=37 => self.pen.fg = Color::Indexed((code - 30) as u8),
                 38 => {
@@ -227,6 +308,14 @@ impl TerminalState {
                     }
                 }
                 49 => self.pen.bg = Color::Default,
+                53 => self.pen.overline = true,
+                55 => self.pen.overline = false,
+                58 => {
+                    if let Some(color) = parse_extended_color(params, &mut i) {
+                        self.pen.underline_color = color;
+                    }
+                }
+                59 => self.pen.underline_color = Color::Default,
                 90..=97 => self.pen.fg = Color::Indexed((code - 90 + 8) as u8),
                 100..=107 => self.pen.bg = Color::Indexed((code - 100 + 8) as u8),
                 _ => {} // ignore unknown SGR codes
@@ -250,6 +339,27 @@ impl TerminalState {
         }
     }
 
+    /// Mode 47/1047: switch to alternate screen without saving cursor.
+    pub(super) fn apply_alternate_screen_enter_simple(&mut self) {
+        if self.alternate_screen.is_some() {
+            return;
+        }
+
+        let w = self.grid.width();
+        let h = self.grid.height();
+        let saved = AlternateScreenState {
+            grid: std::mem::replace(&mut self.grid, Grid::new(w, h)),
+            cursor: self.cursor,
+            pen: self.pen,
+            scrollback: std::mem::replace(&mut self.scrollback, Scrollback::new(0)),
+            saved_cursor: self.saved_cursor.take(),
+            scroll_region: self.scroll_region.take(),
+        };
+
+        self.alternate_screen = Some(Box::new(saved));
+    }
+
+    /// Mode 1049: switch to alternate screen with cursor save/restore.
     pub(super) fn apply_alternate_screen_enter(&mut self) {
         if self.alternate_screen.is_some() {
             return;
@@ -310,12 +420,20 @@ impl TerminalState {
     }
 
     pub(super) fn apply_insert_lines(&mut self, n: u16) {
+        let top = self.scroll_top();
         let bottom = self.scroll_bottom();
+        if self.cursor.row < top || self.cursor.row > bottom {
+            return;
+        }
         self.grid.insert_lines(self.cursor.row, n, bottom);
     }
 
     pub(super) fn apply_delete_lines(&mut self, n: u16) {
+        let top = self.scroll_top();
         let bottom = self.scroll_bottom();
+        if self.cursor.row < top || self.cursor.row > bottom {
+            return;
+        }
         self.grid.delete_lines(self.cursor.row, n, bottom);
     }
 

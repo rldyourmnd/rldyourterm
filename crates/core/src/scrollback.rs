@@ -94,6 +94,9 @@ impl Scrollback {
 
         let mut line = String::with_capacity(cells.len());
         for cell in cells {
+            if cell.width == 0 {
+                continue;
+            }
             line.push(cell.ch);
         }
 
@@ -190,5 +193,48 @@ mod tests {
         assert_eq!(scrollback.byte_len(), 4);
         scrollback.clear();
         assert_eq!(scrollback.byte_len(), 0);
+    }
+
+    #[test]
+    fn push_from_cells_skips_continuation_cells() {
+        use crate::grid::{Attrs, Cell};
+
+        let cells = vec![
+            Cell {
+                ch: 'A',
+                attrs: Attrs::default(),
+                width: 1,
+            },
+            Cell {
+                ch: '\u{6F22}',
+                attrs: Attrs::default(),
+                width: 2,
+            },
+            Cell {
+                ch: '\u{6F22}',
+                attrs: Attrs::default(),
+                width: 0,
+            }, // continuation
+            Cell {
+                ch: 'B',
+                attrs: Attrs::default(),
+                width: 1,
+            },
+        ];
+        let mut scrollback = Scrollback::new(10);
+        assert_eq!(scrollback.push_from_cells(&cells), 0);
+        // Continuation cell (width=0) should be skipped: "A漢B"
+        assert_eq!(scrollback.get(0), Some("A\u{6F22}B"));
+    }
+
+    #[test]
+    fn push_from_cells_handles_all_blanks() {
+        use crate::grid::Cell;
+
+        let cells = vec![Cell::default(); 5];
+        let mut scrollback = Scrollback::new(10);
+        assert_eq!(scrollback.push_from_cells(&cells), 0);
+        // All blanks get trimmed by push()
+        assert_eq!(scrollback.get(0), Some(""));
     }
 }

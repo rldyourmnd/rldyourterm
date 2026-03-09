@@ -1,6 +1,8 @@
 use crate::events::{DisplayClearMode, IngestDegradeReason};
 
-use super::{MAX_CSI_LEN, MAX_OSC_LEN, MAX_SGR_PARAMS, Parser, ParserAction, SgrParams};
+use super::{
+    MAX_CSI_LEN, MAX_OSC_LEN, MAX_SGR_PARAMS, Parser, ParserAction, SgrParams, ShellMarkerKind,
+};
 
 #[test]
 fn dcs_followed_by_normal_text() {
@@ -324,4 +326,162 @@ fn multi_param_private_csi_reset() {
     assert!(actions.contains(&ParserAction::ApplicationCursorKeys(false)));
     assert!(actions.contains(&ParserAction::SetCursorVisible(false)));
     assert!(actions.contains(&ParserAction::BracketedPasteMode(false)));
+}
+
+// ── OSC 7: Current Working Directory ────────────────────────
+
+#[test]
+fn osc_7_sets_cwd_from_file_uri() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]7;file://hostname/home/user/project\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::SetCurrentWorkingDirectory(
+            "/home/user/project".to_string()
+        )]
+    );
+}
+
+#[test]
+fn osc_7_sets_cwd_from_raw_path() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]7;/tmp/test\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::SetCurrentWorkingDirectory(
+            "/tmp/test".to_string()
+        )]
+    );
+}
+
+#[test]
+fn osc_7_with_st_terminator() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]7;file://localhost/usr/bin\x1b\\");
+    assert_eq!(
+        actions,
+        vec![ParserAction::SetCurrentWorkingDirectory(
+            "/usr/bin".to_string()
+        )]
+    );
+}
+
+#[test]
+fn osc_7_empty_path_ignored() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]7;\x07");
+    assert!(actions.is_empty());
+}
+
+// ── OSC 52: Clipboard Set ───────────────────────────────────
+
+#[test]
+fn osc_52_clipboard_set() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]52;c;SGVsbG8=\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ClipboardSet {
+            selection: 'c',
+            base64_data: "SGVsbG8=".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn osc_52_clipboard_query_ignored() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]52;c;?\x07");
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn osc_52_empty_data_ignored() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]52;c;\x07");
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn osc_52_oversized_payload_ignored() {
+    let mut parser = Parser::default();
+    // 100KB decoded = ~133KB base64 encoded
+    let large_b64 = "A".repeat(140_000);
+    let mut payload = b"\x1b]52;c;".to_vec();
+    payload.extend(large_b64.as_bytes());
+    payload.push(0x07);
+    let actions = parser.feed(&payload);
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn osc_52_primary_selection() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]52;p;dGVzdA==\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ClipboardSet {
+            selection: 'p',
+            base64_data: "dGVzdA==".to_string(),
+        }]
+    );
+}
+
+// ── OSC 133: Shell Markers ──────────────────────────────────
+
+#[test]
+fn osc_133_prompt_start() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]133;A\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ShellMarker(ShellMarkerKind::PromptStart)]
+    );
+}
+
+#[test]
+fn osc_133_command_start() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]133;B\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ShellMarker(ShellMarkerKind::CommandStart)]
+    );
+}
+
+#[test]
+fn osc_133_output_start() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]133;C\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ShellMarker(ShellMarkerKind::OutputStart)]
+    );
+}
+
+#[test]
+fn osc_133_output_end() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]133;D\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ShellMarker(ShellMarkerKind::OutputEnd)]
+    );
+}
+
+#[test]
+fn osc_133_unknown_marker_ignored() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]133;Z\x07");
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn osc_133_with_st_terminator() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]133;A\x1b\\");
+    assert_eq!(
+        actions,
+        vec![ParserAction::ShellMarker(ShellMarkerKind::PromptStart)]
+    );
 }

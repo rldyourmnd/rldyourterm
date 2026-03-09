@@ -71,6 +71,10 @@ impl Parser {
                 actions.push(ParserAction::ApplicationKeypadMode(false));
                 self.state = ParseState::Ground;
             }
+            b'H' => {
+                actions.push(ParserAction::HorizontalTabSet);
+                self.state = ParseState::Ground;
+            }
             b'P' => {
                 // DCS (Device Control String) - absorb payload until ST
                 self.state = ParseState::Dcs;
@@ -281,8 +285,60 @@ fn parse_osc(raw: &str) -> Option<ParserAction> {
     let code: u16 = code_str.parse().ok()?;
     match code {
         0 | 2 => Some(ParserAction::SetWindowTitle(payload.to_string())),
+        7 => parse_osc_7_cwd(payload),
+        52 => parse_osc_52_clipboard(payload),
+        133 => parse_osc_133_shell_marker(payload),
         _ => None,
     }
+}
+
+fn parse_osc_7_cwd(payload: &str) -> Option<ParserAction> {
+    // OSC 7 ; file://hostname/path ST
+    // Extract path from file:// URI, or accept raw path
+    let path = if let Some(rest) = payload.strip_prefix("file://") {
+        // Skip hostname (up to next '/')
+        rest.find('/').map(|idx| &rest[idx..]).unwrap_or(rest)
+    } else {
+        payload
+    };
+    if path.is_empty() {
+        return None;
+    }
+    Some(ParserAction::SetCurrentWorkingDirectory(path.to_string()))
+}
+
+const OSC_52_MAX_DECODED_BYTES: usize = 100 * 1024;
+
+fn parse_osc_52_clipboard(payload: &str) -> Option<ParserAction> {
+    // OSC 52 ; selection ; base64-data ST
+    let (selection_str, data) = payload.split_once(';')?;
+    let selection = selection_str.chars().next().unwrap_or('c');
+    if data.is_empty() || data == "?" {
+        // Query or empty - not a set
+        return None;
+    }
+    // Validate base64 length won't exceed decoded cap
+    let estimated_decoded = data.len() * 3 / 4;
+    if estimated_decoded > OSC_52_MAX_DECODED_BYTES {
+        return None;
+    }
+    Some(ParserAction::ClipboardSet {
+        selection,
+        base64_data: data.to_string(),
+    })
+}
+
+fn parse_osc_133_shell_marker(payload: &str) -> Option<ParserAction> {
+    // OSC 133 ; A|B|C|D ST
+    let marker = payload.chars().next()?;
+    let kind = match marker {
+        'A' => super::ShellMarkerKind::PromptStart,
+        'B' => super::ShellMarkerKind::CommandStart,
+        'C' => super::ShellMarkerKind::OutputStart,
+        'D' => super::ShellMarkerKind::OutputEnd,
+        _ => return None,
+    };
+    Some(ParserAction::ShellMarker(kind))
 }
 
 const fn is_csi_final_byte(byte: u8) -> bool {

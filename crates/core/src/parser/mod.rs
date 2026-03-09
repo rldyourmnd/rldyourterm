@@ -7,9 +7,10 @@ mod tests_advanced;
 mod tests_basic;
 
 use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
+use crate::state::{MouseFormat, MouseMode};
 
 const MAX_CSI_LEN: usize = 64;
-const MAX_OSC_LEN: usize = 512;
+const MAX_OSC_LEN: usize = 4096;
 const REPLACEMENT_CHAR: char = '\u{FFFD}';
 
 pub const MAX_SGR_PARAMS: usize = 16;
@@ -43,6 +44,14 @@ impl Default for SgrParams {
             len: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellMarkerKind {
+    PromptStart,
+    CommandStart,
+    OutputStart,
+    OutputEnd,
 }
 
 const MAX_CSI_PARAMS: usize = 32;
@@ -123,6 +132,24 @@ pub enum ParserAction {
     ReverseIndex,
     NextLine,
     ApplicationKeypadMode(bool),
+    RepeatLastChar(u16),
+    HorizontalTabSet,
+    TabClear(u16),
+    SetMouseMode(MouseMode),
+    SetMouseFormat(MouseFormat),
+    AlternateScreenEnterSimple,
+    AlternateScreenLeaveSimple,
+    CursorSavePositionDec,
+    CursorRestorePositionDec,
+    SetCursorBlink(bool),
+    SetFocusReporting(bool),
+    SetSynchronizedOutput(bool),
+    SetCurrentWorkingDirectory(String),
+    ClipboardSet {
+        selection: char,
+        base64_data: String,
+    },
+    ShellMarker(ShellMarkerKind),
     SendPrimaryDA,
     SendDeviceStatusReport,
     SendDeviceOk,

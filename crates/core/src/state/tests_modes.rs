@@ -1,7 +1,7 @@
 use crate::events::{CoreEvent, DisplayClearMode};
 use crate::grid::{Attrs, Color};
 
-use super::TerminalState;
+use super::{MouseFormat, MouseMode, TerminalState};
 
 #[test]
 fn cursor_save_restore_preserves_pen() {
@@ -9,6 +9,150 @@ fn cursor_save_restore_preserves_pen() {
     let _ = state.feed(b"\x1b[1;31m\x1b7\x1b[0m\x1b8");
     assert!(state.pen.bold);
     assert_eq!(state.pen.fg, Color::Indexed(1));
+}
+
+#[test]
+fn sgr_hidden_sets_and_resets() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[8m");
+    assert!(state.pen.hidden);
+    let _ = state.feed(b"\x1b[28m");
+    assert!(!state.pen.hidden);
+}
+
+#[test]
+fn sgr_blink_sets_and_resets() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[5m");
+    assert!(state.pen.blink);
+    let _ = state.feed(b"\x1b[25m");
+    assert!(!state.pen.blink);
+    // SGR 6 (rapid blink) also sets blink
+    let _ = state.feed(b"\x1b[6m");
+    assert!(state.pen.blink);
+    // SGR 0 resets all
+    let _ = state.feed(b"\x1b[0m");
+    assert!(!state.pen.blink);
+    assert!(!state.pen.hidden);
+}
+
+#[test]
+fn csi_b_repeats_last_printed_char() {
+    let mut state = TerminalState::new(10, 1, 5);
+    // Print 'A' then repeat it 3 times via CSI 3 b
+    let _ = state.feed(b"A\x1b[3b");
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "AAAA      ");
+}
+
+#[test]
+fn csi_b_without_prior_print_is_noop() {
+    let mut state = TerminalState::new(10, 1, 5);
+    // No prior print, REP should do nothing
+    let _ = state.feed(b"\x1b[5b");
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "          ");
+}
+
+#[test]
+fn csi_b_default_repeats_once() {
+    let mut state = TerminalState::new(10, 1, 5);
+    // CSI b with no param defaults to 1 repeat
+    let _ = state.feed(b"X\x1b[b");
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "XX        ");
+}
+
+#[test]
+fn hts_sets_tab_stop_at_cursor() {
+    let mut state = TerminalState::new(20, 1, 5);
+    // Move to col 5 and set tab stop
+    state.cursor.col = 5;
+    let _ = state.feed(b"\x1bH");
+    // Move to col 0 and tab - should land on col 5
+    state.cursor.col = 0;
+    let _ = state.feed(b"\t");
+    assert_eq!(state.cursor.col, 5);
+}
+
+#[test]
+fn tbc_clears_current_tab_stop() {
+    let mut state = TerminalState::new(20, 1, 5);
+    // Default tab at col 8. Move there and clear.
+    state.cursor.col = 8;
+    let _ = state.feed(b"\x1b[0g");
+    // Tab from col 0 should now skip col 8 and go to col 16
+    state.cursor.col = 0;
+    let _ = state.feed(b"\t");
+    assert_eq!(state.cursor.col, 16);
+}
+
+#[test]
+fn tbc_clears_all_tab_stops() {
+    let mut state = TerminalState::new(20, 1, 5);
+    // Clear all tab stops
+    let _ = state.feed(b"\x1b[3g");
+    // Tab should go to last column (no stops left)
+    state.cursor.col = 0;
+    let _ = state.feed(b"\t");
+    assert_eq!(state.cursor.col, 19);
+}
+
+#[test]
+fn tab_uses_default_8_column_stops() {
+    let mut state = TerminalState::new(40, 1, 5);
+    state.cursor.col = 0;
+    let _ = state.feed(b"\t");
+    assert_eq!(state.cursor.col, 8);
+    let _ = state.feed(b"\t");
+    assert_eq!(state.cursor.col, 16);
+}
+
+#[test]
+fn wide_char_occupies_two_columns() {
+    let mut state = TerminalState::new(10, 1, 5);
+    // CJK character U+4E16 ('世') is width 2
+    let _ = state.feed("世".as_bytes());
+    assert_eq!(state.cursor.col, 2);
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "世        ");
+    // Check cell widths
+    let cells = state.grid.row_cells(0).expect("cells");
+    assert_eq!(cells[0].width, 2);
+    assert_eq!(cells[0].ch, '世');
+    assert_eq!(cells[1].width, 0); // continuation
+}
+
+#[test]
+fn wide_char_at_last_column_wraps() {
+    let mut state = TerminalState::new(5, 2, 5);
+    // Print 4 narrow chars, then a wide char (needs 2 cols but only 1 left)
+    let _ = state.feed("ABCD世".as_bytes());
+    // Wide char should wrap to next line
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "ABCD ");
+    assert_eq!(state.cursor.row, 1);
+    assert_eq!(state.cursor.col, 2);
+}
+
+#[test]
+fn overwrite_continuation_clears_wide_char() {
+    let mut state = TerminalState::new(10, 1, 5);
+    let _ = state.feed("世".as_bytes());
+    // Overwrite col 1 (continuation) with narrow char
+    state.cursor.col = 1;
+    let _ = state.feed(b"X");
+    let cells = state.grid.row_cells(0).expect("cells");
+    // Col 0 should now be blank (wide char cleared)
+    assert_eq!(cells[0].ch, ' ');
+    assert_eq!(cells[0].width, 1);
+    // Col 1 should be 'X'
+    assert_eq!(cells[1].ch, 'X');
+    assert_eq!(cells[1].width, 1);
+}
+
+#[test]
+fn row_string_skips_continuation_cells() {
+    let mut state = TerminalState::new(10, 1, 5);
+    let _ = state.feed("AB世CD".as_bytes());
+    // Should be "AB世CD" not "AB世 CD" (continuation cell skipped)
+    let s = state.grid.row_string(0).expect("row 0");
+    assert_eq!(s, "AB世CD    ");
 }
 
 #[test]
@@ -44,6 +188,92 @@ fn scroll_region_confines_scrolling() {
     assert_eq!(state.grid.row_string(2).expect("row 2"), "DDD");
     assert_eq!(state.grid.row_string(3).expect("row 3"), "   ");
     assert_eq!(state.grid.row_string(4).expect("row 4"), "EEE");
+}
+
+#[test]
+fn insert_lines_outside_scroll_region_is_noop() {
+    let mut state = TerminalState::new(5, 5, 10);
+    for row in 0..5u16 {
+        let ch = (b'A' + row as u8) as char;
+        for col in 0..5u16 {
+            let _ = state.grid.put_char(row, col, ch, Attrs::default());
+        }
+    }
+    // Set scroll region rows 1..3 (0-indexed)
+    let _ = state.feed(b"\x1b[2;4r");
+
+    // Move cursor above scroll region (row 0) and insert lines
+    state.cursor.row = 0;
+    state.cursor.col = 0;
+    let _ = state.feed(b"\x1b[1L");
+
+    // Grid should be unchanged - IL is no-op outside scroll region
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "AAAAA");
+    assert_eq!(state.grid.row_string(1).expect("row 1"), "BBBBB");
+    assert_eq!(state.grid.row_string(4).expect("row 4"), "EEEEE");
+
+    // Move cursor below scroll region (row 4) and insert lines
+    state.cursor.row = 4;
+    let _ = state.feed(b"\x1b[1L");
+
+    // Grid should still be unchanged
+    assert_eq!(state.grid.row_string(4).expect("row 4"), "EEEEE");
+}
+
+#[test]
+fn delete_lines_outside_scroll_region_is_noop() {
+    let mut state = TerminalState::new(5, 5, 10);
+    for row in 0..5u16 {
+        let ch = (b'A' + row as u8) as char;
+        for col in 0..5u16 {
+            let _ = state.grid.put_char(row, col, ch, Attrs::default());
+        }
+    }
+    // Set scroll region rows 1..3 (0-indexed)
+    let _ = state.feed(b"\x1b[2;4r");
+
+    // Move cursor above scroll region (row 0) and delete lines
+    state.cursor.row = 0;
+    state.cursor.col = 0;
+    let _ = state.feed(b"\x1b[1M");
+
+    // Grid should be unchanged - DL is no-op outside scroll region
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "AAAAA");
+    assert_eq!(state.grid.row_string(1).expect("row 1"), "BBBBB");
+    assert_eq!(state.grid.row_string(4).expect("row 4"), "EEEEE");
+
+    // Move cursor below scroll region (row 4) and delete lines
+    state.cursor.row = 4;
+    let _ = state.feed(b"\x1b[1M");
+
+    // Grid should still be unchanged
+    assert_eq!(state.grid.row_string(4).expect("row 4"), "EEEEE");
+}
+
+#[test]
+fn insert_lines_inside_scroll_region_works() {
+    let mut state = TerminalState::new(5, 5, 10);
+    for row in 0..5u16 {
+        let ch = (b'A' + row as u8) as char;
+        for col in 0..5u16 {
+            let _ = state.grid.put_char(row, col, ch, Attrs::default());
+        }
+    }
+    // Set scroll region rows 1..3 (0-indexed)
+    let _ = state.feed(b"\x1b[2;4r");
+
+    // Move cursor inside scroll region (row 1) and insert 1 line
+    state.cursor.row = 1;
+    state.cursor.col = 0;
+    let _ = state.feed(b"\x1b[1L");
+
+    // Row 0 and row 4 are outside region, unchanged
+    assert_eq!(state.grid.row_string(0).expect("row 0"), "AAAAA");
+    assert_eq!(state.grid.row_string(4).expect("row 4"), "EEEEE");
+    // Row 1 should now be blank (inserted), B pushed down, D (row 3 content) lost
+    assert_eq!(state.grid.row_string(1).expect("row 1"), "     ");
+    assert_eq!(state.grid.row_string(2).expect("row 2"), "BBBBB");
+    assert_eq!(state.grid.row_string(3).expect("row 3"), "CCCCC");
 }
 
 #[test]
@@ -496,4 +726,189 @@ fn deferred_wrap_resize_clears_flag() {
     assert!(state.cursor.wrap_pending);
     state.resize(5, 3);
     assert!(!state.cursor.wrap_pending);
+}
+
+#[test]
+fn mouse_mode_basic_enables_and_disables() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert_eq!(state.mouse_mode(), MouseMode::Off);
+    let _ = state.feed(b"\x1b[?1000h");
+    assert_eq!(state.mouse_mode(), MouseMode::Basic);
+    let _ = state.feed(b"\x1b[?1000l");
+    assert_eq!(state.mouse_mode(), MouseMode::Off);
+}
+
+#[test]
+fn mouse_mode_button_track_and_any_event() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[?1002h");
+    assert_eq!(state.mouse_mode(), MouseMode::ButtonTrack);
+    let _ = state.feed(b"\x1b[?1003h");
+    assert_eq!(state.mouse_mode(), MouseMode::AnyEvent);
+    let _ = state.feed(b"\x1b[?1003l");
+    assert_eq!(state.mouse_mode(), MouseMode::Off);
+}
+
+#[test]
+fn mouse_sgr_format_enables_and_disables() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert_eq!(state.mouse_format(), MouseFormat::Normal);
+    let _ = state.feed(b"\x1b[?1006h");
+    assert_eq!(state.mouse_format(), MouseFormat::Sgr);
+    let _ = state.feed(b"\x1b[?1006l");
+    assert_eq!(state.mouse_format(), MouseFormat::Normal);
+}
+
+#[test]
+fn mouse_mode_combined_enable() {
+    let mut state = TerminalState::new(10, 5, 5);
+    // Some programs enable mouse mode and SGR in a single CSI
+    let _ = state.feed(b"\x1b[?1000;1006h");
+    assert_eq!(state.mouse_mode(), MouseMode::Basic);
+    assert_eq!(state.mouse_format(), MouseFormat::Sgr);
+}
+
+#[test]
+fn alternate_screen_simple_mode_47() {
+    let mut state = TerminalState::new(4, 2, 5);
+    let _ = state.feed(b"ABCD");
+    let cursor_before = state.cursor;
+    let _ = state.feed(b"\x1b[?47h");
+    // Alternate screen should be active, grid cleared
+    assert_eq!(state.grid.row_string(0).expect("alt row 0"), "    ");
+    // Cursor is NOT saved (simple mode)
+    let _ = state.feed(b"XY");
+    let _ = state.feed(b"\x1b[?47l");
+    // Main screen restored
+    assert_eq!(state.grid.row_string(0).expect("main row 0"), "ABCD");
+    // Cursor should be restored to position before enter (simple doesn't save)
+    assert_eq!(state.cursor.row, cursor_before.row);
+}
+
+#[test]
+fn focus_reporting_toggle() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert!(!state.focus_reporting_enabled());
+    let _ = state.feed(b"\x1b[?1004h");
+    assert!(state.focus_reporting_enabled());
+    let _ = state.feed(b"\x1b[?1004l");
+    assert!(!state.focus_reporting_enabled());
+}
+
+#[test]
+fn synchronized_output_toggle() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert!(!state.synchronized_output_enabled());
+    let _ = state.feed(b"\x1b[?2026h");
+    assert!(state.synchronized_output_enabled());
+    let _ = state.feed(b"\x1b[?2026l");
+    assert!(!state.synchronized_output_enabled());
+}
+
+#[test]
+fn cursor_save_restore_dec_mode_1048() {
+    let mut state = TerminalState::new(10, 10, 5);
+    state.cursor.row = 3;
+    state.cursor.col = 7;
+    let _ = state.feed(b"\x1b[?1048h");
+    state.cursor.row = 0;
+    state.cursor.col = 0;
+    let _ = state.feed(b"\x1b[?1048l");
+    assert_eq!(state.cursor.row, 3);
+    assert_eq!(state.cursor.col, 7);
+}
+
+// ── OSC integration tests ──────────────────────────────────
+
+#[test]
+fn osc_7_stores_cwd_and_deduplicates() {
+    let mut state = TerminalState::new(80, 24, 5);
+    let events = state.feed(b"\x1b]7;file://host/home/user/project\x07");
+    assert_eq!(state.cwd(), "/home/user/project");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::CurrentWorkingDirectoryChanged { .. }))
+    );
+
+    // Sending same CWD again should not emit another event
+    let events = state.feed(b"\x1b]7;file://host/home/user/project\x07");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::CurrentWorkingDirectoryChanged { .. }))
+    );
+
+    // Different CWD should emit
+    let events = state.feed(b"\x1b]7;/tmp\x07");
+    assert_eq!(state.cwd(), "/tmp");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::CurrentWorkingDirectoryChanged { .. }))
+    );
+}
+
+#[test]
+fn osc_52_stores_pending_clipboard() {
+    let mut state = TerminalState::new(80, 24, 5);
+    let events = state.feed(b"\x1b]52;c;SGVsbG8=\x07");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::ClipboardSetRequested { .. }))
+    );
+
+    let pending = state.take_pending_clipboard();
+    assert_eq!(pending, Some(('c', "SGVsbG8=".to_string())));
+    // Second take should return None
+    assert_eq!(state.take_pending_clipboard(), None);
+}
+
+#[test]
+fn cwd_and_window_title_are_independent() {
+    let mut state = TerminalState::new(80, 24, 5);
+    let _ = state.feed(b"\x1b]0;My Title\x07");
+    let _ = state.feed(b"\x1b]7;/home/user\x07");
+    assert_eq!(state.window_title(), "My Title");
+    assert_eq!(state.cwd(), "/home/user");
+}
+
+#[test]
+fn sgr_double_underline_sets_and_resets() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[21m");
+    assert!(state.pen.double_underline);
+    assert!(!state.pen.underline);
+    // SGR 24 resets both underline and double_underline
+    let _ = state.feed(b"\x1b[24m");
+    assert!(!state.pen.double_underline);
+    assert!(!state.pen.underline);
+}
+
+#[test]
+fn sgr_overline_sets_and_resets() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[53m");
+    assert!(state.pen.overline);
+    let _ = state.feed(b"\x1b[55m");
+    assert!(!state.pen.overline);
+}
+
+#[test]
+fn sgr_underline_color_sets_rgb() {
+    let mut state = TerminalState::new(10, 5, 5);
+    // SGR 58;2;255;0;128 sets underline color to RGB(255,0,128)
+    let _ = state.feed(b"\x1b[58;2;255;0;128m");
+    assert_eq!(state.pen.underline_color, Color::Rgb(255, 0, 128));
+}
+
+#[test]
+fn sgr_underline_color_resets_to_default() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[58;2;255;0;128m");
+    assert_eq!(state.pen.underline_color, Color::Rgb(255, 0, 128));
+    // SGR 59 resets underline color to default
+    let _ = state.feed(b"\x1b[59m");
+    assert_eq!(state.pen.underline_color, Color::Default);
 }

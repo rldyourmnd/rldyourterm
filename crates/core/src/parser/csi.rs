@@ -1,5 +1,7 @@
 use crate::events::{DisplayClearMode, LineClearMode};
 
+use crate::state::{MouseFormat, MouseMode};
+
 use super::{CsiParams, MAX_CSI_PARAMS, Parser, ParserAction, SgrParams};
 
 impl Parser {
@@ -106,6 +108,11 @@ impl Parser {
                     _ => None,
                 }
             }
+            b'b' => Some(ParserAction::RepeatLastChar(step_param(&parsed))),
+            b'g' => {
+                let mode = parsed.first().and_then(|p| p).unwrap_or(0);
+                Some(ParserAction::TabClear(mode))
+            }
             _ => None,
         }
     }
@@ -146,8 +153,26 @@ impl Parser {
             (25, b'l') => Some(ParserAction::SetCursorVisible(false)),
             (1049, b'h') => Some(ParserAction::AlternateScreenEnter),
             (1049, b'l') => Some(ParserAction::AlternateScreenLeave),
+            (12, b'h') => Some(ParserAction::SetCursorBlink(true)),
+            (12, b'l') => Some(ParserAction::SetCursorBlink(false)),
+            (47, b'h') | (1047, b'h') => Some(ParserAction::AlternateScreenEnterSimple),
+            (47, b'l') | (1047, b'l') => Some(ParserAction::AlternateScreenLeaveSimple),
+            (1000, b'h') => Some(ParserAction::SetMouseMode(MouseMode::Basic)),
+            (1000, b'l') => Some(ParserAction::SetMouseMode(MouseMode::Off)),
+            (1002, b'h') => Some(ParserAction::SetMouseMode(MouseMode::ButtonTrack)),
+            (1002, b'l') => Some(ParserAction::SetMouseMode(MouseMode::Off)),
+            (1003, b'h') => Some(ParserAction::SetMouseMode(MouseMode::AnyEvent)),
+            (1003, b'l') => Some(ParserAction::SetMouseMode(MouseMode::Off)),
+            (1004, b'h') => Some(ParserAction::SetFocusReporting(true)),
+            (1004, b'l') => Some(ParserAction::SetFocusReporting(false)),
+            (1006, b'h') => Some(ParserAction::SetMouseFormat(MouseFormat::Sgr)),
+            (1006, b'l') => Some(ParserAction::SetMouseFormat(MouseFormat::Normal)),
+            (1048, b'h') => Some(ParserAction::CursorSavePositionDec),
+            (1048, b'l') => Some(ParserAction::CursorRestorePositionDec),
             (2004, b'h') => Some(ParserAction::BracketedPasteMode(true)),
             (2004, b'l') => Some(ParserAction::BracketedPasteMode(false)),
+            (2026, b'h') => Some(ParserAction::SetSynchronizedOutput(true)),
+            (2026, b'l') => Some(ParserAction::SetSynchronizedOutput(false)),
             _ => None,
         }
     }

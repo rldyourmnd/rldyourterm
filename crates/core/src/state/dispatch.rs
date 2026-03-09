@@ -117,6 +117,53 @@ impl TerminalState {
                     data: b"\x1b[0n".to_vec(),
                 });
             }
+            ParserAction::RepeatLastChar(n) => self.apply_repeat_last_char(n, events),
+            ParserAction::HorizontalTabSet => self.apply_horizontal_tab_set(),
+            ParserAction::TabClear(mode) => self.apply_tab_clear(mode),
+            ParserAction::SetMouseMode(mode) => {
+                self.mouse_mode = mode;
+            }
+            ParserAction::SetMouseFormat(format) => {
+                self.mouse_format = format;
+            }
+            ParserAction::AlternateScreenEnterSimple => {
+                self.apply_alternate_screen_enter_simple();
+                events.push(CoreEvent::AlternateScreenEntered);
+            }
+            ParserAction::AlternateScreenLeaveSimple => {
+                self.apply_alternate_screen_leave();
+                events.push(CoreEvent::AlternateScreenLeft);
+            }
+            ParserAction::CursorSavePositionDec => self.apply_cursor_save(),
+            ParserAction::CursorRestorePositionDec => self.apply_cursor_restore(events),
+            ParserAction::SetCursorBlink(enabled) => {
+                self.cursor_blink = enabled;
+            }
+            ParserAction::SetFocusReporting(enabled) => {
+                self.focus_reporting = enabled;
+            }
+            ParserAction::SetSynchronizedOutput(enabled) => {
+                self.synchronized_output = enabled;
+            }
+            ParserAction::SetCurrentWorkingDirectory(path) => {
+                if self.cwd != path {
+                    self.cwd = path.clone();
+                    events.push(CoreEvent::CurrentWorkingDirectoryChanged { path });
+                }
+            }
+            ParserAction::ClipboardSet {
+                selection,
+                base64_data,
+            } => {
+                self.pending_clipboard = Some((selection, base64_data.clone()));
+                events.push(CoreEvent::ClipboardSetRequested {
+                    selection,
+                    base64_data,
+                });
+            }
+            ParserAction::ShellMarker(kind) => {
+                events.push(CoreEvent::ShellMarkerReceived { kind });
+            }
             ParserAction::UnsupportedSequence(sequence) => {
                 events.push(CoreEvent::UnsupportedSequenceIgnored { sequence });
             }

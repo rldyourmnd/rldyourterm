@@ -1,6 +1,6 @@
 use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 
-use super::{MAX_CSI_LEN, Parser, ParserAction, SgrParams};
+use super::{MAX_CSI_LEN, MAX_OSC_LEN, Parser, ParserAction, SgrParams};
 
 #[test]
 fn parses_printable_and_basic_controls() {
@@ -340,7 +340,7 @@ fn unknown_private_mode_is_unsupported() {
 fn oversized_osc_is_discarded() {
     let mut parser = Parser::default();
     let mut payload = vec![0x1B, b']', b'0', b';'];
-    payload.extend(std::iter::repeat_n(b'X', 600));
+    payload.extend(std::iter::repeat_n(b'X', MAX_OSC_LEN + 100));
     payload.push(0x07);
     let actions = parser.feed(&payload);
     assert!(actions.is_empty());
