@@ -5,7 +5,7 @@
 [![Security](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml/badge.svg?branch=main&event=audit)](https://github.com/rldyourmnd/rldyourterm/security/overview)
 [![CodeQL](https://github.com/rldyourmnd/rldyourterm/actions/workflows/codeql.yml/badge.svg)](https://github.com/rldyourmnd/rldyourterm/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/rldyourmnd/rldyourterm/badge)](https://securityscorecards.dev/viewer/?uri=github.com/rldyourmnd/rldyourterm)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
 [![crates.io](https://img.shields.io/crates/v/rldyourterm-app.svg)](https://crates.io/crates/rldyourterm-app)
 

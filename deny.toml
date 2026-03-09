@@ -37,6 +37,7 @@ confidence-threshold = 0.93
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
+    "GPL-3.0-only",
     "MIT",
     "BSL-1.0",
     "BSD-2-Clause",
