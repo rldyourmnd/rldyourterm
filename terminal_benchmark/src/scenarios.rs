@@ -3,10 +3,11 @@ use crate::data::{Workload, WorkloadScale};
 use crate::metrics::IterationStats;
 use crate::report::{BenchmarkSuiteReport, ScenarioReport};
 use anyhow::Result;
+use rldyourterm_core::Parser;
 use rldyourterm_font::GlyphCache;
 use rldyourterm_render_cpu::{CpuRenderer, render_terminal_buffer};
 use rldyourterm_services::terminal::{
-    CELL_HEIGHT, CELL_WIDTH, MAX_FEED_BYTES_PER_CALL, TerminalState,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, MAX_FEED_BYTES_PER_CALL, TerminalState,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -45,6 +46,8 @@ fn selected_scenarios(selection: ScenarioArg) -> Vec<ScenarioArg> {
         ScenarioArg::All => vec![
             ScenarioArg::CoreIngestBurst,
             ScenarioArg::CoreScrollbackFlood,
+            ScenarioArg::CoreParserThroughput,
+            ScenarioArg::CoreGridScroll,
             ScenarioArg::CpuRenderFull,
             ScenarioArg::CpuRenderDelta,
             ScenarioArg::CpuCycleIngestRenderDelta,
@@ -120,6 +123,8 @@ fn run_iteration(
         ScenarioArg::All => unreachable!("all is expanded before execution"),
         ScenarioArg::CoreIngestBurst => bench_core_ingest_burst(cli, workload),
         ScenarioArg::CoreScrollbackFlood => bench_core_scrollback_flood(cli, workload),
+        ScenarioArg::CoreParserThroughput => bench_core_parser_throughput(cli, workload),
+        ScenarioArg::CoreGridScroll => bench_core_grid_scroll(cli),
         ScenarioArg::CpuRenderFull => bench_cpu_render_full(cli, workload),
         ScenarioArg::CpuRenderDelta => bench_cpu_render_delta(cli, workload),
         ScenarioArg::CpuCycleIngestRenderDelta => {
@@ -173,6 +178,56 @@ fn bench_core_scrollback_flood(cli: &Cli, workload: &Workload) -> Result<Iterati
         notes: vec![format!(
             "scrollback_lines={} capped_at={}",
             scrollback_lines, cli.scrollback_cap
+        )],
+    })
+}
+
+fn bench_core_parser_throughput(cli: &Cli, workload: &Workload) -> Result<IterationOutcome> {
+    let mut parser = Parser::default();
+    let mut actions = Vec::new();
+    let chunk_bytes = canonical_chunk_bytes(cli.chunk_bytes);
+    let start = Instant::now();
+    for chunk in workload.ai_burst.chunks(chunk_bytes) {
+        parser.feed_into(chunk, &mut actions);
+        black_box(actions.len());
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: workload.ai_burst.len() as u64,
+        byte_units: workload.ai_burst.len() as u64,
+        notes: vec![format!(
+            "chunks={} last_action_count={}",
+            chunk_count(&workload.ai_burst, chunk_bytes),
+            actions.len()
+        )],
+    })
+}
+
+fn bench_core_grid_scroll(cli: &Cli) -> Result<IterationOutcome> {
+    let mut grid = Grid::new(cli.cols, cli.rows);
+    let rows = cli.rows as usize;
+    let cols = cli.cols as usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let _ = grid.put_char(row as u16, col as u16, 'X', Attrs::default());
+        }
+    }
+    let scroll_iterations = rows.saturating_mul(200);
+    let start = Instant::now();
+    for _ in 0..scroll_iterations {
+        grid.scroll_up_discard(1);
+        grid.clear_dirty_rows();
+    }
+    let elapsed = start.elapsed();
+    black_box(grid.height());
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: scroll_iterations as u64,
+        byte_units: (scroll_iterations * cols * std::mem::size_of::<u32>()) as u64,
+        notes: vec![format!(
+            "scroll_iterations={} grid={}x{}",
+            scroll_iterations, cli.cols, cli.rows
         )],
     })
 }
@@ -332,6 +387,8 @@ fn scenario_name(scenario: ScenarioArg) -> &'static str {
         ScenarioArg::All => "all",
         ScenarioArg::CoreIngestBurst => "core-ingest-burst",
         ScenarioArg::CoreScrollbackFlood => "core-scrollback-flood",
+        ScenarioArg::CoreParserThroughput => "core-parser-throughput",
+        ScenarioArg::CoreGridScroll => "core-grid-scroll",
         ScenarioArg::CpuRenderFull => "cpu-render-full",
         ScenarioArg::CpuRenderDelta => "cpu-render-delta",
         ScenarioArg::CpuCycleIngestRenderDelta => "cpu-cycle-ingest-render-delta",
@@ -346,6 +403,12 @@ fn scenario_description(scenario: ScenarioArg) -> &'static str {
         ScenarioArg::CoreScrollbackFlood => {
             "Deep scrollback ingest and trimming pressure through TerminalState"
         }
+        ScenarioArg::CoreParserThroughput => {
+            "Isolated ANSI parser throughput without grid dispatch"
+        }
+        ScenarioArg::CoreGridScroll => {
+            "Grid scroll_up_discard throughput with copy_within and dirty tracking"
+        }
         ScenarioArg::CpuRenderFull => "Canonical full-frame CPU render snapshot",
         ScenarioArg::CpuRenderDelta => "Canonical dirty-row CPU delta render",
         ScenarioArg::CpuCycleIngestRenderDelta => "Steady-state ingest plus CPU delta render cycle",
@@ -358,7 +421,10 @@ fn scenario_description(scenario: ScenarioArg) -> &'static str {
 fn scenario_primary_unit(scenario: ScenarioArg) -> &'static str {
     match scenario {
         ScenarioArg::All => "n/a",
-        ScenarioArg::CoreIngestBurst | ScenarioArg::CoreScrollbackFlood => "bytes",
+        ScenarioArg::CoreIngestBurst
+        | ScenarioArg::CoreScrollbackFlood
+        | ScenarioArg::CoreParserThroughput => "bytes",
+        ScenarioArg::CoreGridScroll => "scrolls",
         ScenarioArg::CpuRenderFull
         | ScenarioArg::CpuRenderDelta
         | ScenarioArg::CpuCycleIngestRenderDelta => "cells",
@@ -383,7 +449,9 @@ mod tests {
     #[test]
     fn all_selection_expands_to_canonical_suite() {
         let scenarios = selected_scenarios(ScenarioArg::All);
-        assert_eq!(scenarios.len(), 6);
+        assert_eq!(scenarios.len(), 8);
+        assert!(scenarios.contains(&ScenarioArg::CoreParserThroughput));
+        assert!(scenarios.contains(&ScenarioArg::CoreGridScroll));
         assert!(scenarios.contains(&ScenarioArg::CpuPixelRasterDelta));
     }
 

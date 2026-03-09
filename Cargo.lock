@@ -2057,6 +2057,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rldyourterm-core",
  "rldyourterm-font",
  "rldyourterm-render-cpu",
  "rldyourterm-services",

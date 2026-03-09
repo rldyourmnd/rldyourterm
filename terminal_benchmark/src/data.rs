@@ -173,8 +173,8 @@ fn build_render_seed(cols: u16, lines: usize) -> Vec<u8> {
 
 fn build_delta_batches(cols: u16, lines_per_iteration: usize) -> Vec<Vec<u8>> {
     let width = usize::from(cols.max(24));
-    let mut batches = Vec::with_capacity(6);
-    for batch_index in 0..6 {
+    let mut batches = Vec::with_capacity(3);
+    for batch_index in 0..3 {
         let mut output = String::new();
         for line_index in 0..lines_per_iteration {
             let absolute = batch_index * lines_per_iteration + line_index;
@@ -223,7 +223,7 @@ mod tests {
         assert!(summary.ai_burst_bytes > 0);
         assert!(summary.scrollback_flood_bytes > summary.ai_burst_bytes / 2);
         assert!(summary.render_seed_bytes > 0);
-        assert_eq!(summary.delta_batches, 6);
+        assert_eq!(summary.delta_batches, 3);
         assert!(summary.delta_batch_bytes > 0);
     }
 }
