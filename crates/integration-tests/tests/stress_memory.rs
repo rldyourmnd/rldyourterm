@@ -93,11 +93,11 @@ fn resize_shrink_expand_preserves_content() {
     }
     if !found_hello {
         for i in 0..t.scrollback.len() {
-            if let Some(line) = t.scrollback.get(i) {
-                if line.contains("Hello") {
-                    found_hello = true;
-                    break;
-                }
+            if let Some(line) = t.scrollback.get(i)
+                && line.contains("Hello")
+            {
+                found_hello = true;
+                break;
             }
         }
     }
@@ -186,7 +186,7 @@ fn simulated_ai_session_stability() {
     // Verify terminal is still healthy
     assert!(t.cursor.row < t.grid.height());
     assert!(t.cursor.col < t.grid.width());
-    assert!(t.scrollback.len() > 0);
+    assert!(!t.scrollback.is_empty());
     // Scrollback should be at or near cap
     assert!(t.scrollback.len() <= 5000);
 }
