@@ -122,6 +122,13 @@ pub fn render_terminal_buffer(
     // The softbuffer framebuffer persists across frames; clean rows already have
     // correct XOR-inverted pixels from the previous frame. Re-inverting them
     // would toggle the highlight off (XOR is its own inverse).
+    // Skip the cursor cell to avoid double-XOR with the cursor pass below
+    // (two XOR operations cancel out, making the cursor invisible on selection).
+    let cursor_flat = if viewport_offset == 0 && terminal.cursor.visible {
+        (terminal.cursor.row as usize) * grid_cols + terminal.cursor.col as usize
+    } else {
+        usize::MAX
+    };
     if selection_start != u32::MAX {
         let sel_lo = selection_start.min(selection_end) as usize;
         let sel_hi = selection_start.max(selection_end) as usize;
@@ -135,6 +142,9 @@ pub fn render_terminal_buffer(
             let start_col = sel_lo.saturating_sub(row_flat_start);
             let end_col = (sel_hi - row_flat_start).min(grid_cols - 1);
             for col in start_col..=end_col.min(visible_cols - 1) {
+                if row_flat_start + col == cursor_flat {
+                    continue;
+                }
                 draw_cell_invert(
                     buffer,
                     width,
