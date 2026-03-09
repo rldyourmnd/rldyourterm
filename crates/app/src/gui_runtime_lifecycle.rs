@@ -131,7 +131,30 @@ impl GuiRuntimeApp {
             }
         }
         self.response_buffer_scratch = response_buffer;
+        self.dispatch_pending_clipboard();
         true
+    }
+
+    fn dispatch_pending_clipboard(&mut self) {
+        if let Some((_selection, base64_data)) = self.terminal.take_pending_clipboard() {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(&base64_data) {
+                Ok(decoded) => {
+                    if let Ok(text) = String::from_utf8(decoded) {
+                        if let Err(err) = self.clipboard.set_text(&text) {
+                            debug!(%err, "failed to set clipboard via OSC 52");
+                        } else {
+                            debug!(bytes = text.len(), "clipboard set via OSC 52");
+                        }
+                    } else {
+                        debug!("OSC 52 clipboard payload is not valid UTF-8");
+                    }
+                }
+                Err(err) => {
+                    debug!(%err, "OSC 52 clipboard payload is not valid base64");
+                }
+            }
+        }
     }
 
     fn flush_output_batch(&mut self, batch: &mut Vec<u8>, event_loop: &ActiveEventLoop) -> bool {
