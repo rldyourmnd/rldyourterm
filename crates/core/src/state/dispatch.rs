@@ -20,7 +20,10 @@ impl TerminalState {
             }
             ParserAction::LineFeed => self.apply_line_feed(events),
             ParserAction::CarriageReturn => self.apply_carriage_return(events),
-            ParserAction::Bell => events.push(CoreEvent::Bell),
+            ParserAction::Bell => {
+                self.pending_bell = true;
+                events.push(CoreEvent::Bell);
+            }
             ParserAction::Backspace => self.apply_backspace(events),
             ParserAction::Tab => self.apply_tab(events),
             ParserAction::CursorUp(steps) => self.apply_cursor_relative(-(steps as i32), 0, events),
