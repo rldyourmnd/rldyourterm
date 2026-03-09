@@ -101,7 +101,11 @@ impl Parser {
             b'r' => {
                 let top = position_param(&parsed, 0);
                 let bottom = if parsed.len() >= 2 {
-                    parsed.get(1).flatten().map(|value| value - 1)
+                    parsed
+                        .get(1)
+                        .flatten()
+                        .filter(|&value| value > 0)
+                        .map(|value| value.saturating_sub(1))
                 } else {
                     None
                 };

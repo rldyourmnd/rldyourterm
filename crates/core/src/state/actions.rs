@@ -411,12 +411,8 @@ impl TerminalState {
             self.scroll_region = Some((top, bottom));
         }
         // CSI r also homes the cursor
-        let from = self.cursor;
         self.cursor.row = 0;
         self.cursor.col = 0;
-        if from != self.cursor {
-            // no event needed for implicit home from CSI r
-        }
     }
 
     pub(super) fn apply_insert_lines(&mut self, n: u16) {

@@ -926,3 +926,16 @@ fn decscusr_sets_cursor_shape() {
     let _ = state.feed(b"\x1b[0 q");
     assert_eq!(state.cursor_shape(), 0);
 }
+
+#[test]
+fn decstbm_zero_bottom_does_not_underflow() {
+    // CSI 0;0r sends both params as 0. The bottom param (0) must not underflow
+    // when converted from 1-based to 0-based via subtraction.
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[0;0r");
+    // With both params defaulting, scroll_region should be cleared (full screen)
+    assert_eq!(state.scroll_region, None);
+    // Cursor must be homed
+    assert_eq!(state.cursor.row, 0);
+    assert_eq!(state.cursor.col, 0);
+}
