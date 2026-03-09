@@ -132,6 +132,7 @@ impl GuiRuntimeApp {
         }
         self.response_buffer_scratch = response_buffer;
         self.dispatch_pending_clipboard();
+        self.dispatch_pending_bell();
         true
     }
 
@@ -154,6 +155,15 @@ impl GuiRuntimeApp {
                     debug!(%err, "OSC 52 clipboard payload is not valid base64");
                 }
             }
+        }
+    }
+
+    fn dispatch_pending_bell(&mut self) {
+        if self.terminal.take_pending_bell()
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+            trace!("bell: requested window attention");
         }
     }
 

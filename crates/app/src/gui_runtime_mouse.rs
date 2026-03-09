@@ -23,6 +23,13 @@ impl GuiRuntimeApp {
             return;
         }
 
+        // Selection drag: update selection_end while left button held and mouse mode is off.
+        if self.selection_anchor.is_some() && self.mouse_buttons & 1 != 0 {
+            self.selection_end = Some((row, col));
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+        }
+
         let mouse_mode = self.terminal.mouse_mode();
         match mouse_mode {
             MouseMode::AnyEvent => {
@@ -56,11 +63,6 @@ impl GuiRuntimeApp {
         button: winit::event::MouseButton,
         event_loop: &ActiveEventLoop,
     ) {
-        let mouse_mode = self.terminal.mouse_mode();
-        if mouse_mode == MouseMode::Off {
-            return;
-        }
-
         let button_code = match button {
             winit::event::MouseButton::Left => 0u8,
             winit::event::MouseButton::Middle => 1,
@@ -75,6 +77,27 @@ impl GuiRuntimeApp {
             self.mouse_buttons &= !(1 << button_code);
         }
 
+        let mouse_mode = self.terminal.mouse_mode();
+
+        // Selection: left click when mouse mode is off starts text selection.
+        if button_code == 0 && mouse_mode == MouseMode::Off {
+            if is_press {
+                let row = self.mouse_cell_row;
+                let col = self.mouse_cell_col;
+                self.selection_anchor = Some((row, col));
+                self.selection_end = Some((row, col));
+                self.terminal.grid.mark_all_dirty();
+                self.queue_redraw();
+            } else if self.selection_anchor.is_some() {
+                self.copy_selection_to_clipboard();
+            }
+            return;
+        }
+
+        if mouse_mode == MouseMode::Off {
+            return;
+        }
+
         let encoded = encode_mouse_event(
             self.terminal.mouse_format(),
             button_code,
@@ -83,6 +106,65 @@ impl GuiRuntimeApp {
             is_press,
         );
         let _ = self.write_pty_payload(&encoded, event_loop, "failed to write mouse button event");
+    }
+
+    fn copy_selection_to_clipboard(&mut self) {
+        let Some((ar, ac)) = self.selection_anchor else {
+            return;
+        };
+        let Some((er, ec)) = self.selection_end else {
+            return;
+        };
+
+        // Single cell click = no selection, just clear.
+        if ar == er && ac == ec {
+            self.clear_selection();
+            return;
+        }
+
+        let cols = self.terminal.grid.width() as u32;
+        let start = ar as u32 * cols + ac as u32;
+        let end = er as u32 * cols + ec as u32;
+        let (lo, hi) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+
+        let mut text = String::new();
+        let mut prev_row = lo / cols;
+
+        for flat_idx in lo..=hi {
+            let row = flat_idx / cols;
+            let col = flat_idx % cols;
+
+            if row != prev_row {
+                text.push('\n');
+                prev_row = row;
+            }
+
+            if let Ok(cells) = self.terminal.grid.row_cells(row as u16)
+                && let Some(cell) = cells.get(col as usize)
+                && cell.width > 0
+            {
+                text.push(cell.ch);
+            }
+        }
+
+        // Trim trailing whitespace per line for clean copy.
+        let trimmed: String = text
+            .lines()
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if !trimmed.is_empty() {
+            if let Err(err) = self.clipboard.set_text(&trimmed) {
+                debug!(%err, "failed to copy selection to clipboard");
+            } else {
+                trace!(bytes = trimmed.len(), "selection copied to clipboard");
+            }
+        }
     }
 
     pub(super) fn handle_mouse_wheel(

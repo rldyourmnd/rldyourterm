@@ -80,7 +80,7 @@ use rldyourterm_foundation::api::window::{
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_foundation_platform::window::PlatformWindowFactory;
 use rldyourterm_render_cpu::render_terminal_buffer;
-use rldyourterm_render_gpu::GpuRenderer;
+use rldyourterm_render_gpu::{GpuRenderer, SELECTION_NONE};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
 use rldyourterm_services::terminal::{
@@ -371,6 +371,8 @@ struct GuiRuntimeApp {
     mouse_cell_col: u16,
     mouse_cell_row: u16,
     mouse_buttons: u8,
+    selection_anchor: Option<(u16, u16)>,
+    selection_end: Option<(u16, u16)>,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -483,6 +485,8 @@ impl GuiRuntimeApp {
             mouse_cell_col: 0,
             mouse_cell_row: 0,
             mouse_buttons: 0,
+            selection_anchor: None,
+            selection_end: None,
             exit_code: None,
             fatal_error: None,
         })
@@ -490,6 +494,27 @@ impl GuiRuntimeApp {
 
     fn queue_redraw(&mut self) {
         self.redraw_pending = true;
+    }
+
+    fn selection_flat_range(&self) -> (u32, u32) {
+        match (self.selection_anchor, self.selection_end) {
+            (Some((ar, ac)), Some((er, ec))) => {
+                let cols = self.terminal.grid.width() as u32;
+                let start = ar as u32 * cols + ac as u32;
+                let end = er as u32 * cols + ec as u32;
+                (start.min(end), start.max(end))
+            }
+            _ => (SELECTION_NONE, SELECTION_NONE),
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        if self.selection_anchor.is_some() {
+            self.selection_anchor = None;
+            self.selection_end = None;
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+        }
     }
 }
 
