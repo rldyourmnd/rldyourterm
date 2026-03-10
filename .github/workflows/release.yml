@@ -26,7 +26,6 @@ env:
   CARGO_INCREMENTAL: "0"
   CI_RUST_TOOLCHAIN: "1.94.0"
   MSRV_RUST_TOOLCHAIN: "1.92.0"
-  MSRV_RUST_TOOLCHAIN: "1.92.0"
 
 jobs:
   preflight:
@@ -79,8 +78,6 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo fmt --all -- --check
           bash scripts/ci/run_terminal_benchmark_smoke.sh
-          rustup toolchain install "${MSRV_RUST_TOOLCHAIN}" --profile minimal
-          cargo +${MSRV_RUST_TOOLCHAIN} check --workspace --locked
           rustup toolchain install "${MSRV_RUST_TOOLCHAIN}" --profile minimal
           cargo +${MSRV_RUST_TOOLCHAIN} check --workspace --locked
       - name: Install security gate tools
