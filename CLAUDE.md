@@ -98,33 +98,43 @@ bash scripts/mvp/run_matrix.sh 5    # extended soak
 - **Errors**: thiserror for typed domain errors, anyhow at application boundaries
 - **Error enums**: one per layer (CoreError, FoundationError, ServiceError, UiRuntimeError)
 - **Testing**: inline `#[cfg(test)] mod tests`, descriptive snake_case names, no mock crates
-- **Modules**: single-file crates (lib.rs per feature crate)
+- **Modules**: split by responsibility; feature crates expose a `lib.rs` root and use internal modules/directories where complexity requires it
 - **Patterns**: trait-based ports (foundation), platform adapters, controller pattern (services), command/receipt (UI)
 - **No silent fallback**: every transition logged with correlation
 
 ## CI/CD
 
-GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on push/PR to `main`/`dev`:
+GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on push/PR to `main`:
 
 | Job | Purpose |
 |-----|---------|
 | Check | `cargo check --workspace` |
+| Benchmark Smoke | `bash scripts/ci/run_terminal_benchmark_smoke.sh` |
 | Clippy | `cargo clippy --workspace -- -D warnings` |
 | Test | `cargo test --workspace` |
 | Format | `cargo fmt --all -- --check` |
 | MSRV | `cargo check --workspace` with Rust 1.92 |
-| Audit | `cargo-audit` via rustsec/audit-check |
+| Audit | `cargo-audit` via install-action + `cargo audit` |
+| Cargo Deny | `cargo deny check bans licenses advisories sources` |
 
 Dependabot: weekly Cargo + GitHub Actions updates (`.github/dependabot.yml`).
+
+Additional required workflows on `main`/PRs:
+- `codeql.yml` - Rust CodeQL analysis
+- `cflite_pr.yml` - ClusterFuzzLite PR fuzzing
+- `scorecard.yml` - OpenSSF Scorecard gates
+- `pr-automation.yml` - dependency review + labeling
 
 ## Quality Gates
 
 Before any commit:
 
-1. `cargo check --workspace` passes
-2. `cargo clippy --workspace -- -D warnings` passes
-3. `cargo test --workspace` passes
+1. `cargo check --workspace --all-targets --locked` passes
+2. `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` passes
+3. `cargo test --workspace --locked` passes
 4. `cargo fmt --all -- --check` passes
+5. `bash scripts/ci/run_terminal_benchmark_smoke.sh` passes
+6. `bash scripts/ci/validate_vsa_dependency_graph.sh` passes
 
 ## Commit Convention
 
