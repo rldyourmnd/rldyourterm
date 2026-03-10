@@ -75,7 +75,7 @@ Frame pacing invariant:
 - Every external dependency must have a written contract and explicit fallback/degradation semantics.
 
 ## 7) External Dependency Policy (Context7 First)
-Before changing dependency-driven contracts or behavior, use Context7 against authoritative docs and update evidence docs.
+Before changing dependency-driven contracts or behavior, use Context7 against authoritative docs and synchronize the repository knowledge layer (`AGENTS.md`, `CLAUDE.md`, Serena memories) when current facts change.
 
 Authoritative dependency references:
 - `portable-pty` (`/websites/rs_portable-pty`): PTY lifecycle (`openpty`, `spawn_command`, `try_clone_reader`, `take_writer`, `resize`, `wait/kill`).
@@ -115,4 +115,4 @@ Architecture/runtime behavior changes must be synchronized across:
 - Full Windows runtime parity.
 
 ## 13) Practical Rule Of Thumb
-If a change could impact session stability, fallback behavior, monitor-transfer pacing, AI CLI compatibility, or shell continuity, treat it as architecture-sensitive and update ADR/contracts/tests docs before code merge.
+If a change could impact session stability, fallback behavior, monitor-transfer pacing, AI CLI compatibility, or shell continuity, treat it as architecture-sensitive and update authority docs (`AGENTS.md`, `CLAUDE.md`, Serena memories) and tests before code merge.
