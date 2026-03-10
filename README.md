@@ -64,10 +64,10 @@ bash scripts/ci/run_terminal_benchmark_smoke.sh
 
 ## CI/CD profile
 
-- Required merge gates: `CI`, `Planning`, `CodeQL`, `Scorecard`.
+- Current PR-visible check suite includes `CI`, `CodeQL`, `ClusterFuzzLite PR fuzzing`, `Scorecard`, `Semantic PR`, and `PR Automation`.
 - `CI` gate is strict for critical fan-out jobs (`check/test/clippy/fmt/msrv/audit/deny` must be `success`); only `coverage` may be `skipped` when disabled.
 - `CodeQL` publishes Rust extraction diagnostics artifact and fails closed when diagnostics telemetry is missing/invalid; actionable diagnostics (`ExtractionErrors > 0` or non-benign extraction warnings) block merges, while known generated build-output warnings remain observable but non-blocking.
-- Release governance remains manual-only (`workflow_dispatch`) with enforced preflight (`planning validation`, `locked quality gates`, `security gates`, `AI CLI compatibility matrix`).
+- Release governance remains manual-only (`workflow_dispatch`) with enforced preflight (`authority-doc validation`, `locked quality gates`, `security gates`, `AI CLI compatibility matrix`).
 - Weekly non-blocking soak lane: `.github/workflows/soak.yml` runs `scripts/mvp/run_matrix.sh` and publishes artifacts for long-run compatibility evidence.
 
 ## Fuzzing
