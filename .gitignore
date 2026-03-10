@@ -2,7 +2,9 @@
 .DS_Store
 
 # Local agent/session state
-.serena/
+.serena/*
+!.serena/memories/
+!.serena/memories/*.md
 .claude/
 
 # Rust build artifacts
