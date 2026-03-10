@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
-use font8x8::{BLOCK_FONTS, BOX_FONTS, UnicodeFonts};
+use font8x8::{BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, UnicodeFonts};
 use fontdue::{Font, FontSettings};
 use std::collections::{HashMap, VecDeque};
 
@@ -66,27 +66,32 @@ impl GlyphCache {
     /// Create a bounded cache with an explicit max entry limit.
     #[must_use]
     pub fn new_with_max_entries(cell_width: u16, cell_height: u16, max_entries: usize) -> Self {
-        let font = Font::from_bytes(FONT_DATA, FontSettings::default())
-            .expect("embedded font data must be valid");
-
-        // Calibrate px_size: find the size where advance_width of 'M' matches cell_width.
-        // Start with cell_height as initial guess (typical for monospace fonts).
         let initial_px = cell_height as f32;
-        let metrics = font.metrics('M', initial_px);
-        let px_size = if metrics.advance_width > 0.0 {
-            (cell_width as f32 / metrics.advance_width) * initial_px
-        } else {
-            initial_px
+        let primary = match Font::from_bytes(FONT_DATA, FontSettings::default()) {
+            Ok(font) => {
+                // Calibrate px_size: find the size where advance_width of 'M' matches cell_width.
+                // Start with cell_height as initial guess (typical for monospace fonts).
+                let metrics = font.metrics('M', initial_px);
+                let px_size = if metrics.advance_width > 0.0 {
+                    (cell_width as f32 / metrics.advance_width) * initial_px
+                } else {
+                    initial_px
+                };
+                let ascent_px = Self::compute_ascent(&font, px_size, cell_height);
+                Some((FontEntry { font, ascent_px }, px_size))
+            }
+            // Preserve shell continuity if the bundled font asset is corrupted.
+            Err(_) => None,
         };
-
-        let ascent_px = Self::compute_ascent(&font, px_size, cell_height);
-
-        let primary = FontEntry { font, ascent_px };
+        let (fonts, px_size) = match primary {
+            Some((font_entry, px_size)) => (vec![font_entry], px_size),
+            None => (Vec::new(), initial_px),
+        };
 
         let max_entries = max_entries.max(1);
         let mut cache = HashMap::with_capacity(max_entries.min(1024));
         let mut value = Self {
-            fonts: vec![primary],
+            fonts,
             px_size,
             cell_width,
             cell_height,
@@ -126,32 +131,34 @@ impl GlyphCache {
 
     /// Get or rasterize a glyph for `ch`. Returns a reference to the cached bitmap.
     pub fn get(&mut self, ch: char) -> &GlyphBitmap {
-        if self.cache.contains_key(&ch) {
-            return self
-                .cache
-                .get(&ch)
-                .expect("cache entry verified by contains_key with exclusive access");
-        }
-
-        if self.cache.len() >= self.max_entries {
-            while let Some(candidate) = self.eviction_queue.pop_front() {
-                if self.cache.remove(&candidate).is_some() {
-                    break;
+        if !self.cache.contains_key(&ch) {
+            if self.cache.len() >= self.max_entries {
+                while let Some(candidate) = self.eviction_queue.pop_front() {
+                    if self.cache.remove(&candidate).is_some() {
+                        break;
+                    }
+                }
+                if self.cache.len() >= self.max_entries {
+                    let fallback_bitmap = self.rasterize_into_cell(FALLBACK_GLYPH_CHAR);
+                    return self
+                        .cache
+                        .entry(FALLBACK_GLYPH_CHAR)
+                        .or_insert(fallback_bitmap);
                 }
             }
-            if self.cache.len() >= self.max_entries {
-                return self
-                    .cache
-                    .get(&FALLBACK_GLYPH_CHAR)
-                    .expect("fallback glyph is inserted in constructor and never evicted");
+
+            let bitmap = self.rasterize_into_cell(ch);
+            if ch != FALLBACK_GLYPH_CHAR {
+                self.eviction_queue.push_back(ch);
             }
+            self.cache.entry(ch).or_insert(bitmap);
         }
 
-        let bitmap = self.rasterize_into_cell(ch);
-        if ch != FALLBACK_GLYPH_CHAR {
-            self.eviction_queue.push_back(ch);
+        if self.cache.contains_key(&ch) {
+            return &self.cache[&ch];
         }
-        self.cache.entry(ch).or_insert(bitmap)
+
+        &self.cache[&FALLBACK_GLYPH_CHAR]
     }
 
     /// Check if any font in the chain contains a real glyph for `ch`.
@@ -179,6 +186,13 @@ impl GlyphCache {
             return bitmap;
         }
 
+        if self.fonts.is_empty() {
+            return self
+                .try_font8x8_basic(ch)
+                .or_else(|| self.try_font8x8_basic(FALLBACK_GLYPH_CHAR))
+                .unwrap_or_else(Self::empty_glyph);
+        }
+
         // Try each font in the chain until one has the glyph.
         for entry in &self.fonts {
             if entry.font.lookup_glyph_index(ch) == 0 {
@@ -191,18 +205,22 @@ impl GlyphCache {
         Self::rasterize_with_font(&self.fonts[0], ch, self.px_size)
     }
 
+    fn empty_glyph() -> GlyphBitmap {
+        GlyphBitmap {
+            data: Vec::new(),
+            x_offset: 0,
+            y_offset: 0,
+            glyph_width: 0,
+            glyph_height: 0,
+        }
+    }
+
     /// Rasterize `ch` using a specific font entry.
     fn rasterize_with_font(entry: &FontEntry, ch: char, px_size: f32) -> GlyphBitmap {
         let (metrics, bitmap) = entry.font.rasterize(ch, px_size);
 
         if bitmap.is_empty() || metrics.width == 0 || metrics.height == 0 {
-            return GlyphBitmap {
-                data: Vec::new(),
-                x_offset: 0,
-                y_offset: 0,
-                glyph_width: 0,
-                glyph_height: 0,
-            };
+            return Self::empty_glyph();
         }
 
         let y_offset = entry.ascent_px - (metrics.ymin + metrics.height as i32);
@@ -254,6 +272,36 @@ impl GlyphCache {
             glyph_width: 8,
             glyph_height: 16,
         })
+    }
+
+    fn try_font8x8_basic(&self, ch: char) -> Option<GlyphBitmap> {
+        let raw = BASIC_FONTS.get(ch)?;
+        Some(self.scale_font8x8_bitmap(raw))
+    }
+
+    fn scale_font8x8_bitmap(&self, raw: [u8; 8]) -> GlyphBitmap {
+        let width = self.cell_width as usize;
+        let height = self.cell_height as usize;
+        let mut data = vec![0u8; width * height];
+
+        for py in 0..height {
+            let src_y = py * 8 / height.max(1);
+            let row_bits = raw[src_y];
+            for px in 0..width {
+                let src_x = px * 8 / width.max(1);
+                if (row_bits >> src_x) & 1 != 0 {
+                    data[py * width + px] = 255;
+                }
+            }
+        }
+
+        GlyphBitmap {
+            data,
+            x_offset: 0,
+            y_offset: 0,
+            glyph_width: width,
+            glyph_height: height,
+        }
     }
 }
 
@@ -406,5 +454,23 @@ mod tests {
         let glyph = cache.get('A');
         assert!(glyph.glyph_width > 0);
         assert!(!glyph.data.is_empty());
+    }
+
+    #[test]
+    fn degraded_cache_uses_font8x8_ascii_without_primary_font() {
+        let mut cache = GlyphCache {
+            fonts: Vec::new(),
+            px_size: 16.0,
+            cell_width: 8,
+            cell_height: 16,
+            cache: HashMap::new(),
+            eviction_queue: VecDeque::new(),
+            max_entries: 16,
+        };
+
+        let glyph = cache.get('A');
+        assert_eq!(glyph.glyph_width, 8);
+        assert_eq!(glyph.glyph_height, 16);
+        assert!(glyph.data.iter().any(|&pixel| pixel > 0));
     }
 }
