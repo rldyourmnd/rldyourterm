@@ -164,6 +164,10 @@ impl GlyphCache {
     /// Check if any font in the chain contains a real glyph for `ch`.
     #[must_use]
     pub fn has_glyph(&self, ch: char) -> bool {
+        if self.fonts.is_empty() {
+            return BASIC_FONTS.get(ch).is_some();
+        }
+
         self.fonts
             .iter()
             .any(|e| e.font.lookup_glyph_index(ch) != 0)
@@ -468,6 +472,8 @@ mod tests {
             max_entries: 16,
         };
 
+        assert!(cache.has_glyph('A'));
+        assert!(!cache.has_glyph('\u{FFFF}'));
         let glyph = cache.get('A');
         assert_eq!(glyph.glyph_width, 8);
         assert_eq!(glyph.glyph_height, 16);
