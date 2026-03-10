@@ -1,0 +1,54 @@
+<!-- Memory Metadata
+Last updated: 2026-03-11
+Last commit: 706ac44 docs(governance): align authority docs with current repo state
+Scope: project commands, .github/workflows/, scripts/ci/, scripts/mvp/
+Area: CORE
+-->
+
+# Suggested Commands
+
+## Build and Check
+```bash
+cargo check --workspace --all-targets --locked
+cargo check --locked -p rldyourterm-app
+cargo check --locked -p rldyourterm-ui
+cargo build --workspace --locked
+cargo build --locked -p rldyourterm-app
+```
+
+## Run
+```bash
+cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1
+cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1 --tty
+./target/debug/rldyourterm-app --mode auto --shell fish --window-count 1
+```
+
+## Test and Lint
+```bash
+cargo test --workspace --locked
+cargo test --locked -p rldyourterm-core
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo +1.92.0 check --workspace --all-targets --locked
+```
+
+## Governance and Benchmark
+```bash
+bash scripts/ci/run_e2e_governance.sh --mode ci
+bash scripts/ci/validate_authority_docs.sh
+bash scripts/ci/validate_vsa_dependency_graph.sh
+bash scripts/ci/run_terminal_benchmark_smoke.sh
+```
+
+## Compatibility Harness
+```bash
+bash scripts/mvp/run_matrix.sh 3
+bash scripts/mvp/run_matrix.sh 5
+bash scripts/mvp/run_profile.sh codex 3 recoverable:pty-write tick mode:cpu
+```
+
+## CI/CD Surface
+- `.github/workflows/ci.yml` triggers on push and pull_request to `main`
+- CI jobs: check, test, coverage, clippy, benchmark-smoke, fmt, msrv, audit, deny, ci-gate
+- Additional PR-visible workflows: CodeQL, ClusterFuzzLite PR fuzzing, Scorecard, Semantic PR, PR Automation
+- Release workflow: `.github/workflows/release.yml` via `workflow_dispatch`

@@ -21,6 +21,10 @@ for path in \
   .serena/memories/BACKEND_01_services.md
 do
   require_file "$path"
+  if ! git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+    echo "[FAIL] authority file must be tracked in git: $path" >&2
+    exit 1
+  fi
 done
 
 reject_fixed() {
