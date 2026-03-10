@@ -10,16 +10,22 @@ Crash-intolerant AI terminal runtime written in Rust. A custom terminal emulator
 
 ## Architecture
 
-Cargo workspace with 12 crates following VSA (Vertical Slice Architecture). Dependency flow is strictly inward:
+Cargo workspace with 14 packages: 12 runtime crates plus `rldyourterm-integration-tests` and `rldyourterm-terminal-benchmark`.
+
+Normative VSA policy:
 
 ```
-app -> ui -> features -> services -> core
-              |
-              v
-         foundation (API traits)
-              ^
-              |
-      foundation-platform (OS implementations)
+app -> features -> services -> core
+```
+
+Current crate-level wiring:
+
+```
+app -> {ui, services, foundation, foundation-platform, features/*}
+ui -> services
+features -> {services, foundation}
+services -> {core, foundation}
+foundation-platform -> foundation
 ```
 
 ### Crate Map
@@ -42,19 +48,19 @@ app -> ui -> features -> services -> core
 ### Entry Points
 
 - `crates/app/src/main.rs` - CLI parsing, shell resolution, runtime dispatch
-- `crates/app/src/gui_runtime.rs` - GUI window path (winit + softbuffer + PTY)
-- `crates/app/src/pty_runtime.rs` - TTY fallback path (crossterm + PTY)
-- `crates/app/src/shared.rs` - Cross-runtime utilities (key encoding, PTY boundary, display tokens)
+- `crates/app/src/gui_runtime.rs` plus `gui_runtime_*.rs` - GUI window/runtime path
+- `crates/app/src/pty_runtime.rs` plus `pty_runtime_*.rs` - TTY fallback/runtime path
+- `crates/app/src/runtime_shared/` - cross-runtime helpers (input, key encoding, PTY boundary, shutdown, palette, terminal)
 
 ## Commands
 
 ### Build
 
 ```bash
-cargo check --workspace          # type-check all crates
-cargo check -p rldyourterm-app   # type-check app crate
-cargo build -p rldyourterm-app   # debug build
-cargo build --workspace          # build all
+cargo check --workspace --locked          # type-check all crates
+cargo check --locked -p rldyourterm-app   # type-check app crate
+cargo build --locked -p rldyourterm-app   # debug build
+cargo build --workspace --locked          # build all
 ```
 
 ### Run
@@ -70,9 +76,9 @@ cargo run -q -p rldyourterm-app -- --mode auto --shell fish --window-count 1 --t
 ### Test
 
 ```bash
-cargo test --workspace                          # all tests
-cargo test -p rldyourterm-core                  # single crate
-cargo test -p rldyourterm-core -- test_name     # single test
+cargo test --workspace --locked                          # all tests
+cargo test --locked -p rldyourterm-core                  # single crate
+cargo test --locked -p rldyourterm-core -- test_name     # single test
 ```
 
 ### Lint and Format
@@ -80,8 +86,8 @@ cargo test -p rldyourterm-core -- test_name     # single test
 ```bash
 cargo fmt --all                  # format
 cargo fmt --all -- --check       # check formatting
-cargo clippy --workspace         # lint
-cargo clippy --workspace -- -D warnings  # lint strict
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # lint strict
+bash scripts/ci/run_e2e_governance.sh --mode ci
 ```
 
 ### MVP Harness
@@ -119,10 +125,11 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on push/PR to `main`:
 
 Dependabot: weekly Cargo + GitHub Actions updates (`.github/dependabot.yml`).
 
-Additional required workflows on `main`/PRs:
+Additional PR-visible workflows on `main`:
 - `codeql.yml` - Rust CodeQL analysis
 - `cflite_pr.yml` - ClusterFuzzLite PR fuzzing
 - `scorecard.yml` - OpenSSF Scorecard gates
+- `semantic.yml` - PR title validation
 - `pr-automation.yml` - dependency review + labeling
 
 ## Quality Gates
@@ -134,7 +141,7 @@ Before any commit:
 3. `cargo test --workspace --locked` passes
 4. `cargo fmt --all -- --check` passes
 5. `bash scripts/ci/run_terminal_benchmark_smoke.sh` passes
-6. `bash scripts/ci/validate_vsa_dependency_graph.sh` passes
+6. `bash scripts/ci/run_e2e_governance.sh --mode ci` passes
 
 ## Commit Convention
 
