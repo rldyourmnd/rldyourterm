@@ -6,8 +6,8 @@ usage() {
 usage: run_e2e_governance.sh [--mode <ci|release>] [--with-matrix]
 
 Modes:
-  ci      - VSA dependency graph + policy-level checks.
-  release - ci mode + extended validation.
+  ci      - authority-doc sync + VSA dependency graph validation.
+  release - ci mode plus optional compatibility matrix.
 
 Flags:
   --with-matrix  additionally runs `bash scripts/mvp/run_matrix.sh 3`.
@@ -53,6 +53,9 @@ case "$mode" in
 esac
 
 echo "GOVERNANCE_E2E_START mode=$mode with_matrix=$with_matrix"
+
+echo "GOVERNANCE_E2E_STEP step=authority-docs"
+bash scripts/ci/validate_authority_docs.sh
 
 echo "GOVERNANCE_E2E_STEP step=vsa-dependency-graph"
 bash scripts/ci/validate_vsa_dependency_graph.sh
