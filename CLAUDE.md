@@ -90,6 +90,15 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  #
 bash scripts/ci/run_e2e_governance.sh --mode ci
 ```
 
+### Benchmark and System Validation
+
+```bash
+bash scripts/ci/run_terminal_benchmark_smoke.sh
+bash scripts/ci/run_terminal_benchmark_full.sh
+bash scripts/ci/run_terminal_system_suite.sh
+python3 scripts/ci/validate_terminal_system_suite_report.py target/terminal-benchmark/system-suite-report.json --benchmark-report target/terminal-benchmark/system-suite-report.benchmark.json --governance-mode ci
+```
+
 ### MVP Harness
 
 ```bash
@@ -142,6 +151,7 @@ Before any commit:
 4. `cargo fmt --all -- --check` passes
 5. `bash scripts/ci/run_terminal_benchmark_smoke.sh` passes
 6. `bash scripts/ci/run_e2e_governance.sh --mode ci` passes
+7. `bash scripts/ci/run_terminal_system_suite.sh` is the canonical full local validation lane
 
 ## Commit Convention
 

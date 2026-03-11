@@ -98,7 +98,7 @@ Architecture/runtime behavior changes must be synchronized across:
 ## 10) Quality and Release Governance
 - v1.0 release authority remains manual.
 - CI quality/gov/security workflows are merge-time and pre-release validation gates.
-- Quality gates: `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`, benchmark smoke, MSRV, security audit.
+- Quality gates: `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`, benchmark smoke in CI, the canonical terminal system suite in release/local full validation, MSRV, security audit.
 - Governance consistency is validated via `scripts/ci/run_e2e_governance.sh`.
 - VSA dependency graph validation via `scripts/ci/validate_vsa_dependency_graph.sh`.
 
