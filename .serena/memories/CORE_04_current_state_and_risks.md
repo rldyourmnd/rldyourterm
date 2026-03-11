@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 706ac44 docs(governance): align authority docs with current repo state
+Last commit: 32bdafe docs(governance): align benchmark and system suite guidance
 Scope: runtime state, crates/app/src/, crates/features/, scripts/ci/, .github/workflows/
 Area: CORE
 -->
@@ -17,6 +17,7 @@ Area: CORE
 
 ## Governance State
 - CI on `main` validates locked quality gates, benchmark smoke, and VSA governance
+- Release/manual full validation now delegates locked quality validation to `scripts/ci/run_terminal_system_suite.sh`, which emits a machine-readable JSON report and validates the referenced full benchmark report
 - `scripts/ci/run_e2e_governance.sh` currently validates authority-doc sync and VSA dependency graph; optional `--with-matrix` runs the MVP compatibility matrix
 - Release authority remains manual via `.github/workflows/release.yml`
 
@@ -27,4 +28,7 @@ Area: CORE
 - `scripts/ci/validate_authority_docs.sh` blocks known stale governance claims
 - `scripts/ci/validate_vsa_dependency_graph.sh` blocks invalid crate edges
 - `scripts/ci/run_terminal_benchmark_smoke.sh` keeps canonical headless benchmark paths live in CI
+- `scripts/ci/run_terminal_benchmark_full.sh` exercises the full canonical headless benchmark suite and validates its JSON report schema
+- `scripts/ci/run_terminal_system_suite.sh` runs the canonical local and release validation lane across fmt, check, test, clippy, MSRV, fuzz compile-path, benchmark smoke/full, and governance
+- `scripts/ci/validate_terminal_system_suite_report.py` ensures system-suite evidence stays synchronized with the referenced full benchmark report and governance mode
 - The font runtime now degrades to basic `font8x8` ASCII fallback if the bundled primary font cannot be parsed, instead of panicking at construction time
