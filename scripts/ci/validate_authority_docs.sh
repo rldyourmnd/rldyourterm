@@ -85,6 +85,36 @@ if "run_terminal_display_benchmark" in release:
     print("[FAIL] release workflow must not hard-require live display benchmark lanes", file=sys.stderr)
     sys.exit(1)
 
+display_workflow = Path(".github/workflows/display-benchmark.yml").read_text(encoding="utf-8")
+if "workflow_dispatch:" not in display_workflow:
+    print("[FAIL] display benchmark workflow must remain manual-only", file=sys.stderr)
+    sys.exit(1)
+if "run_terminal_display_benchmark_calibration.sh" not in display_workflow:
+    print("[FAIL] display benchmark workflow must use the canonical calibration wrapper", file=sys.stderr)
+    sys.exit(1)
+
+display_runs_on = []
+capture = False
+for raw_line in display_workflow.splitlines():
+    stripped = raw_line.strip()
+    if stripped == "runs-on:":
+        capture = True
+        continue
+    if capture:
+        if raw_line.startswith("      - "):
+            display_runs_on.append(stripped[2:].strip())
+            continue
+        if stripped:
+            break
+
+expected_display_labels = {"self-hosted", "display-benchmark", "${{ inputs.runner_os }}"}
+if set(display_runs_on) != expected_display_labels:
+    print(
+        f"[FAIL] display benchmark workflow runs-on labels mismatch: expected {sorted(expected_display_labels)!r}, got {sorted(display_runs_on)!r}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 claude = Path("CLAUDE.md").read_text(encoding="utf-8")
 if "runtime_shared/" not in claude:
     print("[FAIL] CLAUDE.md must document runtime_shared entry points", file=sys.stderr)
