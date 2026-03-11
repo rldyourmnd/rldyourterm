@@ -164,6 +164,17 @@ For CPU live-display scenarios, the JSON report also includes `cpu_phase_stats` 
 - `raster`
 - `present`
 
+CPU live-display reports also include `cpu_buffer_age_counts`, which records how often the live `softbuffer` framebuffer arrived with:
+- `age_0`
+- `age_1`
+- `age_2`
+- `age_3_plus`
+
+This is important for RCA. The production-aligned CPU display path uses the framebuffer age contract directly:
+- `age=1`: repaint current-frame damage only
+- `age=2`: repaint the union of current-frame damage and the previous presented frame's damage
+- any other age: force a full redraw
+
 ## Scale presets
 
 - `quick`: fast local smoke baseline
