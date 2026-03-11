@@ -8,7 +8,8 @@ use crate::fixtures::scale_name;
 use crate::metrics::IterationStats;
 use crate::report::{
     LiveDisplayBenchmarkSuiteReport, LiveDisplayCpuBufferAgeReport, LiveDisplayCpuPhaseStats,
-    LiveDisplayEnvironmentReport, LiveDisplayScenarioReport, LiveDisplayWorkloadSummary,
+    LiveDisplayEnvironmentReport, LiveDisplayPhaseStats, LiveDisplayScenarioReport,
+    LiveDisplayWorkloadSummary,
 };
 use anyhow::{Context, Result, bail};
 use rldyourterm_render_cpu::render_terminal_buffer;
@@ -77,6 +78,7 @@ struct LiveDisplayIterationOutcome {
     primary_units: u64,
     redraws_observed: u32,
     resize_cycles_observed: u32,
+    display_phase_totals: LiveDisplayPhaseTotals,
     cpu_phase_totals: Option<LiveDisplayCpuPhaseTotals>,
     cpu_buffer_age_counts: Option<LiveDisplayCpuBufferAgeCounts>,
     pacing_mode: &'static str,
@@ -89,6 +91,11 @@ struct LiveDisplayCpuPhaseTotals {
     buffer_acquire: Duration,
     raster: Duration,
     present: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LiveDisplayPhaseTotals {
+    redraw_dispatch: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -222,6 +229,7 @@ fn run_measured_scenario(
     let mut primary_units = 0u64;
     let mut redraws_observed = 0u32;
     let mut resize_cycles_observed = 0u32;
+    let mut redraw_dispatch_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_buffer_acquire_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_raster_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_present_durations = Vec::with_capacity(cli.iterations as usize);
@@ -238,6 +246,7 @@ fn run_measured_scenario(
         primary_units = outcome.primary_units;
         redraws_observed = outcome.redraws_observed;
         resize_cycles_observed = outcome.resize_cycles_observed;
+        redraw_dispatch_durations.push(outcome.display_phase_totals.redraw_dispatch);
         if let Some(cpu_phase_totals) = outcome.cpu_phase_totals {
             cpu_buffer_acquire_durations.push(cpu_phase_totals.buffer_acquire);
             cpu_raster_durations.push(cpu_phase_totals.raster);
@@ -258,6 +267,9 @@ fn run_measured_scenario(
     }
 
     let stats = IterationStats::from_durations(&durations);
+    let display_phase_stats = LiveDisplayPhaseStats {
+        redraw_dispatch: IterationStats::from_durations(&redraw_dispatch_durations),
+    };
     let cpu_phase_stats = if cpu_buffer_acquire_durations.is_empty() {
         None
     } else {
@@ -284,6 +296,7 @@ fn run_measured_scenario(
         },
         pacing_mode: pacing_mode.unwrap_or("event-driven"),
         monitor_refresh_rate_millihz,
+        display_phase_stats,
         redraws_per_iteration: redraws_observed,
         resize_cycles_per_iteration: resize_cycles_observed,
         cpu_phase_stats,
@@ -328,6 +341,8 @@ struct LiveDisplayApp {
     redraw_pending: bool,
     redraw_in_flight: bool,
     next_redraw_at: Option<Instant>,
+    last_redraw_requested_at: Option<Instant>,
+    display_phase_totals: LiveDisplayPhaseTotals,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
 
@@ -384,6 +399,8 @@ impl LiveDisplayApp {
             redraw_pending: false,
             redraw_in_flight: false,
             next_redraw_at: None,
+            last_redraw_requested_at: None,
+            display_phase_totals: LiveDisplayPhaseTotals::default(),
             result: None,
         }
     }
@@ -408,6 +425,7 @@ impl LiveDisplayApp {
             primary_units,
             redraws_observed: self.redraws_observed,
             resize_cycles_observed: self.resize_cycles_observed,
+            display_phase_totals: self.display_phase_totals,
             cpu_phase_totals: matches!(self.backend, DisplayBackend::Cpu)
                 .then_some(self.cpu_phase_totals),
             cpu_buffer_age_counts: matches!(self.backend, DisplayBackend::Cpu)
@@ -502,6 +520,7 @@ impl LiveDisplayApp {
         window.request_redraw();
         self.redraw_pending = false;
         self.redraw_in_flight = true;
+        self.last_redraw_requested_at = Some(now);
     }
 
     fn control_flow(&self, now: Instant) -> winit::event_loop::ControlFlow {
@@ -713,6 +732,9 @@ impl ApplicationHandler for LiveDisplayApp {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw_in_flight = false;
+                if let Some(requested_at) = self.last_redraw_requested_at.take() {
+                    self.display_phase_totals.redraw_dispatch += requested_at.elapsed();
+                }
                 let render_result = match self.backend {
                     DisplayBackend::Gpu => self.render_gpu(),
                     DisplayBackend::Cpu => self.render_cpu(),

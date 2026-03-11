@@ -114,11 +114,17 @@ pub struct LiveDisplayScenarioReport {
     pub primary_units_per_second: f64,
     pub pacing_mode: &'static str,
     pub monitor_refresh_rate_millihz: Option<u32>,
+    pub display_phase_stats: LiveDisplayPhaseStats,
     pub redraws_per_iteration: u32,
     pub resize_cycles_per_iteration: u32,
     pub cpu_phase_stats: Option<LiveDisplayCpuPhaseStats>,
     pub cpu_buffer_age_counts: Option<LiveDisplayCpuBufferAgeReport>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayPhaseStats {
+    pub redraw_dispatch: IterationStats,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -335,6 +341,11 @@ impl LiveDisplayBenchmarkSuiteReport {
                 } else {
                     result.notes.join("; ")
                 }
+            );
+            let _ = writeln!(
+                out,
+                "  display_phases mean_ms redraw_dispatch={:.3}",
+                nanos_to_millis(result.display_phase_stats.redraw_dispatch.mean_nanos),
             );
             if let Some(cpu_phase_stats) = &result.cpu_phase_stats {
                 let _ = writeln!(
