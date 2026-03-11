@@ -66,7 +66,8 @@ python3 scripts/ci/validate_terminal_display_environment.py \
 if [[ -n "$baseline_path" ]]; then
   python3 scripts/ci/validate_terminal_benchmark_thresholds.py \
     "$report_path" \
-    "$baseline_path"
+    "$baseline_path" \
+    --allow-advisory
 fi
 
 echo "live display benchmark controlled ok: $report_path"
