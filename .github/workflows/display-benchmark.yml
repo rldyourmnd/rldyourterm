@@ -52,6 +52,7 @@ jobs:
     name: Controlled Display Calibration
     runs-on:
       - self-hosted
+      - display-benchmark
       - ${{ inputs.runner_os }}
     timeout-minutes: 45
     env:
