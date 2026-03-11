@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
-use crate::cli::{Cli, ScaleArg, ScenarioArg};
+use crate::cli::{Cli, ScenarioArg};
 use crate::coverage::benchmark_coverage_summary;
 use crate::data::{SurfacePolicyCase, Workload, WorkloadScale};
+use crate::fixtures::{
+    canonical_chunk_bytes, chunk_count, feed_bytes_in_chunks, scale_name, seeded_terminal_state,
+};
 use crate::metrics::IterationStats;
 use crate::report::{BenchmarkSuiteReport, ScenarioReport};
 use crate::scenario_registry::{
@@ -19,9 +22,7 @@ use rldyourterm_render_gpu::{
 };
 use rldyourterm_services::render_mode::RenderMode;
 use rldyourterm_services::session::{SessionController, SessionTransition};
-use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, MAX_FEED_BYTES_PER_CALL, Parser, TerminalState,
-};
+use rldyourterm_services::terminal::{Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, Parser, TerminalState};
 use rldyourterm_settings::SettingsService;
 use rldyourterm_shell_integration::plan_shell_launch;
 use rldyourterm_ui::{UiBootstrapConfig, UiBootstrapHooks, UiRuntime};
@@ -36,6 +37,12 @@ const SURFACE_BASE_FRAME_LATENCY: u32 = 2;
 const FONT_CACHE_MAX_ENTRIES: usize = 256;
 
 pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
+    if !crate::scenario_registry::scenario_belongs_to_suite(cli.scenario) {
+        anyhow::bail!(
+            "--suite canonical-headless does not support scenario {}",
+            cli.scenario.as_str()
+        );
+    }
     let scale = WorkloadScale::from_arg(cli.scale);
     let workload = Workload::generate(cli.cols, scale);
     let scenarios = registry_selected_scenarios(cli.scenario);
@@ -147,6 +154,7 @@ fn run_iteration(
             bench_cpu_cycle_ingest_render_delta(cli, workload)
         }
         ScenarioArg::CpuPixelRasterDelta => bench_cpu_pixel_raster_delta(cli, workload),
+        _ => unreachable!("canonical-headless suite gating rejected non-headless scenario"),
     }
 }
 
@@ -493,7 +501,7 @@ fn bench_gpu_surface_policy(workload: &Workload) -> Result<IterationOutcome> {
 }
 
 fn bench_cpu_render_full(cli: &Cli, workload: &Workload) -> Result<IterationOutcome> {
-    let state = seeded_terminal_state(cli, workload)?;
+    let state = seeded_terminal_state(cli, workload);
     let renderer = CpuRenderer::default();
     let start = Instant::now();
     let frame = renderer.render_full(black_box(&state));
@@ -512,7 +520,7 @@ fn bench_cpu_render_full(cli: &Cli, workload: &Workload) -> Result<IterationOutc
 }
 
 fn bench_cpu_render_delta(cli: &Cli, workload: &Workload) -> Result<IterationOutcome> {
-    let mut state = seeded_terminal_state(cli, workload)?;
+    let mut state = seeded_terminal_state(cli, workload);
     let renderer = CpuRenderer::default();
     let _ = renderer.render_delta(&mut state);
     feed_bytes_in_chunks(
@@ -538,7 +546,7 @@ fn bench_cpu_render_delta(cli: &Cli, workload: &Workload) -> Result<IterationOut
 }
 
 fn bench_cpu_cycle_ingest_render_delta(cli: &Cli, workload: &Workload) -> Result<IterationOutcome> {
-    let mut state = seeded_terminal_state(cli, workload)?;
+    let mut state = seeded_terminal_state(cli, workload);
     let renderer = CpuRenderer::default();
     let _ = renderer.render_delta(&mut state);
     let chunk_bytes = canonical_chunk_bytes(cli.chunk_bytes);
@@ -568,7 +576,7 @@ fn bench_cpu_cycle_ingest_render_delta(cli: &Cli, workload: &Workload) -> Result
 }
 
 fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<IterationOutcome> {
-    let mut state = seeded_terminal_state(cli, workload)?;
+    let mut state = seeded_terminal_state(cli, workload);
     let renderer = CpuRenderer::default();
     let _ = renderer.render_delta(&mut state);
     feed_bytes_in_chunks(
@@ -615,37 +623,6 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
     })
 }
 
-fn seeded_terminal_state(cli: &Cli, workload: &Workload) -> Result<TerminalState> {
-    let mut state = TerminalState::new(cli.cols, cli.rows, cli.scrollback_cap);
-    feed_bytes_in_chunks(
-        &mut state,
-        &workload.render_seed,
-        canonical_chunk_bytes(cli.chunk_bytes),
-        &mut Vec::new(),
-    );
-    Ok(state)
-}
-
-fn feed_bytes_in_chunks(
-    state: &mut TerminalState,
-    bytes: &[u8],
-    chunk_bytes: usize,
-    responses: &mut Vec<Vec<u8>>,
-) {
-    for chunk in bytes.chunks(chunk_bytes) {
-        state.feed_terminal_responses_into(chunk, responses);
-        black_box(responses.len());
-    }
-}
-
-fn chunk_count(bytes: &[u8], chunk_bytes: usize) -> usize {
-    bytes.len().div_ceil(chunk_bytes)
-}
-
-fn canonical_chunk_bytes(requested: usize) -> usize {
-    requested.clamp(1, MAX_FEED_BYTES_PER_CALL)
-}
-
 fn consume_transition(transition: SessionTransition, transitions: &mut u64) {
     black_box(transition.sequence);
     *transitions += 1;
@@ -664,18 +641,10 @@ fn base_surface_configuration() -> wgpu::SurfaceConfiguration {
     }
 }
 
-fn scale_name(scale: ScaleArg) -> &'static str {
-    match scale {
-        ScaleArg::Quick => "quick",
-        ScaleArg::Standard => "standard",
-        ScaleArg::Stress => "stress",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::canonical_chunk_bytes;
     use crate::cli::ScenarioArg;
+    use crate::fixtures::canonical_chunk_bytes;
     use crate::scenario_registry::{descriptor, selected_scenarios};
     use rldyourterm_services::terminal::MAX_FEED_BYTES_PER_CALL;
 
