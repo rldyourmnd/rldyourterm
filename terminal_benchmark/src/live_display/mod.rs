@@ -7,8 +7,8 @@ use crate::cli::{Cli, ScaleArg, ScenarioArg};
 use crate::fixtures::scale_name;
 use crate::metrics::IterationStats;
 use crate::report::{
-    LiveDisplayBenchmarkSuiteReport, LiveDisplayEnvironmentReport, LiveDisplayScenarioReport,
-    LiveDisplayWorkloadSummary,
+    LiveDisplayBenchmarkSuiteReport, LiveDisplayCpuPhaseStats, LiveDisplayEnvironmentReport,
+    LiveDisplayScenarioReport, LiveDisplayWorkloadSummary,
 };
 use anyhow::{Context, Result, bail};
 use rldyourterm_render_cpu::render_terminal_buffer;
@@ -62,7 +62,15 @@ struct LiveDisplayIterationOutcome {
     primary_units: u64,
     redraws_observed: u32,
     resize_cycles_observed: u32,
+    cpu_phase_totals: Option<LiveDisplayCpuPhaseTotals>,
     notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LiveDisplayCpuPhaseTotals {
+    buffer_acquire: Duration,
+    raster: Duration,
+    present: Duration,
 }
 
 pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
@@ -170,6 +178,9 @@ fn run_measured_scenario(
     let mut primary_units = 0u64;
     let mut redraws_observed = 0u32;
     let mut resize_cycles_observed = 0u32;
+    let mut cpu_buffer_acquire_durations = Vec::with_capacity(cli.iterations as usize);
+    let mut cpu_raster_durations = Vec::with_capacity(cli.iterations as usize);
+    let mut cpu_present_durations = Vec::with_capacity(cli.iterations as usize);
     let mut notes = Vec::new();
 
     for _ in 0..cli.iterations {
@@ -180,12 +191,26 @@ fn run_measured_scenario(
         primary_units = outcome.primary_units;
         redraws_observed = outcome.redraws_observed;
         resize_cycles_observed = outcome.resize_cycles_observed;
+        if let Some(cpu_phase_totals) = outcome.cpu_phase_totals {
+            cpu_buffer_acquire_durations.push(cpu_phase_totals.buffer_acquire);
+            cpu_raster_durations.push(cpu_phase_totals.raster);
+            cpu_present_durations.push(cpu_phase_totals.present);
+        }
         if notes.is_empty() {
             notes = outcome.notes;
         }
     }
 
     let stats = IterationStats::from_durations(&durations);
+    let cpu_phase_stats = if cpu_buffer_acquire_durations.is_empty() {
+        None
+    } else {
+        Some(LiveDisplayCpuPhaseStats {
+            buffer_acquire: IterationStats::from_durations(&cpu_buffer_acquire_durations),
+            raster: IterationStats::from_durations(&cpu_raster_durations),
+            present: IterationStats::from_durations(&cpu_present_durations),
+        })
+    };
     let mean_seconds = stats.mean_nanos as f64 / 1_000_000_000.0;
     Ok(LiveDisplayScenarioReport {
         scenario: metadata.name,
@@ -203,6 +228,7 @@ fn run_measured_scenario(
         },
         redraws_per_iteration: redraws_observed,
         resize_cycles_per_iteration: resize_cycles_observed,
+        cpu_phase_stats,
         notes,
     })
 }
@@ -221,13 +247,13 @@ struct LiveDisplayApp {
     softbuffer_context: Option<SoftbufferContext<Arc<Window>>>,
     softbuffer_surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
     glyph_cache: GlyphCache,
-    pixel_buffer: Vec<u32>,
     dirty_rows_scratch: Vec<u16>,
     redraws_observed: u32,
     resize_cycles_observed: u32,
     resize_request_cursor: usize,
     pending_resize_started_at: Option<Instant>,
     iteration_started_at: Option<Instant>,
+    cpu_phase_totals: LiveDisplayCpuPhaseTotals,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
 
@@ -269,13 +295,13 @@ impl LiveDisplayApp {
             softbuffer_context: None,
             softbuffer_surface: None,
             glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
-            pixel_buffer: Vec::new(),
             dirty_rows_scratch: Vec::new(),
             redraws_observed: 0,
             resize_cycles_observed: 0,
             resize_request_cursor: 0,
             pending_resize_started_at: None,
             iteration_started_at: None,
+            cpu_phase_totals: LiveDisplayCpuPhaseTotals::default(),
             result: None,
         }
     }
@@ -300,6 +326,8 @@ impl LiveDisplayApp {
             primary_units,
             redraws_observed: self.redraws_observed,
             resize_cycles_observed: self.resize_cycles_observed,
+            cpu_phase_totals: matches!(self.backend, DisplayBackend::Cpu)
+                .then_some(self.cpu_phase_totals),
             notes,
         }));
         event_loop.exit();
@@ -355,13 +383,6 @@ impl LiveDisplayApp {
         }
     }
 
-    fn ensure_cpu_buffer_len(&mut self, size: PhysicalSize<u32>) {
-        let len = size.width.saturating_mul(size.height) as usize;
-        if self.pixel_buffer.len() != len {
-            self.pixel_buffer.resize(len, 0);
-        }
-    }
-
     fn render_gpu(&mut self) -> Result<()> {
         let dirty_rows = vec![true; self.terminal.grid.height() as usize];
         self.terminal.cursor.visible = !self.terminal.cursor.visible;
@@ -380,10 +401,20 @@ impl LiveDisplayApp {
     fn render_cpu(&mut self) -> Result<()> {
         let window = self.window.as_ref().context("window not initialized")?;
         let size = window.inner_size();
-        self.ensure_cpu_buffer_len(size);
         self.terminal.cursor.visible = !self.terminal.cursor.visible;
+        let surface = self
+            .softbuffer_surface
+            .as_mut()
+            .context("softbuffer surface not initialized")?;
+        let acquire_started_at = Instant::now();
+        let mut buffer = surface.buffer_mut().map_err(|error| {
+            anyhow::anyhow!("softbuffer buffer_mut failed in live benchmark: {error}")
+        })?;
+        self.cpu_phase_totals.buffer_acquire += acquire_started_at.elapsed();
+
+        let raster_started_at = Instant::now();
         render_terminal_buffer(
-            &mut self.pixel_buffer,
+            &mut buffer,
             size.width as usize,
             size.height as usize,
             &mut self.terminal,
@@ -395,17 +426,13 @@ impl LiveDisplayApp {
             u32::MAX,
             u32::MAX,
         );
-        let surface = self
-            .softbuffer_surface
-            .as_mut()
-            .context("softbuffer surface not initialized")?;
-        let mut buffer = surface.buffer_mut().map_err(|error| {
-            anyhow::anyhow!("softbuffer buffer_mut failed in live benchmark: {error}")
-        })?;
-        buffer.copy_from_slice(&self.pixel_buffer);
+        self.cpu_phase_totals.raster += raster_started_at.elapsed();
+
+        let present_started_at = Instant::now();
         buffer.present().map_err(|error| {
             anyhow::anyhow!("softbuffer present failed in live benchmark: {error}")
         })?;
+        self.cpu_phase_totals.present += present_started_at.elapsed();
         Ok(())
     }
 }

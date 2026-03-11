@@ -114,7 +114,15 @@ pub struct LiveDisplayScenarioReport {
     pub primary_units_per_second: f64,
     pub redraws_per_iteration: u32,
     pub resize_cycles_per_iteration: u32,
+    pub cpu_phase_stats: Option<LiveDisplayCpuPhaseStats>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayCpuPhaseStats {
+    pub buffer_acquire: IterationStats,
+    pub raster: IterationStats,
+    pub present: IterationStats,
 }
 
 impl BenchmarkSuiteReport {
@@ -312,6 +320,15 @@ impl LiveDisplayBenchmarkSuiteReport {
                     result.notes.join("; ")
                 }
             );
+            if let Some(cpu_phase_stats) = &result.cpu_phase_stats {
+                let _ = writeln!(
+                    out,
+                    "  cpu_phases mean_ms acquire={:.3} raster={:.3} present={:.3}",
+                    nanos_to_millis(cpu_phase_stats.buffer_acquire.mean_nanos),
+                    nanos_to_millis(cpu_phase_stats.raster.mean_nanos),
+                    nanos_to_millis(cpu_phase_stats.present.mean_nanos),
+                );
+            }
         }
         out
     }
