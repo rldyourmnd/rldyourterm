@@ -5,6 +5,7 @@ import pathlib
 import sys
 
 from terminal_benchmark_environment import infer_report_environment_scope
+from terminal_benchmark_environment import validate_report_against_environment_requirements
 
 
 DEFAULT_METRICS = {
@@ -91,6 +92,16 @@ def main() -> int:
             "environment_scope mismatch between report and baseline: "
             f"report={report_environment_scope!r} baseline={baseline_environment_scope!r}"
         )
+    environment_requirements = baseline.get("environment_requirements")
+    if baseline_environment_scope == "controlled-display-session" and environment_requirements is None:
+        fail("controlled-display-session baselines must declare environment_requirements")
+    if environment_requirements is not None:
+        if not isinstance(environment_requirements, dict):
+            fail("baseline.environment_requirements must be an object when present")
+        try:
+            validate_report_against_environment_requirements(report, environment_requirements)
+        except ValueError as exc:
+            fail(str(exc))
 
     comparison_mode = baseline.get("comparison_mode")
     if comparison_mode not in {"enforced", "advisory"}:
