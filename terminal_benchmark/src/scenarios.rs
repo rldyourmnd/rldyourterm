@@ -592,8 +592,9 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
     let height = visible_rows * CELL_HEIGHT;
     let mut buffer = vec![0u32; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-    let mut dirty_rows_scratch = Vec::new();
+    let mut current_damage_rows_scratch = Vec::new();
     let mut repaint_rows_scratch = Vec::new();
+    let mut persisted_damage_rows_scratch = Vec::new();
     let mut previous_damage_rows = Vec::new();
     render_terminal_buffer(
         &mut buffer,
@@ -604,14 +605,18 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
         0,
         &previous_damage_rows,
         None,
-        &mut dirty_rows_scratch,
+        &mut current_damage_rows_scratch,
         &mut repaint_rows_scratch,
+        &mut persisted_damage_rows_scratch,
         true,
         0,
         u32::MAX,
         u32::MAX,
     );
-    std::mem::swap(&mut previous_damage_rows, &mut dirty_rows_scratch);
+    std::mem::swap(
+        &mut previous_damage_rows,
+        &mut persisted_damage_rows_scratch,
+    );
     let start = Instant::now();
     render_terminal_buffer(
         &mut buffer,
@@ -622,8 +627,9 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
         1,
         &previous_damage_rows,
         None,
-        &mut dirty_rows_scratch,
+        &mut current_damage_rows_scratch,
         &mut repaint_rows_scratch,
+        &mut persisted_damage_rows_scratch,
         true,
         0,
         u32::MAX,
@@ -631,7 +637,7 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
     );
     let elapsed = start.elapsed();
     black_box(buffer[0]);
-    black_box(dirty_rows_scratch.len());
+    black_box(current_damage_rows_scratch.len());
     Ok(IterationOutcome {
         elapsed,
         primary_units: (width * height) as u64,
@@ -640,7 +646,7 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
             "pixel_buffer={}x{} dirty_rows={}",
             width,
             height,
-            dirty_rows_scratch.len()
+            current_damage_rows_scratch.len()
         )],
     })
 }
