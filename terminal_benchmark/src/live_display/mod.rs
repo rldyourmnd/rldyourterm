@@ -46,6 +46,21 @@ enum ScenarioKind {
     ResizeCycle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacingMode {
+    EventDriven,
+    MonitorCadence(Duration),
+}
+
+impl PacingMode {
+    fn token(self) -> &'static str {
+        match self {
+            Self::EventDriven => "event-driven",
+            Self::MonitorCadence(_) => "monitor-cadence",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LiveDisplayWorkload {
     startup_runs_per_iteration: u32,
@@ -64,6 +79,8 @@ struct LiveDisplayIterationOutcome {
     resize_cycles_observed: u32,
     cpu_phase_totals: Option<LiveDisplayCpuPhaseTotals>,
     cpu_buffer_age_counts: Option<LiveDisplayCpuBufferAgeCounts>,
+    pacing_mode: &'static str,
+    monitor_refresh_rate_millihz: Option<u32>,
     notes: Vec<String>,
 }
 
@@ -209,6 +226,8 @@ fn run_measured_scenario(
     let mut cpu_raster_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_present_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_buffer_age_counts = LiveDisplayCpuBufferAgeCounts::default();
+    let mut pacing_mode = None;
+    let mut monitor_refresh_rate_millihz = None;
     let mut notes = Vec::new();
 
     for _ in 0..cli.iterations {
@@ -226,6 +245,12 @@ fn run_measured_scenario(
         }
         if let Some(age_counts) = outcome.cpu_buffer_age_counts {
             cpu_buffer_age_counts.merge(age_counts);
+        }
+        if pacing_mode.is_none() {
+            pacing_mode = Some(outcome.pacing_mode);
+        }
+        if monitor_refresh_rate_millihz.is_none() {
+            monitor_refresh_rate_millihz = outcome.monitor_refresh_rate_millihz;
         }
         if notes.is_empty() {
             notes = outcome.notes;
@@ -257,6 +282,8 @@ fn run_measured_scenario(
         } else {
             0.0
         },
+        pacing_mode: pacing_mode.unwrap_or("event-driven"),
+        monitor_refresh_rate_millihz,
         redraws_per_iteration: redraws_observed,
         resize_cycles_per_iteration: resize_cycles_observed,
         cpu_phase_stats,
@@ -296,6 +323,11 @@ struct LiveDisplayApp {
     iteration_started_at: Option<Instant>,
     cpu_phase_totals: LiveDisplayCpuPhaseTotals,
     cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts,
+    pacing_mode: PacingMode,
+    monitor_refresh_rate_millihz: Option<u32>,
+    redraw_pending: bool,
+    redraw_in_flight: bool,
+    next_redraw_at: Option<Instant>,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
 
@@ -347,6 +379,11 @@ impl LiveDisplayApp {
             iteration_started_at: None,
             cpu_phase_totals: LiveDisplayCpuPhaseTotals::default(),
             cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts::default(),
+            pacing_mode: PacingMode::EventDriven,
+            monitor_refresh_rate_millihz: None,
+            redraw_pending: false,
+            redraw_in_flight: false,
+            next_redraw_at: None,
             result: None,
         }
     }
@@ -375,6 +412,8 @@ impl LiveDisplayApp {
                 .then_some(self.cpu_phase_totals),
             cpu_buffer_age_counts: matches!(self.backend, DisplayBackend::Cpu)
                 .then_some(self.cpu_buffer_age_counts),
+            pacing_mode: self.pacing_mode.token(),
+            monitor_refresh_rate_millihz: self.monitor_refresh_rate_millihz,
             notes,
         }));
         event_loop.exit();
@@ -410,9 +449,72 @@ impl LiveDisplayApp {
             if applied_size != current_size {
                 self.handle_resize(applied_size);
                 self.resize_cycles_observed = self.resize_cycles_observed.saturating_add(1);
+                self.queue_redraw();
             }
         }
         true
+    }
+
+    fn configure_pacing(&mut self, window: &Window) {
+        self.monitor_refresh_rate_millihz = window
+            .current_monitor()
+            .and_then(|monitor| monitor.refresh_rate_millihertz());
+        self.pacing_mode = match (
+            self.backend,
+            self.scenario_kind,
+            self.monitor_refresh_rate_millihz,
+        ) {
+            (
+                DisplayBackend::Cpu,
+                ScenarioKind::SteadyRedraw | ScenarioKind::ResizeCycle,
+                Some(refresh_rate_millihz),
+            ) if refresh_rate_millihz > 0 => {
+                let interval_nanos =
+                    (1_000_000_000_000u64 / u64::from(refresh_rate_millihz)).max(1);
+                PacingMode::MonitorCadence(Duration::from_nanos(interval_nanos))
+            }
+            _ => PacingMode::EventDriven,
+        };
+    }
+
+    fn queue_redraw(&mut self) {
+        self.redraw_pending = true;
+    }
+
+    fn request_redraw_if_needed(&mut self, now: Instant) {
+        if !self.redraw_pending || self.redraw_in_flight {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        match self.pacing_mode {
+            PacingMode::EventDriven => {}
+            PacingMode::MonitorCadence(interval) => {
+                if let Some(next_redraw_at) = self.next_redraw_at
+                    && now < next_redraw_at
+                {
+                    return;
+                }
+                self.next_redraw_at = Some(now + interval);
+            }
+        }
+        window.request_redraw();
+        self.redraw_pending = false;
+        self.redraw_in_flight = true;
+    }
+
+    fn control_flow(&self, now: Instant) -> winit::event_loop::ControlFlow {
+        if self.redraw_pending && !self.redraw_in_flight {
+            match self.pacing_mode {
+                PacingMode::EventDriven => winit::event_loop::ControlFlow::Wait,
+                PacingMode::MonitorCadence(_) => {
+                    winit::event_loop::ControlFlow::WaitUntil(self.next_redraw_at.unwrap_or(now))
+                }
+            }
+        } else {
+            winit::event_loop::ControlFlow::Wait
+        }
     }
 
     fn handle_resize(&mut self, size: PhysicalSize<u32>) {
@@ -565,14 +667,16 @@ impl ApplicationHandler for LiveDisplayApp {
                 self.softbuffer_surface = Some(surface);
             }
         }
+        self.configure_pacing(&window);
         self.window = Some(window.clone());
-        window.request_redraw();
+        self.queue_redraw();
+        self.request_redraw_if_needed(Instant::now());
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
-        }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        self.request_redraw_if_needed(now);
+        event_loop.set_control_flow(self.control_flow(now));
     }
 
     fn window_event(
@@ -597,18 +701,18 @@ impl ApplicationHandler for LiveDisplayApp {
                 if self.pending_resize_started_at.take().is_some() {
                     self.resize_cycles_observed = self.resize_cycles_observed.saturating_add(1);
                 }
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
+                self.queue_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.clone() {
                     let size = window.inner_size();
                     self.handle_resize(size);
-                    window.request_redraw();
+                    self.configure_pacing(&window);
+                    self.queue_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.redraw_in_flight = false;
                 let render_result = match self.backend {
                     DisplayBackend::Gpu => self.render_gpu(),
                     DisplayBackend::Cpu => self.render_cpu(),
@@ -633,6 +737,8 @@ impl ApplicationHandler for LiveDisplayApp {
                         if self.redraws_observed >= self.steady_frames_target {
                             notes.push(format!("frames={}", self.redraws_observed));
                             self.finish_success(event_loop, notes);
+                        } else {
+                            self.queue_redraw();
                         }
                     }
                     ScenarioKind::ResizeCycle => {
@@ -644,6 +750,9 @@ impl ApplicationHandler for LiveDisplayApp {
                         if let Some(window) = self.window.clone() {
                             let requested = self.request_next_resize(&window);
                             notes.push(format!("requested_next_resize={requested}"));
+                            if !requested {
+                                self.queue_redraw();
+                            }
                         }
                     }
                 }

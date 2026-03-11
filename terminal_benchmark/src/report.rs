@@ -112,6 +112,8 @@ pub struct LiveDisplayScenarioReport {
     pub primary_units_per_iteration: u64,
     pub stats: IterationStats,
     pub primary_units_per_second: f64,
+    pub pacing_mode: &'static str,
+    pub monitor_refresh_rate_millihz: Option<u32>,
     pub redraws_per_iteration: u32,
     pub resize_cycles_per_iteration: u32,
     pub cpu_phase_stats: Option<LiveDisplayCpuPhaseStats>,
@@ -317,9 +319,14 @@ impl LiveDisplayBenchmarkSuiteReport {
             );
             let _ = writeln!(
                 out,
-                "  kind={} unit={} units/iter={} redraws/iter={} resize_cycles/iter={} notes={}",
+                "  kind={} unit={} pacing={} monitor_mhz={} units/iter={} redraws/iter={} resize_cycles/iter={} notes={}",
                 result.benchmark_kind,
                 result.primary_unit_label,
+                result.pacing_mode,
+                result
+                    .monitor_refresh_rate_millihz
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_owned()),
                 result.primary_units_per_iteration,
                 result.redraws_per_iteration,
                 result.resize_cycles_per_iteration,
