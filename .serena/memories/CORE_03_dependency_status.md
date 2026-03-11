@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 706ac44 docs(governance): align authority docs with current repo state
+Last commit: 32bdafe docs(governance): align benchmark and system suite guidance
 Scope: Cargo.toml, Cargo.lock, .github/workflows/ci.yml, .github/workflows/release.yml
 Area: CORE
 -->
@@ -34,10 +34,15 @@ Source: `Cargo.toml` `[workspace.dependencies]`
 
 ## Benchmark and Governance Tooling
 - Headless benchmark crate: `terminal_benchmark/`
+- Benchmark report validator: `scripts/ci/validate_terminal_benchmark_report.py`
+- Full benchmark runner: `scripts/ci/run_terminal_benchmark_full.sh`
+- Canonical local validation lane: `scripts/ci/run_terminal_system_suite.sh`
+- System-suite report validator: `scripts/ci/validate_terminal_system_suite_report.py`
 - Governance validator: `scripts/ci/run_e2e_governance.sh`
 - Authority-doc sync validator: `scripts/ci/validate_authority_docs.sh`
 
 ## Current Status
 - Workspace is pinned through `Cargo.lock`
 - CI and release preflight use `--locked`
+- Release preflight delegates locked quality validation to `scripts/ci/run_terminal_system_suite.sh` and uploads the generated JSON evidence artifacts
 - No stale `main/dev` branch assumptions should remain in authority docs or memories

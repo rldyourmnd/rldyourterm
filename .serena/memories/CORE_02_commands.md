@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 706ac44 docs(governance): align authority docs with current repo state
+Last commit: 32bdafe docs(governance): align benchmark and system suite guidance
 Scope: project commands, .github/workflows/, scripts/ci/, scripts/mvp/
 Area: CORE
 -->
@@ -38,6 +38,9 @@ bash scripts/ci/run_e2e_governance.sh --mode ci
 bash scripts/ci/validate_authority_docs.sh
 bash scripts/ci/validate_vsa_dependency_graph.sh
 bash scripts/ci/run_terminal_benchmark_smoke.sh
+bash scripts/ci/run_terminal_benchmark_full.sh
+bash scripts/ci/run_terminal_system_suite.sh
+python3 scripts/ci/validate_terminal_system_suite_report.py target/terminal-benchmark/system-suite-report.json --benchmark-report target/terminal-benchmark/system-suite-report.benchmark.json --governance-mode ci
 ```
 
 ## Compatibility Harness
@@ -51,4 +54,4 @@ bash scripts/mvp/run_profile.sh codex 3 recoverable:pty-write tick mode:cpu
 - `.github/workflows/ci.yml` triggers on push and pull_request to `main`
 - CI jobs: check, test, coverage, clippy, benchmark-smoke, fmt, msrv, audit, deny, ci-gate
 - Additional PR-visible workflows: CodeQL, ClusterFuzzLite PR fuzzing, Scorecard, Semantic PR, PR Automation
-- Release workflow: `.github/workflows/release.yml` via `workflow_dispatch`
+- Release workflow: `.github/workflows/release.yml` via `workflow_dispatch`, with `scripts/ci/run_terminal_system_suite.sh --governance-mode release` as the canonical pre-security validation lane
