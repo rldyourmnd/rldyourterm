@@ -38,7 +38,7 @@ cargo check --locked -p rldyourterm-app
 
 ## Benchmarking
 
-Canonical headless benchmark suite lives in `terminal_benchmark/`.
+Canonical headless benchmark suite lives in `terminal_benchmark/`. It now covers the canonical headless owners across `core`, `services/session`, `ui`, `features/settings`, `features/shell-integration`, `features/font`, `features/render-gpu` policy helpers, and `features/render-cpu`, while explicitly marking `app`, `foundation`, `foundation-platform`, and `features/diagnostics` as correctness-only layers in the JSON coverage report.
 
 Quick run:
 
@@ -62,12 +62,26 @@ CI-parity smoke run:
 bash scripts/ci/run_terminal_benchmark_smoke.sh
 ```
 
+Full benchmark suite:
+
+```bash
+bash scripts/ci/run_terminal_benchmark_full.sh
+```
+
+Canonical local system suite:
+
+```bash
+bash scripts/ci/run_terminal_system_suite.sh
+```
+
+The system suite emits a machine-readable JSON report and validates the referenced full benchmark report before returning success.
+
 ## CI/CD profile
 
 - Current PR-visible check suite includes `CI`, `CodeQL`, `ClusterFuzzLite PR fuzzing`, `Scorecard`, `Semantic PR`, and `PR Automation`.
 - `CI` gate is strict for critical fan-out jobs (`check/test/clippy/fmt/msrv/audit/deny` must be `success`); only `coverage` may be `skipped` when disabled.
 - `CodeQL` publishes Rust extraction diagnostics artifact and fails closed when diagnostics telemetry is missing/invalid; actionable diagnostics (`ExtractionErrors > 0` or non-benign extraction warnings) block merges, while known generated build-output warnings remain observable but non-blocking.
-- Release governance remains manual-only (`workflow_dispatch`) with enforced preflight (`authority-doc validation`, `locked quality gates`, `security gates`, `AI CLI compatibility matrix`).
+- Release governance remains manual-only (`workflow_dispatch`) with enforced preflight (`terminal system suite`, `security gates`, `AI CLI compatibility matrix`).
 - Weekly non-blocking soak lane: `.github/workflows/soak.yml` runs `scripts/mvp/run_matrix.sh` and publishes artifacts for long-run compatibility evidence.
 
 ## Fuzzing
