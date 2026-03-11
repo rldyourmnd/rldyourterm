@@ -171,6 +171,8 @@ Live-display scenarios:
 - `terminal_benchmark/baselines/live-display.quick.json`: advisory threshold policy for quick local live-display smoke
 - `terminal_benchmark/baselines/live-display.standard.json`: advisory threshold policy for standard local live-display full runs
 
+Advisory live-display baselines remain non-blocking. The validator emits regression details to stderr, but it does not fail the command unless the policy is intentionally promoted to enforced for a controlled display environment.
+
 Refresh a baseline from a validated report:
 
 ```bash
