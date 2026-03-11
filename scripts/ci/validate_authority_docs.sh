@@ -92,6 +92,12 @@ if "workflow_dispatch:" not in display_workflow:
 if "run_terminal_display_benchmark_calibration.sh" not in display_workflow:
     print("[FAIL] display benchmark workflow must use the canonical calibration wrapper", file=sys.stderr)
     sys.exit(1)
+if "run_terminal_display_benchmark_runner_readiness.sh" not in display_workflow:
+    print("[FAIL] display benchmark workflow must validate runner readiness before calibration", file=sys.stderr)
+    sys.exit(1)
+if "live-display-runner-readiness.json" not in display_workflow:
+    print("[FAIL] display benchmark workflow must publish runner readiness artifact", file=sys.stderr)
+    sys.exit(1)
 
 display_runs_on = []
 capture = False
