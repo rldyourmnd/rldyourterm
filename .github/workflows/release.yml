@@ -73,13 +73,16 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Quality gates
         run: |
-          cargo check --workspace --locked
-          cargo test --workspace --locked
-          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-          cargo fmt --all -- --check
-          bash scripts/ci/run_terminal_benchmark_smoke.sh
           rustup toolchain install "${MSRV_RUST_TOOLCHAIN}" --profile minimal
-          cargo +${MSRV_RUST_TOOLCHAIN} check --workspace --locked
+          bash scripts/ci/run_terminal_system_suite.sh \
+            target/terminal-benchmark/release-system-suite.json \
+            --benchmark-report target/terminal-benchmark/release-benchmark-report.json \
+            --governance-mode release
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: release-validation
+          path: target/terminal-benchmark/*.json
       - name: Install security gate tools
         uses: cargo-bins/cargo-binstall@1800853f2578f8c34492ec76154caef8e163fbca # v1.17.7
         with:
