@@ -83,6 +83,8 @@ struct LiveDisplayIterationOutcome {
     cpu_buffer_age_counts: Option<LiveDisplayCpuBufferAgeCounts>,
     pacing_mode: &'static str,
     monitor_refresh_rate_millihz: Option<u32>,
+    monitor_name: Option<String>,
+    monitor_scale_factor: Option<f64>,
     notes: Vec<String>,
 }
 
@@ -93,9 +95,10 @@ struct LiveDisplayCpuPhaseTotals {
     present: Duration,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct LiveDisplayPhaseTotals {
     redraw_dispatch: Duration,
+    frame_gap: Vec<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -162,6 +165,10 @@ pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
             gpu_runtime: "wgpu",
             cpu_present_runtime: "softbuffer",
             platform_dependent: true,
+            session_type: std::env::var("XDG_SESSION_TYPE")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            display_server_hint: detect_display_server_hint(),
         },
         workload: LiveDisplayWorkloadSummary {
             startup_runs_per_iteration: workload.startup_runs_per_iteration,
@@ -173,6 +180,18 @@ pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
         },
         results,
     })
+}
+
+fn detect_display_server_hint() -> String {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        "wayland".to_owned()
+    } else if std::env::var_os("DISPLAY").is_some() {
+        "x11".to_owned()
+    } else if std::env::var_os("XDG_SESSION_TYPE").is_some() {
+        std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_owned())
+    } else {
+        "unknown".to_owned()
+    }
 }
 
 impl LiveDisplayWorkload {
@@ -230,12 +249,15 @@ fn run_measured_scenario(
     let mut redraws_observed = 0u32;
     let mut resize_cycles_observed = 0u32;
     let mut redraw_dispatch_durations = Vec::with_capacity(cli.iterations as usize);
+    let mut frame_gap_durations = Vec::new();
     let mut cpu_buffer_acquire_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_raster_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_present_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_buffer_age_counts = LiveDisplayCpuBufferAgeCounts::default();
     let mut pacing_mode = None;
     let mut monitor_refresh_rate_millihz = None;
+    let mut monitor_name = None;
+    let mut monitor_scale_factor = None;
     let mut notes = Vec::new();
 
     for _ in 0..cli.iterations {
@@ -247,6 +269,7 @@ fn run_measured_scenario(
         redraws_observed = outcome.redraws_observed;
         resize_cycles_observed = outcome.resize_cycles_observed;
         redraw_dispatch_durations.push(outcome.display_phase_totals.redraw_dispatch);
+        frame_gap_durations.extend(outcome.display_phase_totals.frame_gap);
         if let Some(cpu_phase_totals) = outcome.cpu_phase_totals {
             cpu_buffer_acquire_durations.push(cpu_phase_totals.buffer_acquire);
             cpu_raster_durations.push(cpu_phase_totals.raster);
@@ -261,6 +284,12 @@ fn run_measured_scenario(
         if monitor_refresh_rate_millihz.is_none() {
             monitor_refresh_rate_millihz = outcome.monitor_refresh_rate_millihz;
         }
+        if monitor_name.is_none() {
+            monitor_name = outcome.monitor_name.clone();
+        }
+        if monitor_scale_factor.is_none() {
+            monitor_scale_factor = outcome.monitor_scale_factor;
+        }
         if notes.is_empty() {
             notes = outcome.notes;
         }
@@ -269,6 +298,8 @@ fn run_measured_scenario(
     let stats = IterationStats::from_durations(&durations);
     let display_phase_stats = LiveDisplayPhaseStats {
         redraw_dispatch: IterationStats::from_durations(&redraw_dispatch_durations),
+        frame_gap: (!frame_gap_durations.is_empty())
+            .then(|| IterationStats::from_durations(&frame_gap_durations)),
     };
     let cpu_phase_stats = if cpu_buffer_acquire_durations.is_empty() {
         None
@@ -296,6 +327,8 @@ fn run_measured_scenario(
         },
         pacing_mode: pacing_mode.unwrap_or("event-driven"),
         monitor_refresh_rate_millihz,
+        monitor_name,
+        monitor_scale_factor,
         display_phase_stats,
         redraws_per_iteration: redraws_observed,
         resize_cycles_per_iteration: resize_cycles_observed,
@@ -338,10 +371,13 @@ struct LiveDisplayApp {
     cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts,
     pacing_mode: PacingMode,
     monitor_refresh_rate_millihz: Option<u32>,
+    monitor_name: Option<String>,
+    monitor_scale_factor: Option<f64>,
     redraw_pending: bool,
     redraw_in_flight: bool,
     next_redraw_at: Option<Instant>,
     last_redraw_requested_at: Option<Instant>,
+    last_redraw_completed_at: Option<Instant>,
     display_phase_totals: LiveDisplayPhaseTotals,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
@@ -396,10 +432,13 @@ impl LiveDisplayApp {
             cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts::default(),
             pacing_mode: PacingMode::EventDriven,
             monitor_refresh_rate_millihz: None,
+            monitor_name: None,
+            monitor_scale_factor: None,
             redraw_pending: false,
             redraw_in_flight: false,
             next_redraw_at: None,
             last_redraw_requested_at: None,
+            last_redraw_completed_at: None,
             display_phase_totals: LiveDisplayPhaseTotals::default(),
             result: None,
         }
@@ -425,13 +464,15 @@ impl LiveDisplayApp {
             primary_units,
             redraws_observed: self.redraws_observed,
             resize_cycles_observed: self.resize_cycles_observed,
-            display_phase_totals: self.display_phase_totals,
+            display_phase_totals: self.display_phase_totals.clone(),
             cpu_phase_totals: matches!(self.backend, DisplayBackend::Cpu)
                 .then_some(self.cpu_phase_totals),
             cpu_buffer_age_counts: matches!(self.backend, DisplayBackend::Cpu)
                 .then_some(self.cpu_buffer_age_counts),
             pacing_mode: self.pacing_mode.token(),
             monitor_refresh_rate_millihz: self.monitor_refresh_rate_millihz,
+            monitor_name: self.monitor_name.clone(),
+            monitor_scale_factor: self.monitor_scale_factor,
             notes,
         }));
         event_loop.exit();
@@ -474,9 +515,12 @@ impl LiveDisplayApp {
     }
 
     fn configure_pacing(&mut self, window: &Window) {
-        self.monitor_refresh_rate_millihz = window
-            .current_monitor()
+        let monitor = window.current_monitor();
+        self.monitor_refresh_rate_millihz = monitor
+            .as_ref()
             .and_then(|monitor| monitor.refresh_rate_millihertz());
+        self.monitor_name = monitor.as_ref().and_then(|monitor| monitor.name());
+        self.monitor_scale_factor = monitor.as_ref().map(|monitor| monitor.scale_factor());
         self.pacing_mode = match (
             self.backend,
             self.scenario_kind,
@@ -732,8 +776,15 @@ impl ApplicationHandler for LiveDisplayApp {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw_in_flight = false;
+                let redraw_started_at = Instant::now();
                 if let Some(requested_at) = self.last_redraw_requested_at.take() {
-                    self.display_phase_totals.redraw_dispatch += requested_at.elapsed();
+                    self.display_phase_totals.redraw_dispatch +=
+                        redraw_started_at.saturating_duration_since(requested_at);
+                }
+                if let Some(previous_redraw_completed_at) = self.last_redraw_completed_at {
+                    self.display_phase_totals.frame_gap.push(
+                        redraw_started_at.saturating_duration_since(previous_redraw_completed_at),
+                    );
                 }
                 let render_result = match self.backend {
                     DisplayBackend::Gpu => self.render_gpu(),
@@ -745,6 +796,7 @@ impl ApplicationHandler for LiveDisplayApp {
                 }
 
                 self.redraws_observed = self.redraws_observed.saturating_add(1);
+                self.last_redraw_completed_at = Some(Instant::now());
                 let mut notes = vec![format!(
                     "requested_extent={}x{}",
                     self.requested_extent.width, self.requested_extent.height
