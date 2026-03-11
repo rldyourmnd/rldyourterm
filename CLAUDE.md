@@ -95,7 +95,11 @@ bash scripts/ci/run_e2e_governance.sh --mode ci
 ```bash
 bash scripts/ci/run_terminal_benchmark_smoke.sh
 bash scripts/ci/run_terminal_benchmark_full.sh
+bash scripts/ci/run_terminal_display_benchmark_smoke.sh
+bash scripts/ci/run_terminal_display_benchmark_full.sh
 bash scripts/ci/run_terminal_system_suite.sh
+bash scripts/ci/run_terminal_system_suite.sh --with-live-display smoke
+bash scripts/ci/run_terminal_system_suite.sh --benchmark-baseline terminal_benchmark/baselines/canonical-headless.standard.json --with-live-display smoke --live-display-baseline terminal_benchmark/baselines/live-display.quick.json
 python3 scripts/ci/validate_terminal_system_suite_report.py target/terminal-benchmark/system-suite-report.json --benchmark-report target/terminal-benchmark/system-suite-report.benchmark.json --governance-mode ci
 ```
 
@@ -125,6 +129,7 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on push/PR to `main`:
 |-----|---------|
 | Check | `cargo check --workspace` |
 | Benchmark Smoke | `bash scripts/ci/run_terminal_benchmark_smoke.sh` |
+| Display Benchmark | Local/manual only via `bash scripts/ci/run_terminal_display_benchmark_smoke.sh` |
 | Clippy | `cargo clippy --workspace -- -D warnings` |
 | Test | `cargo test --workspace` |
 | Format | `cargo fmt --all -- --check` |
@@ -152,6 +157,7 @@ Before any commit:
 5. `bash scripts/ci/run_terminal_benchmark_smoke.sh` passes
 6. `bash scripts/ci/run_e2e_governance.sh --mode ci` passes
 7. `bash scripts/ci/run_terminal_system_suite.sh` is the canonical full local validation lane
+8. Optional display validation uses `bash scripts/ci/run_terminal_system_suite.sh --with-live-display smoke`
 
 ## Commit Convention
 

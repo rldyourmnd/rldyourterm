@@ -35,7 +35,11 @@ Source: `Cargo.toml` `[workspace.dependencies]`
 ## Benchmark and Governance Tooling
 - Headless benchmark crate: `terminal_benchmark/`
 - Benchmark report validator: `scripts/ci/validate_terminal_benchmark_report.py`
+- Live-display benchmark report validator: `scripts/ci/validate_terminal_display_benchmark_report.py`
+- Benchmark threshold validator: `scripts/ci/validate_terminal_benchmark_thresholds.py`
+- Benchmark baseline refresh tool: `scripts/ci/refresh_terminal_benchmark_baseline.py`
 - Full benchmark runner: `scripts/ci/run_terminal_benchmark_full.sh`
+- Live-display benchmark runners: `scripts/ci/run_terminal_display_benchmark_smoke.sh`, `scripts/ci/run_terminal_display_benchmark_full.sh`
 - Canonical local validation lane: `scripts/ci/run_terminal_system_suite.sh`
 - System-suite report validator: `scripts/ci/validate_terminal_system_suite_report.py`
 - Governance validator: `scripts/ci/run_e2e_governance.sh`
@@ -45,4 +49,6 @@ Source: `Cargo.toml` `[workspace.dependencies]`
 - Workspace is pinned through `Cargo.lock`
 - CI and release preflight use `--locked`
 - Release preflight delegates locked quality validation to `scripts/ci/run_terminal_system_suite.sh` and uploads the generated JSON evidence artifacts
+- `terminal_benchmark/` now uses workspace `winit` and `softbuffer` to drive the local/manual `live-display` suite without widening `app` public APIs
+- Versioned benchmark baselines live under `terminal_benchmark/baselines/` and are scale-scoped (`canonical-headless.standard`, `live-display.quick`, `live-display.standard`)
 - No stale `main/dev` branch assumptions should remain in authority docs or memories

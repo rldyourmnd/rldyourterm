@@ -22,13 +22,16 @@ Area: CORE
 - Release authority remains manual via `.github/workflows/release.yml`
 
 ## Current Primary Risk
-- The main remaining systemic risk is knowledge-layer drift between authority docs, Serena memories, and the current repository shape
+- The main remaining systemic risk is environment variance for live-display metrics: the suite is validated and baseline-aware, but thresholds remain advisory unless calibrated for a controlled display environment
 
 ## Mitigations Present in Repository
 - `scripts/ci/validate_authority_docs.sh` blocks known stale governance claims
 - `scripts/ci/validate_vsa_dependency_graph.sh` blocks invalid crate edges
 - `scripts/ci/run_terminal_benchmark_smoke.sh` keeps canonical headless benchmark paths live in CI
 - `scripts/ci/run_terminal_benchmark_full.sh` exercises the full canonical headless benchmark suite and validates its JSON report schema
-- `scripts/ci/run_terminal_system_suite.sh` runs the canonical local and release validation lane across fmt, check, test, clippy, MSRV, fuzz compile-path, benchmark smoke/full, and governance
+- `scripts/ci/run_terminal_display_benchmark_smoke.sh` and `scripts/ci/run_terminal_display_benchmark_full.sh` exercise the local/manual live-display suite over real `winit` plus `wgpu`/`softbuffer` presentation paths
+- `scripts/ci/validate_terminal_benchmark_thresholds.py` compares validated benchmark reports against versioned baseline policies
+- `scripts/ci/refresh_terminal_benchmark_baseline.py` refreshes versioned baseline manifests from validated benchmark reports
+- `scripts/ci/run_terminal_system_suite.sh` runs the canonical local and release validation lane across fmt, check, test, clippy, MSRV, fuzz compile-path, benchmark smoke/full, governance, optional live-display validation, and optional baseline enforcement
 - `scripts/ci/validate_terminal_system_suite_report.py` ensures system-suite evidence stays synchronized with the referenced full benchmark report and governance mode
 - The font runtime now degrades to basic `font8x8` ASCII fallback if the bundled primary font cannot be parsed, instead of panicking at construction time

@@ -38,7 +38,7 @@ Source: `cargo metadata --format-version 1 --no-deps`
 - `rldyourterm-settings -> rldyourterm-services`
 - `rldyourterm-diagnostics -> rldyourterm-foundation`
 - `rldyourterm-integration-tests -> rldyourterm-core`
-- `rldyourterm-terminal-benchmark -> {rldyourterm-font, rldyourterm-render-cpu, rldyourterm-render-gpu, rldyourterm-settings, rldyourterm-shell-integration, rldyourterm-services, rldyourterm-ui, wgpu}`
+- `rldyourterm-terminal-benchmark -> {rldyourterm-font, rldyourterm-render-cpu, rldyourterm-render-gpu, rldyourterm-settings, rldyourterm-shell-integration, rldyourterm-services, rldyourterm-ui, softbuffer, wgpu, winit}`
 
 ## Key Files
 - `crates/app/src/main.rs` - CLI parsing, shell resolution, runtime dispatch
@@ -48,14 +48,14 @@ Source: `cargo metadata --format-version 1 --no-deps`
 - `crates/services/src/terminal.rs` - narrow terminal-domain export surface for upper layers
 - `crates/features/render_cpu/src/` - CPU render paths
 - `crates/features/render_gpu/src/` - GPU render paths
-- `terminal_benchmark/src/` - canonical headless benchmark harness with machine-readable layer coverage metadata
+- `terminal_benchmark/src/` - canonical benchmark harness with `canonical-headless` and `live-display` suites plus machine-readable report metadata
 
 ## Current CI and Governance Surface
 - `.github/workflows/ci.yml` runs on push and pull_request to `main`
 - CI fan-out jobs: check, test, coverage, clippy, benchmark-smoke, fmt, msrv, audit, deny, ci-gate
 - Additional PR-visible workflows: CodeQL, ClusterFuzzLite PR fuzzing, Scorecard, Semantic PR, PR Automation
 - Governance script: `scripts/ci/run_e2e_governance.sh`
-- Governance validators: `scripts/ci/validate_authority_docs.sh`, `scripts/ci/validate_vsa_dependency_graph.sh`, `scripts/ci/validate_terminal_benchmark_report.py`, `scripts/ci/validate_terminal_system_suite_report.py`
+- Governance validators: `scripts/ci/validate_authority_docs.sh`, `scripts/ci/validate_vsa_dependency_graph.sh`, `scripts/ci/validate_terminal_benchmark_report.py`, `scripts/ci/validate_terminal_display_benchmark_report.py`, `scripts/ci/validate_terminal_system_suite_report.py`
 - Release workflow: `.github/workflows/release.yml` (manual `workflow_dispatch`) uses `scripts/ci/run_terminal_system_suite.sh` as the canonical validation entrypoint before security gates and the compatibility matrix
 
 ## Knowledge Layer
