@@ -106,6 +106,7 @@ There is also a manual self-hosted GitHub workflow for the same controlled calib
 - `.github/workflows/display-benchmark.yml`
 - runner labels required: `self-hosted`, `display-benchmark`, and the selected OS label
 - it uploads four artifacts: runner readiness report, controlled report, controlled baseline, calibration report
+- artifact upload is `always()`-style, so readiness and partial evidence survive failed calibration attempts
 
 Optional threshold validation against versioned baselines:
 

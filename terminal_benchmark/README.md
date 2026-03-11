@@ -267,3 +267,5 @@ The same flow is also available as a manual self-hosted GitHub Actions workflow:
   - `live-display-controlled-report.json`
   - `live-display-controlled-baseline.json`
   - `live-display-controlled-calibration.json`
+
+Artifact upload is preserved on failed workflow runs as well, so readiness evidence and any partial calibration outputs remain available for RCA.
