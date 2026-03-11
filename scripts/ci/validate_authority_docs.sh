@@ -52,9 +52,10 @@ import sys
 release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 required_counts = {
     "MSRV_RUST_TOOLCHAIN:": 1,
-    "cargo +${MSRV_RUST_TOOLCHAIN} check --workspace --locked": 1,
-    "bash scripts/ci/run_terminal_benchmark_smoke.sh": 1,
-    "bash scripts/ci/run_e2e_governance.sh --mode release": 1,
+    "rustup toolchain install \"${MSRV_RUST_TOOLCHAIN}\" --profile minimal": 1,
+    "bash scripts/ci/run_terminal_system_suite.sh": 1,
+    "--benchmark-report target/terminal-benchmark/release-benchmark-report.json": 1,
+    "--governance-mode release": 1,
 }
 for needle, expected in required_counts.items():
     actual = release.count(needle)
@@ -68,6 +69,12 @@ for needle, expected in required_counts.items():
 ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 if ci.count("branches: [main]") < 2:
     print("[FAIL] ci workflow must remain scoped to main push and PR triggers", file=sys.stderr)
+    sys.exit(1)
+if ci.count("bash scripts/ci/run_terminal_benchmark_smoke.sh") != 1:
+    print("[FAIL] ci workflow must keep exactly one benchmark smoke gate", file=sys.stderr)
+    sys.exit(1)
+if "bash scripts/ci/run_terminal_system_suite.sh" in ci:
+    print("[FAIL] ci workflow must not inline the full terminal system suite", file=sys.stderr)
     sys.exit(1)
 
 claude = Path("CLAUDE.md").read_text(encoding="utf-8")
