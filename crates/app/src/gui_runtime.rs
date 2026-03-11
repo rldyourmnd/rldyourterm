@@ -366,6 +366,8 @@ struct GuiRuntimeApp {
     output_batch: Vec<u8>,
     response_buffer_scratch: TerminalResponseBuffer,
     dirty_rows_scratch: Vec<u16>,
+    repaint_rows_scratch: Vec<u16>,
+    previous_cpu_damage_rows: Vec<u16>,
 
     blink_visible: bool,
     last_blink_toggle: Instant,
@@ -481,6 +483,8 @@ impl GuiRuntimeApp {
                 FEED_EVENTS_SCRATCH_INITIAL_CAPACITY,
             ),
             dirty_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
+            repaint_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
+            previous_cpu_damage_rows: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
             blink_visible: true,
             last_blink_toggle: Instant::now(),
             last_window_title: String::new(),

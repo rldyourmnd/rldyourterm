@@ -369,18 +369,26 @@ impl GuiRuntimeApp {
         let mut buffer = surface
             .buffer_mut()
             .map_err(|error| anyhow!("failed to acquire softbuffer frame: {error}"))?;
+        let framebuffer_age = buffer.age();
         render_terminal_buffer(
             &mut buffer,
             width as usize,
             height as usize,
             &mut self.terminal,
             &mut self.glyph_cache,
+            framebuffer_age,
+            &self.previous_cpu_damage_rows,
             self.last_rendered_cursor_row,
             &mut self.dirty_rows_scratch,
+            &mut self.repaint_rows_scratch,
             self.blink_visible,
             self.viewport_offset,
             sel_start,
             sel_end,
+        );
+        std::mem::swap(
+            &mut self.previous_cpu_damage_rows,
+            &mut self.dirty_rows_scratch,
         );
         self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
         buffer

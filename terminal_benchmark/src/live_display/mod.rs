@@ -7,8 +7,8 @@ use crate::cli::{Cli, ScaleArg, ScenarioArg};
 use crate::fixtures::scale_name;
 use crate::metrics::IterationStats;
 use crate::report::{
-    LiveDisplayBenchmarkSuiteReport, LiveDisplayCpuPhaseStats, LiveDisplayEnvironmentReport,
-    LiveDisplayScenarioReport, LiveDisplayWorkloadSummary,
+    LiveDisplayBenchmarkSuiteReport, LiveDisplayCpuBufferAgeReport, LiveDisplayCpuPhaseStats,
+    LiveDisplayEnvironmentReport, LiveDisplayScenarioReport, LiveDisplayWorkloadSummary,
 };
 use anyhow::{Context, Result, bail};
 use rldyourterm_render_cpu::render_terminal_buffer;
@@ -63,6 +63,7 @@ struct LiveDisplayIterationOutcome {
     redraws_observed: u32,
     resize_cycles_observed: u32,
     cpu_phase_totals: Option<LiveDisplayCpuPhaseTotals>,
+    cpu_buffer_age_counts: Option<LiveDisplayCpuBufferAgeCounts>,
     notes: Vec<String>,
 }
 
@@ -71,6 +72,32 @@ struct LiveDisplayCpuPhaseTotals {
     buffer_acquire: Duration,
     raster: Duration,
     present: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LiveDisplayCpuBufferAgeCounts {
+    age_0: u64,
+    age_1: u64,
+    age_2: u64,
+    age_3_plus: u64,
+}
+
+impl LiveDisplayCpuBufferAgeCounts {
+    fn record(&mut self, age: u8) {
+        match age {
+            0 => self.age_0 = self.age_0.saturating_add(1),
+            1 => self.age_1 = self.age_1.saturating_add(1),
+            2 => self.age_2 = self.age_2.saturating_add(1),
+            _ => self.age_3_plus = self.age_3_plus.saturating_add(1),
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.age_0 = self.age_0.saturating_add(other.age_0);
+        self.age_1 = self.age_1.saturating_add(other.age_1);
+        self.age_2 = self.age_2.saturating_add(other.age_2);
+        self.age_3_plus = self.age_3_plus.saturating_add(other.age_3_plus);
+    }
 }
 
 pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
@@ -181,6 +208,7 @@ fn run_measured_scenario(
     let mut cpu_buffer_acquire_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_raster_durations = Vec::with_capacity(cli.iterations as usize);
     let mut cpu_present_durations = Vec::with_capacity(cli.iterations as usize);
+    let mut cpu_buffer_age_counts = LiveDisplayCpuBufferAgeCounts::default();
     let mut notes = Vec::new();
 
     for _ in 0..cli.iterations {
@@ -195,6 +223,9 @@ fn run_measured_scenario(
             cpu_buffer_acquire_durations.push(cpu_phase_totals.buffer_acquire);
             cpu_raster_durations.push(cpu_phase_totals.raster);
             cpu_present_durations.push(cpu_phase_totals.present);
+        }
+        if let Some(age_counts) = outcome.cpu_buffer_age_counts {
+            cpu_buffer_age_counts.merge(age_counts);
         }
         if notes.is_empty() {
             notes = outcome.notes;
@@ -229,6 +260,14 @@ fn run_measured_scenario(
         redraws_per_iteration: redraws_observed,
         resize_cycles_per_iteration: resize_cycles_observed,
         cpu_phase_stats,
+        cpu_buffer_age_counts: matches!(metadata.backend, "cpu").then_some(
+            LiveDisplayCpuBufferAgeReport {
+                age_0: cpu_buffer_age_counts.age_0,
+                age_1: cpu_buffer_age_counts.age_1,
+                age_2: cpu_buffer_age_counts.age_2,
+                age_3_plus: cpu_buffer_age_counts.age_3_plus,
+            },
+        ),
         notes,
     })
 }
@@ -248,12 +287,15 @@ struct LiveDisplayApp {
     softbuffer_surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
     glyph_cache: GlyphCache,
     dirty_rows_scratch: Vec<u16>,
+    repaint_rows_scratch: Vec<u16>,
+    previous_cpu_damage_rows: Vec<u16>,
     redraws_observed: u32,
     resize_cycles_observed: u32,
     resize_request_cursor: usize,
     pending_resize_started_at: Option<Instant>,
     iteration_started_at: Option<Instant>,
     cpu_phase_totals: LiveDisplayCpuPhaseTotals,
+    cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
 
@@ -296,12 +338,15 @@ impl LiveDisplayApp {
             softbuffer_surface: None,
             glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
             dirty_rows_scratch: Vec::new(),
+            repaint_rows_scratch: Vec::new(),
+            previous_cpu_damage_rows: Vec::new(),
             redraws_observed: 0,
             resize_cycles_observed: 0,
             resize_request_cursor: 0,
             pending_resize_started_at: None,
             iteration_started_at: None,
             cpu_phase_totals: LiveDisplayCpuPhaseTotals::default(),
+            cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts::default(),
             result: None,
         }
     }
@@ -328,6 +373,8 @@ impl LiveDisplayApp {
             resize_cycles_observed: self.resize_cycles_observed,
             cpu_phase_totals: matches!(self.backend, DisplayBackend::Cpu)
                 .then_some(self.cpu_phase_totals),
+            cpu_buffer_age_counts: matches!(self.backend, DisplayBackend::Cpu)
+                .then_some(self.cpu_buffer_age_counts),
             notes,
         }));
         event_loop.exit();
@@ -411,6 +458,8 @@ impl LiveDisplayApp {
             anyhow::anyhow!("softbuffer buffer_mut failed in live benchmark: {error}")
         })?;
         self.cpu_phase_totals.buffer_acquire += acquire_started_at.elapsed();
+        let buffer_age = buffer.age();
+        self.cpu_buffer_age_counts.record(buffer_age);
 
         let raster_started_at = Instant::now();
         render_terminal_buffer(
@@ -419,14 +468,21 @@ impl LiveDisplayApp {
             size.height as usize,
             &mut self.terminal,
             &mut self.glyph_cache,
+            buffer_age,
+            &self.previous_cpu_damage_rows,
             None,
             &mut self.dirty_rows_scratch,
+            &mut self.repaint_rows_scratch,
             true,
             0,
             u32::MAX,
             u32::MAX,
         );
         self.cpu_phase_totals.raster += raster_started_at.elapsed();
+        std::mem::swap(
+            &mut self.previous_cpu_damage_rows,
+            &mut self.dirty_rows_scratch,
+        );
 
         let present_started_at = Instant::now();
         buffer.present().map_err(|error| {
