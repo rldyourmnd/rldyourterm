@@ -62,6 +62,25 @@ impl PacingMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResizeRequestOutcome {
+    Exhausted,
+    AppliedSync,
+    QueuedAsync,
+    Ignored,
+}
+
+impl ResizeRequestOutcome {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Exhausted => "exhausted",
+            Self::AppliedSync => "applied-sync",
+            Self::QueuedAsync => "queued-async",
+            Self::Ignored => "ignored",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LiveDisplayWorkload {
     startup_runs_per_iteration: u32,
@@ -359,8 +378,9 @@ struct LiveDisplayApp {
     softbuffer_context: Option<SoftbufferContext<Arc<Window>>>,
     softbuffer_surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
     glyph_cache: GlyphCache,
-    dirty_rows_scratch: Vec<u16>,
+    current_cpu_damage_rows_scratch: Vec<u16>,
     repaint_rows_scratch: Vec<u16>,
+    persisted_cpu_damage_rows_scratch: Vec<u16>,
     previous_cpu_damage_rows: Vec<u16>,
     redraws_observed: u32,
     resize_cycles_observed: u32,
@@ -420,8 +440,9 @@ impl LiveDisplayApp {
             softbuffer_context: None,
             softbuffer_surface: None,
             glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
-            dirty_rows_scratch: Vec::new(),
+            current_cpu_damage_rows_scratch: Vec::new(),
             repaint_rows_scratch: Vec::new(),
+            persisted_cpu_damage_rows_scratch: Vec::new(),
             previous_cpu_damage_rows: Vec::new(),
             redraws_observed: 0,
             resize_cycles_observed: 0,
@@ -493,25 +514,42 @@ impl LiveDisplayApp {
             .with_visible(true)
     }
 
-    fn request_next_resize(&mut self, window: &Window) -> bool {
+    fn request_next_resize(&mut self, window: &Window) -> ResizeRequestOutcome {
         if self.resize_cycles_observed >= self.resize_cycles_target
             || self.resize_targets.is_empty()
         {
-            return false;
+            return ResizeRequestOutcome::Exhausted;
         }
         let target = self.resize_targets[self.resize_request_cursor % self.resize_targets.len()];
         self.resize_request_cursor = self.resize_request_cursor.wrapping_add(1);
-        self.pending_resize_started_at = Some(Instant::now());
         let current_size = window.inner_size();
-        if let Some(applied_size) = window.request_inner_size(target) {
-            self.pending_resize_started_at = None;
-            if applied_size != current_size {
+        let requested_at = Instant::now();
+        self.apply_resize_request_result(
+            current_size,
+            window.request_inner_size(target),
+            requested_at,
+        )
+    }
+
+    fn apply_resize_request_result(
+        &mut self,
+        current_size: PhysicalSize<u32>,
+        applied_size: Option<PhysicalSize<u32>>,
+        requested_at: Instant,
+    ) -> ResizeRequestOutcome {
+        match applied_size {
+            Some(applied_size) if applied_size == current_size => ResizeRequestOutcome::Ignored,
+            Some(applied_size) => {
                 self.handle_resize(applied_size);
                 self.resize_cycles_observed = self.resize_cycles_observed.saturating_add(1);
                 self.queue_redraw();
+                ResizeRequestOutcome::AppliedSync
+            }
+            None => {
+                self.pending_resize_started_at = Some(requested_at);
+                ResizeRequestOutcome::QueuedAsync
             }
         }
-        true
     }
 
     fn configure_pacing(&mut self, window: &Window) {
@@ -636,8 +674,9 @@ impl LiveDisplayApp {
             buffer_age,
             &self.previous_cpu_damage_rows,
             None,
-            &mut self.dirty_rows_scratch,
+            &mut self.current_cpu_damage_rows_scratch,
             &mut self.repaint_rows_scratch,
+            &mut self.persisted_cpu_damage_rows_scratch,
             true,
             0,
             u32::MAX,
@@ -646,7 +685,7 @@ impl LiveDisplayApp {
         self.cpu_phase_totals.raster += raster_started_at.elapsed();
         std::mem::swap(
             &mut self.previous_cpu_damage_rows,
-            &mut self.dirty_rows_scratch,
+            &mut self.persisted_cpu_damage_rows_scratch,
         );
 
         let present_started_at = Instant::now();
@@ -822,9 +861,12 @@ impl ApplicationHandler for LiveDisplayApp {
                             return;
                         }
                         if let Some(window) = self.window.clone() {
-                            let requested = self.request_next_resize(&window);
-                            notes.push(format!("requested_next_resize={requested}"));
-                            if !requested {
+                            let outcome = self.request_next_resize(&window);
+                            notes.push(format!("resize_request_outcome={}", outcome.token()));
+                            if matches!(
+                                outcome,
+                                ResizeRequestOutcome::Exhausted | ResizeRequestOutcome::Ignored
+                            ) {
                                 self.queue_redraw();
                             }
                         }
@@ -833,5 +875,78 @@ impl ApplicationHandler for LiveDisplayApp {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{OutputFormatArg, SuiteArg};
+
+    fn sample_cli() -> Cli {
+        Cli {
+            suite: SuiteArg::LiveDisplay,
+            scenario: ScenarioArg::ResizeCycleCpu,
+            scale: ScaleArg::Quick,
+            iterations: 1,
+            warmup_iterations: 0,
+            cols: 80,
+            rows: 24,
+            chunk_bytes: 512,
+            scrollback_cap: 50_000,
+            format: OutputFormatArg::Json,
+            output: None,
+        }
+    }
+
+    fn resize_app() -> LiveDisplayApp {
+        let cli = sample_cli();
+        let workload = LiveDisplayWorkload::from_cli(&cli);
+        LiveDisplayApp::new(ScenarioArg::ResizeCycleCpu, &cli, &workload)
+    }
+
+    #[test]
+    fn ignored_resize_requests_do_not_arm_pending_resize_state() {
+        let mut app = resize_app();
+        let current_size = app.requested_extent;
+
+        let outcome =
+            app.apply_resize_request_result(current_size, Some(current_size), Instant::now());
+
+        assert_eq!(outcome, ResizeRequestOutcome::Ignored);
+        assert!(app.pending_resize_started_at.is_none());
+        assert_eq!(app.resize_cycles_observed, 0);
+        assert!(!app.redraw_pending);
+    }
+
+    #[test]
+    fn async_resize_requests_arm_pending_resize_state() {
+        let mut app = resize_app();
+        let current_size = app.requested_extent;
+        let requested_at = Instant::now();
+
+        let outcome = app.apply_resize_request_result(current_size, None, requested_at);
+
+        assert_eq!(outcome, ResizeRequestOutcome::QueuedAsync);
+        assert_eq!(app.pending_resize_started_at, Some(requested_at));
+        assert_eq!(app.resize_cycles_observed, 0);
+    }
+
+    #[test]
+    fn sync_resize_requests_count_progress_and_schedule_redraw() {
+        let mut app = resize_app();
+        let current_size = app.requested_extent;
+        let next_size = PhysicalSize::new(
+            current_size.width.saturating_add(32),
+            current_size.height.saturating_add(32),
+        );
+
+        let outcome =
+            app.apply_resize_request_result(current_size, Some(next_size), Instant::now());
+
+        assert_eq!(outcome, ResizeRequestOutcome::AppliedSync);
+        assert_eq!(app.resize_cycles_observed, 1);
+        assert!(app.redraw_pending);
+        assert!(app.pending_resize_started_at.is_none());
     }
 }

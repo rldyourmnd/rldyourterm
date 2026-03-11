@@ -109,6 +109,16 @@ fn build_rows_to_repaint(
     *repaint_rows_scratch = repaint_rows;
 }
 
+fn persist_repaint_history(repaint_rows: &[u16], persisted_damage_rows_scratch: &mut Vec<u16>) {
+    let mut persisted_damage_rows = std::mem::take(persisted_damage_rows_scratch);
+    persisted_damage_rows.clear();
+    if persisted_damage_rows.capacity() < repaint_rows.len() {
+        persisted_damage_rows.reserve(repaint_rows.len() - persisted_damage_rows.capacity());
+    }
+    persisted_damage_rows.extend_from_slice(repaint_rows);
+    *persisted_damage_rows_scratch = persisted_damage_rows;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_terminal_buffer(
     buffer: &mut [u32],
@@ -121,6 +131,7 @@ pub fn render_terminal_buffer(
     prev_cursor_row: Option<u16>,
     current_damage_rows_scratch: &mut Vec<u16>,
     repaint_rows_scratch: &mut Vec<u16>,
+    persisted_damage_rows_scratch: &mut Vec<u16>,
     blink_visible: bool,
     viewport_offset: usize,
     selection_start: u32,
@@ -156,6 +167,7 @@ pub fn render_terminal_buffer(
     terminal.grid.clear_dirty_rows();
 
     if repaint_rows.is_empty() {
+        persist_repaint_history(repaint_rows, persisted_damage_rows_scratch);
         return;
     }
 
@@ -280,6 +292,8 @@ pub fn render_terminal_buffer(
             );
         }
     }
+
+    persist_repaint_history(repaint_rows, persisted_damage_rows_scratch);
 }
 
 #[allow(clippy::too_many_arguments)]

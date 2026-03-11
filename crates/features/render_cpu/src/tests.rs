@@ -137,8 +137,9 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
     let height = CELL_HEIGHT;
     let mut buffer = vec![0; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-    let mut dirty_rows = Vec::new();
+    let mut current_damage_rows = Vec::new();
     let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
 
     render_terminal_buffer(
         &mut buffer,
@@ -149,8 +150,9 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
         0,
         &[],
         None,
-        &mut dirty_rows,
+        &mut current_damage_rows,
         &mut repaint_rows,
+        &mut persisted_damage_rows,
         true,
         0,
         u32::MAX,
@@ -174,8 +176,9 @@ fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
     let height = CELL_HEIGHT;
     let mut buffer = vec![0; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-    let mut dirty_rows = Vec::new();
+    let mut current_damage_rows = Vec::new();
     let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
 
     render_terminal_buffer(
         &mut buffer,
@@ -186,8 +189,9 @@ fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
         0,
         &[],
         None,
-        &mut dirty_rows,
+        &mut current_damage_rows,
         &mut repaint_rows,
+        &mut persisted_damage_rows,
         true,
         0,
         0,
@@ -210,8 +214,9 @@ fn pixel_renderer_draws_cursor_on_blank_default_row() {
     let height = CELL_HEIGHT;
     let mut buffer = vec![0; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-    let mut dirty_rows = Vec::new();
+    let mut current_damage_rows = Vec::new();
     let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
 
     render_terminal_buffer(
         &mut buffer,
@@ -222,8 +227,9 @@ fn pixel_renderer_draws_cursor_on_blank_default_row() {
         0,
         &[],
         None,
-        &mut dirty_rows,
+        &mut current_damage_rows,
         &mut repaint_rows,
+        &mut persisted_damage_rows,
         true,
         0,
         u32::MAX,
@@ -272,8 +278,9 @@ fn pixel_renderer_forces_full_redraw_when_buffer_reuse_is_invalid() {
     let mut initial = vec![0u32; width * height];
     let mut refreshed = vec![0x00FF00FF; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-    let mut dirty_rows = Vec::new();
+    let mut current_damage_rows = Vec::new();
     let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
 
     render_terminal_buffer(
         &mut initial,
@@ -284,8 +291,9 @@ fn pixel_renderer_forces_full_redraw_when_buffer_reuse_is_invalid() {
         0,
         &[],
         None,
-        &mut dirty_rows,
+        &mut current_damage_rows,
         &mut repaint_rows,
+        &mut persisted_damage_rows,
         true,
         0,
         u32::MAX,
@@ -301,8 +309,9 @@ fn pixel_renderer_forces_full_redraw_when_buffer_reuse_is_invalid() {
         0,
         &[],
         None,
-        &mut dirty_rows,
+        &mut current_damage_rows,
         &mut repaint_rows,
+        &mut persisted_damage_rows,
         true,
         0,
         u32::MAX,
@@ -328,8 +337,9 @@ fn pixel_renderer_replays_previous_damage_when_framebuffer_age_is_two() {
     let height = CELL_HEIGHT * 2;
     let mut buffer = vec![0x00FF00FF; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
-    let mut dirty_rows = Vec::new();
+    let mut current_damage_rows = Vec::new();
     let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
     let previous_damage_rows = vec![0];
 
     render_terminal_buffer(
@@ -341,8 +351,9 @@ fn pixel_renderer_replays_previous_damage_when_framebuffer_age_is_two() {
         2,
         &previous_damage_rows,
         None,
-        &mut dirty_rows,
+        &mut current_damage_rows,
         &mut repaint_rows,
+        &mut persisted_damage_rows,
         true,
         0,
         u32::MAX,
@@ -355,6 +366,115 @@ fn pixel_renderer_replays_previous_damage_when_framebuffer_age_is_two() {
             .iter()
             .all(|pixel| *pixel == DEFAULT_BG_U32),
         "framebuffer age 2 must replay previous damage rows so stale pixels are cleared"
+    );
+}
+
+#[test]
+fn pixel_renderer_persists_full_repaint_history_when_buffer_reuse_is_invalid() {
+    let mut state = state_with_default_scrollback(3, 3);
+    state.cursor.visible = false;
+    state
+        .grid
+        .put_char(0, 0, 'A', Attrs::default())
+        .expect("put char on first row");
+
+    let width = CELL_WIDTH * 3;
+    let height = CELL_HEIGHT * 3;
+    let mut buffer = vec![0x00FF00FF; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut current_damage_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
+
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &[],
+        None,
+        &mut current_damage_rows,
+        &mut repaint_rows,
+        &mut persisted_damage_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+
+    assert_eq!(persisted_damage_rows, vec![0, 1, 2]);
+}
+
+#[test]
+fn pixel_renderer_replays_full_repaint_history_after_fresh_buffer_transition() {
+    let mut state = state_with_default_scrollback(3, 3);
+    state.cursor.visible = false;
+    state
+        .grid
+        .put_char(0, 0, 'A', Attrs::default())
+        .expect("put char on first row");
+
+    let width = CELL_WIDTH * 3;
+    let height = CELL_HEIGHT * 3;
+    let mut fresh_buffer = vec![0x00FF00FF; width * height];
+    let mut reused_buffer = vec![0x00FF00FF; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut current_damage_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
+    let mut previous_damage_rows = Vec::new();
+
+    render_terminal_buffer(
+        &mut fresh_buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &previous_damage_rows,
+        None,
+        &mut current_damage_rows,
+        &mut repaint_rows,
+        &mut persisted_damage_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+    std::mem::swap(&mut previous_damage_rows, &mut persisted_damage_rows);
+
+    state
+        .grid
+        .put_char(0, 1, 'B', Attrs::default())
+        .expect("put char on first row for age-2 frame");
+
+    render_terminal_buffer(
+        &mut reused_buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        2,
+        &previous_damage_rows,
+        None,
+        &mut current_damage_rows,
+        &mut repaint_rows,
+        &mut persisted_damage_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+
+    let third_row_offset = width * CELL_HEIGHT * 2;
+    let third_row_pixels = &reused_buffer[third_row_offset..third_row_offset + width * CELL_HEIGHT];
+    assert!(
+        third_row_pixels
+            .iter()
+            .all(|pixel| *pixel == DEFAULT_BG_U32),
+        "age-2 replay must include rows repainted during the previous full redraw"
     );
 }
 
