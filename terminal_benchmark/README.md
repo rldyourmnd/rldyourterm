@@ -30,6 +30,7 @@ The live-display suite benchmarks:
 The JSON reports keep these suites separate on purpose:
 - headless reports include `coverage.benchmarked_layers` and `coverage.verified_only_layers`
 - live-display reports include `environment` and display-specific workload metadata
+- live-display reports also expose `pacing_mode` and `monitor_refresh_rate_millihz`, so each run states whether it used monitor cadence or the same event-driven fallback that production uses when cadence is unavailable
 
 `live-display` is intentionally local/manual. It is not a required PR CI gate because it depends on a real display session and platform-specific presentation timing.
 
@@ -170,10 +171,18 @@ CPU live-display reports also include `cpu_buffer_age_counts`, which records how
 - `age_2`
 - `age_3_plus`
 
+The live-display JSON report also records:
+- `pacing_mode`
+- `monitor_refresh_rate_millihz`
+
 This is important for RCA. The production-aligned CPU display path uses the framebuffer age contract directly:
 - `age=1`: repaint current-frame damage only
 - `age=2`: repaint the union of current-frame damage and the previous presented frame's damage
 - any other age: force a full redraw
+
+The benchmark harness now follows the same redraw-shaping rule as the production GUI runtime:
+- when monitor timing is available for CPU steady/resize scenarios, it may use cadence-timed redraw scheduling
+- when monitor timing is unavailable, it falls back to event-driven redraw scheduling instead of inventing a benchmark-only timer
 
 ## Scale presets
 
