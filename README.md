@@ -104,6 +104,7 @@ Use `TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE=enforced` only when you intentio
 
 There is also a manual self-hosted GitHub workflow for the same controlled calibration flow:
 - `.github/workflows/display-benchmark.yml`
+- runner labels required: `self-hosted`, `display-benchmark`, and the selected OS label
 - it uploads three artifacts: controlled report, controlled baseline, calibration report
 
 Optional threshold validation against versioned baselines:
