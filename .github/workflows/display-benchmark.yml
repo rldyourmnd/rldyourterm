@@ -1,0 +1,93 @@
+name: Display Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to benchmark"
+        required: true
+        default: "main"
+        type: string
+      runner_os:
+        description: "Self-hosted runner OS label"
+        required: true
+        default: "linux"
+        type: choice
+        options:
+          - linux
+          - macos
+      scale:
+        description: "Benchmark scale"
+        required: true
+        default: "standard"
+        type: choice
+        options:
+          - quick
+          - standard
+          - stress
+      comparison_mode:
+        description: "Baseline comparison policy for the generated controlled baseline"
+        required: true
+        default: "advisory"
+        type: choice
+        options:
+          - advisory
+          - enforced
+      required_session_type:
+        description: "Optional required session type for controlled validation"
+        required: false
+        default: ""
+        type: string
+      required_display_server_hint:
+        description: "Optional required display server hint for controlled validation"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  controlled-display-calibration:
+    name: Controlled Display Calibration
+    runs-on:
+      - self-hosted
+      - ${{ inputs.runner_os }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+      CARGO_NET_RETRY: "5"
+      CARGO_INCREMENTAL: "0"
+      CI_RUST_TOOLCHAIN: "1.94.0"
+      TERMINAL_DISPLAY_BENCHMARK_SCALE: ${{ inputs.scale }}
+      TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE: ${{ inputs.comparison_mode }}
+      TERMINAL_DISPLAY_BENCHMARK_REQUIRED_SESSION_TYPE: ${{ inputs.required_session_type }}
+      TERMINAL_DISPLAY_BENCHMARK_REQUIRED_DISPLAY_SERVER_HINT: ${{ inputs.required_display_server_hint }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+        with:
+          shared-key: display-benchmark-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
+          save-if: "false"
+      - name: Run controlled display calibration
+        run: |
+          mkdir -p target/terminal-benchmark
+          bash scripts/ci/run_terminal_display_benchmark_calibration.sh \
+            target/terminal-benchmark/live-display-controlled-report.json \
+            target/terminal-benchmark/live-display-controlled-baseline.json \
+            target/terminal-benchmark/live-display-controlled-calibration.json
+      - name: Upload calibration artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: live-display-calibration-${{ inputs.runner_os }}-${{ inputs.scale }}
+          path: |
+            target/terminal-benchmark/live-display-controlled-report.json
+            target/terminal-benchmark/live-display-controlled-baseline.json
+            target/terminal-benchmark/live-display-controlled-calibration.json
