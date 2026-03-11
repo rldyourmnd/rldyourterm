@@ -261,6 +261,7 @@ That makes controlled calibration host-specific by design instead of treating al
 
 The same flow is also available as a manual self-hosted GitHub Actions workflow:
 - `.github/workflows/display-benchmark.yml`
+- required runner labels: `self-hosted`, `display-benchmark`, and the selected OS label
 - artifacts:
   - `live-display-controlled-report.json`
   - `live-display-controlled-baseline.json`
