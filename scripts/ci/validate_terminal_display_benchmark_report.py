@@ -200,6 +200,13 @@ def main() -> int:
             fail(
                 f"scenario {scenario!r} monitor_refresh_rate_millihz must be null or a non-negative integer"
             )
+        display_phase_stats = entry.get("display_phase_stats")
+        if not isinstance(display_phase_stats, dict):
+            fail(f"scenario {scenario!r} display_phase_stats must be an object")
+        validate_stats(
+            display_phase_stats.get("redraw_dispatch"),
+            f"scenario {scenario!r} display_phase_stats.redraw_dispatch",
+        )
         if not isinstance(entry.get("redraws_per_iteration"), int) or entry["redraws_per_iteration"] < 0:
             fail(f"scenario {scenario!r} redraws_per_iteration must be a non-negative integer")
         if not isinstance(entry.get("resize_cycles_per_iteration"), int) or entry["resize_cycles_per_iteration"] < 0:
