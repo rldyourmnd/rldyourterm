@@ -46,8 +46,6 @@ pub enum ServiceError {
         severity: BoundarySeverity,
         details: String,
     },
-    #[error("render error: {0}")]
-    Render(String),
 }
 
 impl ServiceError {
