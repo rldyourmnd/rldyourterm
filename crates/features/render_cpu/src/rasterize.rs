@@ -14,6 +14,101 @@ fn is_default_blank_cell(cell: &Cell) -> bool {
     cell.ch == ' ' && cell.width == 1 && cell.attrs == Attrs::default()
 }
 
+fn row_requires_redraw(
+    terminal: &TerminalState,
+    row: usize,
+    prev_cursor_row: Option<u16>,
+    viewport_offset: usize,
+) -> bool {
+    let row_u16 = row as u16;
+    terminal
+        .grid
+        .dirty_rows()
+        .get(row)
+        .copied()
+        .unwrap_or(false)
+        || (viewport_offset == 0
+            && (row_u16 == terminal.cursor.row || prev_cursor_row == Some(row_u16)))
+}
+
+fn collect_current_damage_rows(
+    terminal: &TerminalState,
+    visible_rows: usize,
+    prev_cursor_row: Option<u16>,
+    viewport_offset: usize,
+    current_damage_rows_scratch: &mut Vec<u16>,
+) {
+    let mut current_damage_rows = std::mem::take(current_damage_rows_scratch);
+    current_damage_rows.clear();
+    if current_damage_rows.capacity() < (visible_rows / 4 + 2) {
+        current_damage_rows.reserve((visible_rows / 4 + 2) - current_damage_rows.capacity());
+    }
+
+    for row in 0..visible_rows {
+        if row_requires_redraw(terminal, row, prev_cursor_row, viewport_offset) {
+            current_damage_rows.push(row as u16);
+        }
+    }
+
+    *current_damage_rows_scratch = current_damage_rows;
+}
+
+fn build_rows_to_repaint(
+    visible_rows: usize,
+    framebuffer_age: u8,
+    previous_damage_rows: &[u16],
+    current_damage_rows: &[u16],
+    repaint_rows_scratch: &mut Vec<u16>,
+) {
+    let mut repaint_rows = std::mem::take(repaint_rows_scratch);
+    repaint_rows.clear();
+    if repaint_rows.capacity() < (visible_rows / 4 + 2) {
+        repaint_rows.reserve((visible_rows / 4 + 2) - repaint_rows.capacity());
+    }
+
+    match framebuffer_age {
+        1 => repaint_rows.extend(current_damage_rows.iter().copied()),
+        2 => {
+            let mut previous_iter = previous_damage_rows
+                .iter()
+                .copied()
+                .take_while(|&row| (row as usize) < visible_rows)
+                .peekable();
+            let mut current_iter = current_damage_rows.iter().copied().peekable();
+
+            loop {
+                match (previous_iter.peek().copied(), current_iter.peek().copied()) {
+                    (Some(previous_row), Some(current_row)) if previous_row < current_row => {
+                        repaint_rows.push(previous_row);
+                        previous_iter.next();
+                    }
+                    (Some(previous_row), Some(current_row)) if previous_row > current_row => {
+                        repaint_rows.push(current_row);
+                        current_iter.next();
+                    }
+                    (Some(previous_row), Some(_current_row)) => {
+                        repaint_rows.push(previous_row);
+                        previous_iter.next();
+                        current_iter.next();
+                    }
+                    (Some(previous_row), None) => {
+                        repaint_rows.push(previous_row);
+                        previous_iter.next();
+                    }
+                    (None, Some(current_row)) => {
+                        repaint_rows.push(current_row);
+                        current_iter.next();
+                    }
+                    (None, None) => break,
+                }
+            }
+        }
+        _ => repaint_rows.extend((0..visible_rows).map(|row| row as u16)),
+    }
+
+    *repaint_rows_scratch = repaint_rows;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_terminal_buffer(
     buffer: &mut [u32],
@@ -21,8 +116,11 @@ pub fn render_terminal_buffer(
     height: usize,
     terminal: &mut TerminalState,
     glyph_cache: &mut GlyphCache,
+    framebuffer_age: u8,
+    previous_damage_rows: &[u16],
     prev_cursor_row: Option<u16>,
-    dirty_rows_scratch: &mut Vec<u16>,
+    current_damage_rows_scratch: &mut Vec<u16>,
+    repaint_rows_scratch: &mut Vec<u16>,
     blink_visible: bool,
     viewport_offset: usize,
     selection_start: u32,
@@ -40,30 +138,28 @@ pub fn render_terminal_buffer(
     let effective_offset = viewport_offset.min(terminal.scrollback.len());
     let sb_rows_on_screen = effective_offset.min(visible_rows);
 
-    let dirty_flags = terminal.grid.dirty_rows();
-    let cursor_row = terminal.cursor.row;
-
-    let mut dirty = std::mem::take(dirty_rows_scratch);
-    dirty.clear();
-    if dirty.capacity() < (visible_rows / 4 + 2) {
-        dirty.reserve((visible_rows / 4 + 2) - dirty.capacity());
-    }
-    for row in 0..visible_rows {
-        let row_u16 = row as u16;
-        if dirty_flags.get(row).copied().unwrap_or(false)
-            || (viewport_offset == 0 && (row_u16 == cursor_row || prev_cursor_row == Some(row_u16)))
-        {
-            dirty.push(row_u16);
-        }
-    }
+    collect_current_damage_rows(
+        terminal,
+        visible_rows,
+        prev_cursor_row,
+        viewport_offset,
+        current_damage_rows_scratch,
+    );
+    build_rows_to_repaint(
+        visible_rows,
+        framebuffer_age,
+        previous_damage_rows,
+        current_damage_rows_scratch,
+        repaint_rows_scratch,
+    );
+    let repaint_rows = repaint_rows_scratch.as_slice();
     terminal.grid.clear_dirty_rows();
 
-    if dirty.is_empty() {
-        *dirty_rows_scratch = dirty;
+    if repaint_rows.is_empty() {
         return;
     }
 
-    for &row in &dirty {
+    for &row in repaint_rows {
         let row_idx = row as usize;
         if row_idx >= visible_rows {
             continue;
@@ -119,7 +215,9 @@ pub fn render_terminal_buffer(
 
     let grid_pixel_height = visible_rows * CELL_HEIGHT;
     if grid_pixel_height < height {
-        let any_bottom_dirty = dirty.iter().any(|&row| (row as usize) + 1 >= visible_rows);
+        let any_bottom_dirty = repaint_rows
+            .iter()
+            .any(|&row| (row as usize) + 1 >= visible_rows);
         if any_bottom_dirty {
             for py in grid_pixel_height..height {
                 let start = py * width;
@@ -128,10 +226,11 @@ pub fn render_terminal_buffer(
         }
     }
 
-    // Selection highlight: invert colors for selected cells on dirty rows only.
-    // The softbuffer framebuffer persists across frames; clean rows already have
-    // correct XOR-inverted pixels from the previous frame. Re-inverting them
-    // would toggle the highlight off (XOR is its own inverse).
+    // Selection highlight: invert colors for selected cells on repainted rows only.
+    // When the framebuffer age is 2, repaint_rows already includes the previous
+    // frame's damage rows, so the buffer is brought forward to the current frame
+    // before selection XOR is applied. Re-inverting untouched rows would still
+    // toggle the highlight off because XOR is its own inverse.
     // Skip the cursor cell to avoid double-XOR with the cursor pass below
     // (two XOR operations cancel out, making the cursor invisible on selection).
     let cursor_flat = if viewport_offset == 0 && terminal.cursor.visible {
@@ -142,7 +241,7 @@ pub fn render_terminal_buffer(
     if selection_start != u32::MAX {
         let sel_lo = selection_start.min(selection_end) as usize;
         let sel_hi = selection_start.max(selection_end) as usize;
-        for &row in &dirty {
+        for &row in repaint_rows {
             let row_usize = row as usize;
             let row_flat_start = row_usize * grid_cols;
             let row_flat_end = row_flat_start + grid_cols - 1;
@@ -181,8 +280,6 @@ pub fn render_terminal_buffer(
             );
         }
     }
-
-    *dirty_rows_scratch = dirty;
 }
 
 #[allow(clippy::too_many_arguments)]

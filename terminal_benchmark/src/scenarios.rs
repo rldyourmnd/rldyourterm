@@ -593,6 +593,25 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
     let mut buffer = vec![0u32; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
     let mut dirty_rows_scratch = Vec::new();
+    let mut repaint_rows_scratch = Vec::new();
+    let mut previous_damage_rows = Vec::new();
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &previous_damage_rows,
+        None,
+        &mut dirty_rows_scratch,
+        &mut repaint_rows_scratch,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+    std::mem::swap(&mut previous_damage_rows, &mut dirty_rows_scratch);
     let start = Instant::now();
     render_terminal_buffer(
         &mut buffer,
@@ -600,8 +619,11 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
         height,
         &mut state,
         &mut glyph_cache,
+        1,
+        &previous_damage_rows,
         None,
         &mut dirty_rows_scratch,
+        &mut repaint_rows_scratch,
         true,
         0,
         u32::MAX,

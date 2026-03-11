@@ -47,6 +47,7 @@ REQUIRED_STATS_KEYS = {
     "total_nanos",
 }
 REQUIRED_CPU_PHASE_KEYS = {"buffer_acquire", "raster", "present"}
+REQUIRED_CPU_BUFFER_AGE_KEYS = {"age_0", "age_1", "age_2", "age_3_plus"}
 
 
 def fail(message: str) -> None:
@@ -90,6 +91,21 @@ def validate_cpu_phase_stats(payload: dict, scenario: str) -> None:
         )
     for phase_name, stats in payload.items():
         validate_stats(stats, f"{scenario}.{phase_name}")
+
+
+def validate_cpu_buffer_age_counts(payload: dict, scenario: str) -> None:
+    if not isinstance(payload, dict):
+        fail(f"scenario {scenario!r} cpu_buffer_age_counts must be an object")
+    keys = set(payload)
+    if keys != REQUIRED_CPU_BUFFER_AGE_KEYS:
+        fail(
+            f"scenario {scenario!r} cpu_buffer_age_counts keys mismatch: expected {sorted(REQUIRED_CPU_BUFFER_AGE_KEYS)}, got {sorted(keys)}"
+        )
+    for key, value in payload.items():
+        if not isinstance(value, int) or value < 0:
+            fail(
+                f"scenario {scenario!r} cpu_buffer_age_counts.{key} must be a non-negative integer"
+            )
 
 
 def main() -> int:
@@ -184,10 +200,16 @@ def main() -> int:
             fail(f"scenario {scenario!r} notes must be a list of strings")
         validate_stats(entry.get("stats"), scenario)
         cpu_phase_stats = entry.get("cpu_phase_stats")
+        cpu_buffer_age_counts = entry.get("cpu_buffer_age_counts")
         if expected["backend"] == "cpu":
             validate_cpu_phase_stats(cpu_phase_stats, scenario)
+            validate_cpu_buffer_age_counts(cpu_buffer_age_counts, scenario)
         elif cpu_phase_stats is not None:
             fail(f"scenario {scenario!r} cpu_phase_stats must be null for non-cpu backends")
+        elif cpu_buffer_age_counts is not None:
+            fail(
+                f"scenario {scenario!r} cpu_buffer_age_counts must be null for non-cpu backends"
+            )
         result_names.append(scenario)
 
     if len(result_names) != len(set(result_names)):
