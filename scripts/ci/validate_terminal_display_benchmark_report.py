@@ -191,6 +191,15 @@ def main() -> int:
             fail(f"scenario {scenario!r} primary_units_per_iteration must be a non-negative integer")
         if not isinstance(entry.get("primary_units_per_second"), (int, float)):
             fail(f"scenario {scenario!r} primary_units_per_second must be numeric")
+        if not isinstance(entry.get("pacing_mode"), str) or not entry["pacing_mode"]:
+            fail(f"scenario {scenario!r} pacing_mode must be a non-empty string")
+        monitor_refresh_rate_millihz = entry.get("monitor_refresh_rate_millihz")
+        if monitor_refresh_rate_millihz is not None and (
+            not isinstance(monitor_refresh_rate_millihz, int) or monitor_refresh_rate_millihz < 0
+        ):
+            fail(
+                f"scenario {scenario!r} monitor_refresh_rate_millihz must be null or a non-negative integer"
+            )
         if not isinstance(entry.get("redraws_per_iteration"), int) or entry["redraws_per_iteration"] < 0:
             fail(f"scenario {scenario!r} redraws_per_iteration must be a non-negative integer")
         if not isinstance(entry.get("resize_cycles_per_iteration"), int) or entry["resize_cycles_per_iteration"] < 0:
