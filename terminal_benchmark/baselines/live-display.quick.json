@@ -1,0 +1,66 @@
+{
+  "baseline_tool": "terminal-benchmark-thresholds",
+  "benchmark_tool": "terminal-benchmark",
+  "suite": "live-display",
+  "scale": "quick",
+  "comparison_mode": "advisory",
+  "environment_scope": "local-display-session",
+  "generated_at_utc": "2026-03-11T01:11:29+00:00",
+  "scenario_selection": "all",
+  "defaults": {
+    "max_mean_nanos_ratio": 3.0,
+    "max_p95_nanos_ratio": 3.5,
+    "min_primary_units_per_second_ratio": 0.35
+  },
+  "notes": "Generated from local live-display benchmark report. Advisory only unless calibrated for a controlled display environment.",
+  "scenarios": {
+    "startup-first-frame-gpu": {
+      "baseline_metrics": {
+        "mean_nanos": 1031957462,
+        "p95_nanos": 1031957462,
+        "primary_units_per_second": 0.9690321905923676
+      },
+      "thresholds": {}
+    },
+    "startup-first-frame-cpu": {
+      "baseline_metrics": {
+        "mean_nanos": 121261541,
+        "p95_nanos": 121261541,
+        "primary_units_per_second": 8.246637736526868
+      },
+      "thresholds": {}
+    },
+    "steady-redraw-gpu": {
+      "baseline_metrics": {
+        "mean_nanos": 1187016130,
+        "p95_nanos": 1187016130,
+        "primary_units_per_second": 10.109382422629759
+      },
+      "thresholds": {}
+    },
+    "steady-redraw-cpu": {
+      "baseline_metrics": {
+        "mean_nanos": 95988647,
+        "p95_nanos": 95988647,
+        "primary_units_per_second": 125.01478430048087
+      },
+      "thresholds": {}
+    },
+    "resize-cycle-gpu": {
+      "baseline_metrics": {
+        "mean_nanos": 951927882,
+        "p95_nanos": 951927882,
+        "primary_units_per_second": 4.20199899134796
+      },
+      "thresholds": {}
+    },
+    "resize-cycle-cpu": {
+      "baseline_metrics": {
+        "mean_nanos": 247786298,
+        "p95_nanos": 247786298,
+        "primary_units_per_second": 16.14294265778974
+      },
+      "thresholds": {}
+    }
+  }
+}
