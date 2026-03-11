@@ -77,18 +77,24 @@ jobs:
         with:
           shared-key: display-benchmark-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: "false"
-      - name: Run controlled display calibration
+      - name: Validate display benchmark runner readiness
         run: |
           mkdir -p target/terminal-benchmark
+          bash scripts/ci/run_terminal_display_benchmark_runner_readiness.sh \
+            target/terminal-benchmark/live-display-runner-readiness.json
+      - name: Run controlled display calibration
+        run: |
           bash scripts/ci/run_terminal_display_benchmark_calibration.sh \
             target/terminal-benchmark/live-display-controlled-report.json \
             target/terminal-benchmark/live-display-controlled-baseline.json \
-            target/terminal-benchmark/live-display-controlled-calibration.json
+            target/terminal-benchmark/live-display-controlled-calibration.json \
+            target/terminal-benchmark/live-display-runner-readiness.json
       - name: Upload calibration artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: live-display-calibration-${{ inputs.runner_os }}-${{ inputs.scale }}
           path: |
+            target/terminal-benchmark/live-display-runner-readiness.json
             target/terminal-benchmark/live-display-controlled-report.json
             target/terminal-benchmark/live-display-controlled-baseline.json
             target/terminal-benchmark/live-display-controlled-calibration.json

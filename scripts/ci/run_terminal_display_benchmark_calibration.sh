@@ -4,6 +4,7 @@ set -euo pipefail
 report_path="${1:-target/terminal-benchmark/live-display-controlled-report.json}"
 baseline_path="${2:-terminal_benchmark/baselines/live-display.controlled.json}"
 calibration_report_path="${3:-${report_path%.json}.calibration.json}"
+runner_readiness_report_path="${4:-}"
 comparison_mode="${TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE:-advisory}"
 required_session_type="${TERMINAL_DISPLAY_BENCHMARK_REQUIRED_SESSION_TYPE:-}"
 required_display_server_hint="${TERMINAL_DISPLAY_BENCHMARK_REQUIRED_DISPLAY_SERVER_HINT:-}"
@@ -35,7 +36,7 @@ fi
 
 "${threshold_args[@]}"
 
-python3 - "$calibration_report_path" "$report_path" "$baseline_path" "$comparison_mode" "$required_session_type" "$required_display_server_hint" <<'PY'
+python3 - "$calibration_report_path" "$report_path" "$baseline_path" "$comparison_mode" "$required_session_type" "$required_display_server_hint" "$runner_readiness_report_path" <<'PY'
 import json
 import pathlib
 import sys
@@ -52,14 +53,22 @@ payload = {
     "comparison_mode": sys.argv[4],
     "required_session_type": sys.argv[5] or None,
     "required_display_server_hint": sys.argv[6] or None,
+    "runner_readiness_report": sys.argv[7] or None,
 }
 pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
 
-python3 scripts/ci/validate_terminal_display_calibration_report.py \
-  "$calibration_report_path" \
-  --benchmark-report "$report_path" \
-  --baseline "$baseline_path" \
+validation_args=(
+  python3 scripts/ci/validate_terminal_display_calibration_report.py
+  "$calibration_report_path"
+  --benchmark-report "$report_path"
+  --baseline "$baseline_path"
   --comparison-mode "$comparison_mode"
+)
+if [[ -n "$runner_readiness_report_path" ]]; then
+  validation_args+=(--runner-readiness-report "$runner_readiness_report_path")
+fi
+
+"${validation_args[@]}"
 
 echo "live display benchmark calibration ok: report=$report_path baseline=$baseline_path calibration=$calibration_report_path"
