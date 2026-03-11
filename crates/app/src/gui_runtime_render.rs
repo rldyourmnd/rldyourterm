@@ -379,8 +379,9 @@ impl GuiRuntimeApp {
             framebuffer_age,
             &self.previous_cpu_damage_rows,
             self.last_rendered_cursor_row,
-            &mut self.dirty_rows_scratch,
+            &mut self.current_cpu_damage_rows_scratch,
             &mut self.repaint_rows_scratch,
+            &mut self.persisted_cpu_damage_rows_scratch,
             self.blink_visible,
             self.viewport_offset,
             sel_start,
@@ -388,7 +389,7 @@ impl GuiRuntimeApp {
         );
         std::mem::swap(
             &mut self.previous_cpu_damage_rows,
-            &mut self.dirty_rows_scratch,
+            &mut self.persisted_cpu_damage_rows_scratch,
         );
         self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
         buffer
