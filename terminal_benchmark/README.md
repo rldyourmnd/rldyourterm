@@ -159,6 +159,11 @@ Live-display scenarios:
 - `resize-cycle-gpu`: real resize cycles plus GPU redraw/present
 - `resize-cycle-cpu`: real resize cycles plus CPU redraw/softbuffer present
 
+For CPU live-display scenarios, the JSON report also includes `cpu_phase_stats` with per-iteration timing aggregates for:
+- `buffer_acquire`
+- `raster`
+- `present`
+
 ## Scale presets
 
 - `quick`: fast local smoke baseline

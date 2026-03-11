@@ -30,6 +30,7 @@ Area: CORE
 - `scripts/ci/run_terminal_benchmark_smoke.sh` keeps canonical headless benchmark paths live in CI
 - `scripts/ci/run_terminal_benchmark_full.sh` exercises the full canonical headless benchmark suite and validates its JSON report schema
 - `scripts/ci/run_terminal_display_benchmark_smoke.sh` and `scripts/ci/run_terminal_display_benchmark_full.sh` exercise the local/manual live-display suite over real `winit` plus `wgpu`/`softbuffer` presentation paths
+- CPU live-display reports include phase-level timing (`buffer_acquire`, `raster`, `present`) so remaining local display regressions can be isolated before production render code is changed
 - `scripts/ci/validate_terminal_benchmark_thresholds.py` compares validated benchmark reports against versioned baseline policies
 - `scripts/ci/refresh_terminal_benchmark_baseline.py` refreshes versioned baseline manifests from validated benchmark reports
 - `scripts/ci/run_terminal_system_suite.sh` runs the canonical local and release validation lane across fmt, check, test, clippy, MSRV, fuzz compile-path, benchmark smoke/full, governance, optional live-display validation, and optional baseline enforcement

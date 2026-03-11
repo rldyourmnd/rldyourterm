@@ -120,6 +120,8 @@ bash scripts/ci/run_terminal_system_suite.sh \
 
 The system suite emits a machine-readable JSON report and validates the referenced full benchmark report and, when requested, the live-display benchmark report and benchmark baselines before returning success.
 
+CPU live-display reports now include phase-level timing for `buffer_acquire`, `raster`, and `present`, so local display regressions can be localized before touching production render code.
+
 ## CI/CD profile
 
 - Current PR-visible check suite includes `CI`, `CodeQL`, `ClusterFuzzLite PR fuzzing`, `Scorecard`, `Semantic PR`, and `PR Automation`.
