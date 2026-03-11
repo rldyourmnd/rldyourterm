@@ -2074,9 +2074,14 @@ dependencies = [
  "clap",
  "rldyourterm-font",
  "rldyourterm-render-cpu",
+ "rldyourterm-render-gpu",
  "rldyourterm-services",
+ "rldyourterm-settings",
+ "rldyourterm-shell-integration",
+ "rldyourterm-ui",
  "serde",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

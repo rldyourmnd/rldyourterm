@@ -53,6 +53,7 @@ layer_by_package = {
 
 allowed_layer_edges = {
     ("tooling", "core"),
+    ("tooling", "ui"),
     ("tooling", "features"),
     ("tooling", "services"),
     ("tooling", "foundation"),
