@@ -90,9 +90,11 @@ jobs:
             target/terminal-benchmark/live-display-controlled-calibration.json \
             target/terminal-benchmark/live-display-runner-readiness.json
       - name: Upload calibration artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: live-display-calibration-${{ inputs.runner_os }}-${{ inputs.scale }}
+          if-no-files-found: warn
           path: |
             target/terminal-benchmark/live-display-runner-readiness.json
             target/terminal-benchmark/live-display-controlled-report.json
