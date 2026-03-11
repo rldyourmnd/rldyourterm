@@ -58,6 +58,8 @@ pub struct LiveDisplayEnvironmentReport {
     pub gpu_runtime: &'static str,
     pub cpu_present_runtime: &'static str,
     pub platform_dependent: bool,
+    pub session_type: Option<String>,
+    pub display_server_hint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +116,8 @@ pub struct LiveDisplayScenarioReport {
     pub primary_units_per_second: f64,
     pub pacing_mode: &'static str,
     pub monitor_refresh_rate_millihz: Option<u32>,
+    pub monitor_name: Option<String>,
+    pub monitor_scale_factor: Option<f64>,
     pub display_phase_stats: LiveDisplayPhaseStats,
     pub redraws_per_iteration: u32,
     pub resize_cycles_per_iteration: u32,
@@ -125,6 +129,7 @@ pub struct LiveDisplayScenarioReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveDisplayPhaseStats {
     pub redraw_dispatch: IterationStats,
+    pub frame_gap: Option<IterationStats>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,7 +276,7 @@ impl LiveDisplayBenchmarkSuiteReport {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "terminal-benchmark suite={} selection={} scale={} warmup={} measured={} grid={}x{} environment={} window_runtime={} gpu_runtime={} cpu_present_runtime={}",
+            "terminal-benchmark suite={} selection={} scale={} warmup={} measured={} grid={}x{} environment={} window_runtime={} gpu_runtime={} cpu_present_runtime={} session_type={} display_server_hint={}",
             self.suite,
             self.scenario_selection,
             self.scale,
@@ -283,6 +288,11 @@ impl LiveDisplayBenchmarkSuiteReport {
             self.environment.window_runtime,
             self.environment.gpu_runtime,
             self.environment.cpu_present_runtime,
+            self.environment
+                .session_type
+                .clone()
+                .unwrap_or_else(|| "none".to_owned()),
+            self.environment.display_server_hint,
         );
         let _ = writeln!(
             out,
@@ -344,8 +354,26 @@ impl LiveDisplayBenchmarkSuiteReport {
             );
             let _ = writeln!(
                 out,
-                "  display_phases mean_ms redraw_dispatch={:.3}",
+                "  monitor name={} scale_factor={}",
+                result
+                    .monitor_name
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned()),
+                result
+                    .monitor_scale_factor
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "none".to_owned()),
+            );
+            let _ = writeln!(
+                out,
+                "  display_phases mean_ms redraw_dispatch={:.3} frame_gap={}",
                 nanos_to_millis(result.display_phase_stats.redraw_dispatch.mean_nanos),
+                result
+                    .display_phase_stats
+                    .frame_gap
+                    .as_ref()
+                    .map(|stats| format!("{:.3}", nanos_to_millis(stats.mean_nanos)))
+                    .unwrap_or_else(|| "none".to_owned()),
             );
             if let Some(cpu_phase_stats) = &result.cpu_phase_stats {
                 let _ = writeln!(

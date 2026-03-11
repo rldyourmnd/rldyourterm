@@ -108,6 +108,12 @@ def validate_cpu_buffer_age_counts(payload: dict, scenario: str) -> None:
             )
 
 
+def validate_optional_string(payload: dict, key: str, owner: str) -> None:
+    value = payload.get(key)
+    if value is not None and (not isinstance(value, str) or not value):
+        fail(f"{owner}.{key} must be null or a non-empty string")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("report", type=pathlib.Path)
@@ -147,6 +153,10 @@ def main() -> int:
         fail("environment.platform_dependent must be a bool")
     if environment.get("platform_dependent") is not True:
         fail("environment.platform_dependent must be true")
+    validate_optional_string(environment, "session_type", "environment")
+    display_server_hint = environment.get("display_server_hint")
+    if not isinstance(display_server_hint, str) or not display_server_hint:
+        fail("environment.display_server_hint must be a non-empty string")
 
     workload = payload.get("workload")
     if not isinstance(workload, dict):
@@ -200,6 +210,14 @@ def main() -> int:
             fail(
                 f"scenario {scenario!r} monitor_refresh_rate_millihz must be null or a non-negative integer"
             )
+        validate_optional_string(entry, "monitor_name", f"scenario {scenario!r}")
+        monitor_scale_factor = entry.get("monitor_scale_factor")
+        if monitor_scale_factor is not None and (
+            not isinstance(monitor_scale_factor, (int, float)) or monitor_scale_factor <= 0
+        ):
+            fail(
+                f"scenario {scenario!r} monitor_scale_factor must be null or a positive number"
+            )
         display_phase_stats = entry.get("display_phase_stats")
         if not isinstance(display_phase_stats, dict):
             fail(f"scenario {scenario!r} display_phase_stats must be an object")
@@ -207,6 +225,12 @@ def main() -> int:
             display_phase_stats.get("redraw_dispatch"),
             f"scenario {scenario!r} display_phase_stats.redraw_dispatch",
         )
+        frame_gap = display_phase_stats.get("frame_gap")
+        if frame_gap is not None:
+            validate_stats(
+                frame_gap,
+                f"scenario {scenario!r} display_phase_stats.frame_gap",
+            )
         if not isinstance(entry.get("redraws_per_iteration"), int) or entry["redraws_per_iteration"] < 0:
             fail(f"scenario {scenario!r} redraws_per_iteration must be a non-negative integer")
         if not isinstance(entry.get("resize_cycles_per_iteration"), int) or entry["resize_cycles_per_iteration"] < 0:
