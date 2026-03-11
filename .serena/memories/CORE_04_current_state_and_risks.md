@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 2139e37 feat(benchmark): align live display redraw pacing with runtime semantics
+Last commit: 29ee98b feat(benchmark): isolate redraw dispatch in live display metrics
 Scope: runtime state, crates/app/src/, crates/features/, scripts/ci/, .github/workflows/
 Area: CORE
 -->
@@ -26,7 +26,9 @@ Area: CORE
 - Live `softbuffer` CPU display runs in the current local environment are dominated by framebuffer `age=2`, not `age=1`
 - The CPU display path now replays a two-frame damage history when `softbuffer` returns `age=2`; fresh or older buffers still force a full redraw
 - Live-display reports now record `pacing_mode` and `monitor_refresh_rate_millihz`, which makes it explicit whether a run used monitor cadence or the production-consistent `event-driven` fallback
-- In the current local environment, monitor cadence is unavailable and live-display CPU scenarios correctly fall back to `event-driven`; after aligning the harness with production redraw scheduling, `buffer_acquire` remains the dominant measured local CPU display cost while `present` stays negligible
+- In the current local environment, monitor cadence is unavailable and live-display CPU scenarios correctly fall back to `event-driven`
+- Live-display reports now also record `display_phase_stats.redraw_dispatch`, which separates event-loop or compositor wait before `RedrawRequested` from time spent inside `softbuffer::buffer_mut()`
+- In the current local environment, both `redraw_dispatch` and `buffer_acquire` remain material for steady CPU redraw, while `present` stays negligible
 
 ## Mitigations Present in Repository
 - `scripts/ci/validate_authority_docs.sh` blocks known stale governance claims
@@ -34,7 +36,7 @@ Area: CORE
 - `scripts/ci/run_terminal_benchmark_smoke.sh` keeps canonical headless benchmark paths live in CI
 - `scripts/ci/run_terminal_benchmark_full.sh` exercises the full canonical headless benchmark suite and validates its JSON report schema
 - `scripts/ci/run_terminal_display_benchmark_smoke.sh` and `scripts/ci/run_terminal_display_benchmark_full.sh` exercise the local/manual live-display suite over real `winit` plus `wgpu`/`softbuffer` presentation paths
-- CPU live-display reports include phase-level timing (`buffer_acquire`, `raster`, `present`), `cpu_buffer_age_counts`, `pacing_mode`, and `monitor_refresh_rate_millihz` so remaining local display regressions can be isolated before production render code is changed
+- CPU live-display reports include phase-level timing (`redraw_dispatch`, `buffer_acquire`, `raster`, `present`), `cpu_buffer_age_counts`, `pacing_mode`, and `monitor_refresh_rate_millihz` so remaining local display regressions can be isolated before production render code is changed
 - `crates/features/render_cpu/src/rasterize.rs` now skips row and cell work for default blank regions after the row-clear pass, which materially reduced `steady-redraw-cpu` raster cost in the local live-display suite
 - `crates/features/render_cpu/src/rasterize.rs` now keeps current-frame damage separate from repaint rows so `age=2` incremental redraw stays correct and does not accumulate stale damage history across frames
 - `scripts/ci/validate_terminal_benchmark_thresholds.py` compares validated benchmark reports against versioned baseline policies
