@@ -138,6 +138,7 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
     let mut buffer = vec![0; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
     let mut dirty_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
 
     render_terminal_buffer(
         &mut buffer,
@@ -145,8 +146,11 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
         height,
         &mut state,
         &mut glyph_cache,
+        0,
+        &[],
         None,
         &mut dirty_rows,
+        &mut repaint_rows,
         true,
         0,
         u32::MAX,
@@ -171,6 +175,7 @@ fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
     let mut buffer = vec![0; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
     let mut dirty_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
 
     render_terminal_buffer(
         &mut buffer,
@@ -178,8 +183,11 @@ fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
         height,
         &mut state,
         &mut glyph_cache,
+        0,
+        &[],
         None,
         &mut dirty_rows,
+        &mut repaint_rows,
         true,
         0,
         0,
@@ -203,6 +211,7 @@ fn pixel_renderer_draws_cursor_on_blank_default_row() {
     let mut buffer = vec![0; width * height];
     let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
     let mut dirty_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
 
     render_terminal_buffer(
         &mut buffer,
@@ -210,8 +219,11 @@ fn pixel_renderer_draws_cursor_on_blank_default_row() {
         height,
         &mut state,
         &mut glyph_cache,
+        0,
+        &[],
         None,
         &mut dirty_rows,
+        &mut repaint_rows,
         true,
         0,
         u32::MAX,
@@ -245,6 +257,105 @@ fn stats_account_for_utf8_bytes_without_losing_cell_count() {
     assert_eq!(frame.stats.rendered_bytes, "é🦀".len());
     assert_eq!(frame.stats.fallback_rows, 0);
     assert_eq!(frame.stats.dropped_rows, 0);
+}
+
+#[test]
+fn pixel_renderer_forces_full_redraw_when_buffer_reuse_is_invalid() {
+    let mut state = state_with_default_scrollback(2, 1);
+    state
+        .grid
+        .put_char(0, 0, 'A', Attrs::default())
+        .expect("put char");
+
+    let width = CELL_WIDTH * 2;
+    let height = CELL_HEIGHT;
+    let mut initial = vec![0u32; width * height];
+    let mut refreshed = vec![0x00FF00FF; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut dirty_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
+
+    render_terminal_buffer(
+        &mut initial,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &[],
+        None,
+        &mut dirty_rows,
+        &mut repaint_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+
+    render_terminal_buffer(
+        &mut refreshed,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &[],
+        None,
+        &mut dirty_rows,
+        &mut repaint_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+
+    assert_eq!(
+        refreshed, initial,
+        "fresh or stale buffers must be fully reconstructed when reuse is invalid"
+    );
+}
+
+#[test]
+fn pixel_renderer_replays_previous_damage_when_framebuffer_age_is_two() {
+    let mut state = state_with_default_scrollback(2, 2);
+    state.cursor.visible = false;
+    state
+        .grid
+        .put_char(1, 0, 'B', Attrs::default())
+        .expect("put char on current dirty row");
+
+    let width = CELL_WIDTH * 2;
+    let height = CELL_HEIGHT * 2;
+    let mut buffer = vec![0x00FF00FF; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut dirty_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
+    let previous_damage_rows = vec![0];
+
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        2,
+        &previous_damage_rows,
+        None,
+        &mut dirty_rows,
+        &mut repaint_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+
+    let first_row_pixels = &buffer[..width * CELL_HEIGHT];
+    assert!(
+        first_row_pixels
+            .iter()
+            .all(|pixel| *pixel == DEFAULT_BG_U32),
+        "framebuffer age 2 must replay previous damage rows so stale pixels are cleared"
+    );
 }
 
 #[test]

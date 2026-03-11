@@ -115,6 +115,7 @@ pub struct LiveDisplayScenarioReport {
     pub redraws_per_iteration: u32,
     pub resize_cycles_per_iteration: u32,
     pub cpu_phase_stats: Option<LiveDisplayCpuPhaseStats>,
+    pub cpu_buffer_age_counts: Option<LiveDisplayCpuBufferAgeReport>,
     pub notes: Vec<String>,
 }
 
@@ -123,6 +124,14 @@ pub struct LiveDisplayCpuPhaseStats {
     pub buffer_acquire: IterationStats,
     pub raster: IterationStats,
     pub present: IterationStats,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayCpuBufferAgeReport {
+    pub age_0: u64,
+    pub age_1: u64,
+    pub age_2: u64,
+    pub age_3_plus: u64,
 }
 
 impl BenchmarkSuiteReport {
@@ -327,6 +336,16 @@ impl LiveDisplayBenchmarkSuiteReport {
                     nanos_to_millis(cpu_phase_stats.buffer_acquire.mean_nanos),
                     nanos_to_millis(cpu_phase_stats.raster.mean_nanos),
                     nanos_to_millis(cpu_phase_stats.present.mean_nanos),
+                );
+            }
+            if let Some(cpu_buffer_age_counts) = &result.cpu_buffer_age_counts {
+                let _ = writeln!(
+                    out,
+                    "  cpu_buffer_age_counts age0={} age1={} age2={} age3_plus={}",
+                    cpu_buffer_age_counts.age_0,
+                    cpu_buffer_age_counts.age_1,
+                    cpu_buffer_age_counts.age_2,
+                    cpu_buffer_age_counts.age_3_plus,
                 );
             }
         }
