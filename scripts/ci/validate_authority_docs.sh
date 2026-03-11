@@ -98,6 +98,12 @@ if "run_terminal_display_benchmark_runner_readiness.sh" not in display_workflow:
 if "live-display-runner-readiness.json" not in display_workflow:
     print("[FAIL] display benchmark workflow must publish runner readiness artifact", file=sys.stderr)
     sys.exit(1)
+if "if: ${{ always() }}" not in display_workflow:
+    print("[FAIL] display benchmark workflow must upload artifacts even on calibration failures", file=sys.stderr)
+    sys.exit(1)
+if "if-no-files-found: warn" not in display_workflow:
+    print("[FAIL] display benchmark workflow must degrade artifact upload when later-stage files are missing", file=sys.stderr)
+    sys.exit(1)
 
 display_runs_on = []
 capture = False
