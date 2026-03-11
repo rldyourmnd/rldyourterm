@@ -11,6 +11,28 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+#[derive(Debug, Clone)]
+pub enum BenchmarkReport {
+    Headless(BenchmarkSuiteReport),
+    LiveDisplay(LiveDisplayBenchmarkSuiteReport),
+}
+
+impl BenchmarkReport {
+    pub fn write_output(&self, path: &Path) -> anyhow::Result<()> {
+        match self {
+            Self::Headless(report) => report.write_output(path),
+            Self::LiveDisplay(report) => report.write_output(path),
+        }
+    }
+
+    pub fn render_stdout(&self, format: OutputFormatArg) -> anyhow::Result<String> {
+        match self {
+            Self::Headless(report) => report.render_stdout(format),
+            Self::LiveDisplay(report) => report.render_stdout(format),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkSuiteReport {
     pub benchmark_tool: &'static str,
@@ -30,6 +52,41 @@ pub struct BenchmarkSuiteReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayEnvironmentReport {
+    pub kind: &'static str,
+    pub window_runtime: &'static str,
+    pub gpu_runtime: &'static str,
+    pub cpu_present_runtime: &'static str,
+    pub platform_dependent: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayWorkloadSummary {
+    pub startup_runs_per_iteration: u32,
+    pub steady_frames_per_iteration: u32,
+    pub resize_cycles_per_iteration: u32,
+    pub requested_width: u32,
+    pub requested_height: u32,
+    pub resize_targets: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayBenchmarkSuiteReport {
+    pub benchmark_tool: &'static str,
+    pub suite: &'static str,
+    pub scenario_selection: String,
+    pub selected_scenarios: Vec<&'static str>,
+    pub scale: &'static str,
+    pub warmup_iterations: u32,
+    pub measured_iterations: u32,
+    pub cols: u16,
+    pub rows: u16,
+    pub environment: LiveDisplayEnvironmentReport,
+    pub workload: LiveDisplayWorkloadSummary,
+    pub results: Vec<LiveDisplayScenarioReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ScenarioReport {
     pub scenario: &'static str,
     pub layer: &'static str,
@@ -41,6 +98,22 @@ pub struct ScenarioReport {
     pub stats: IterationStats,
     pub primary_units_per_second: f64,
     pub bytes_per_second: f64,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDisplayScenarioReport {
+    pub scenario: &'static str,
+    pub layer: &'static str,
+    pub benchmark_kind: &'static str,
+    pub backend: &'static str,
+    pub description: &'static str,
+    pub primary_unit_label: &'static str,
+    pub primary_units_per_iteration: u64,
+    pub stats: IterationStats,
+    pub primary_units_per_second: f64,
+    pub redraws_per_iteration: u32,
+    pub resize_cycles_per_iteration: u32,
     pub notes: Vec<String>,
 }
 
@@ -138,6 +211,101 @@ impl BenchmarkSuiteReport {
                 result.primary_unit_label,
                 result.primary_units_per_iteration,
                 result.byte_units_per_iteration,
+                if result.notes.is_empty() {
+                    "none".to_owned()
+                } else {
+                    result.notes.join("; ")
+                }
+            );
+        }
+        out
+    }
+}
+
+impl LiveDisplayBenchmarkSuiteReport {
+    pub fn write_output(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, self)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    pub fn render_stdout(&self, format: OutputFormatArg) -> anyhow::Result<String> {
+        match format {
+            OutputFormatArg::Json => Ok(serde_json::to_string_pretty(self)?),
+            OutputFormatArg::Table => Ok(self.render_table()),
+        }
+    }
+
+    fn render_table(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "terminal-benchmark suite={} selection={} scale={} warmup={} measured={} grid={}x{} environment={} window_runtime={} gpu_runtime={} cpu_present_runtime={}",
+            self.suite,
+            self.scenario_selection,
+            self.scale,
+            self.warmup_iterations,
+            self.measured_iterations,
+            self.cols,
+            self.rows,
+            self.environment.kind,
+            self.environment.window_runtime,
+            self.environment.gpu_runtime,
+            self.environment.cpu_present_runtime,
+        );
+        let _ = writeln!(
+            out,
+            "selected_scenarios count={} names={}",
+            self.selected_scenarios.len(),
+            self.selected_scenarios.join(","),
+        );
+        let _ = writeln!(
+            out,
+            "workload startup_runs={} steady_frames={} resize_cycles={} requested_extent={}x{} resize_targets={}",
+            self.workload.startup_runs_per_iteration,
+            self.workload.steady_frames_per_iteration,
+            self.workload.resize_cycles_per_iteration,
+            self.workload.requested_width,
+            self.workload.requested_height,
+            self.workload.resize_targets,
+        );
+        let _ = writeln!(
+            out,
+            "{:<32} {:<18} {:<16} {:>10} {:>10} {:>10} {:>10} {:>16}",
+            "scenario", "layer", "backend", "mean_ms", "p95_ms", "min_ms", "max_ms", "units/sec",
+        );
+        let _ = writeln!(
+            out,
+            "{:-<32} {:-<18} {:-<16} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16}",
+            "", "", "", "", "", "", "", ""
+        );
+        for result in &self.results {
+            let _ = writeln!(
+                out,
+                "{:<32} {:<18} {:<16} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2}",
+                result.scenario,
+                result.layer,
+                result.backend,
+                nanos_to_millis(result.stats.mean_nanos),
+                nanos_to_millis(result.stats.p95_nanos),
+                nanos_to_millis(result.stats.min_nanos),
+                nanos_to_millis(result.stats.max_nanos),
+                result.primary_units_per_second,
+            );
+            let _ = writeln!(
+                out,
+                "  kind={} unit={} units/iter={} redraws/iter={} resize_cycles/iter={} notes={}",
+                result.benchmark_kind,
+                result.primary_unit_label,
+                result.primary_units_per_iteration,
+                result.redraws_per_iteration,
+                result.resize_cycles_per_iteration,
                 if result.notes.is_empty() {
                     "none".to_owned()
                 } else {

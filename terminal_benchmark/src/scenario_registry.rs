@@ -14,6 +14,27 @@ pub struct ScenarioDescriptor {
 
 pub const BENCHMARK_SUITE_NAME: &str = "canonical-headless";
 
+pub fn scenario_belongs_to_suite(scenario: ScenarioArg) -> bool {
+    matches!(
+        scenario,
+        ScenarioArg::All
+            | ScenarioArg::CoreIngestBurst
+            | ScenarioArg::CoreScrollbackFlood
+            | ScenarioArg::CoreParserThroughput
+            | ScenarioArg::CoreGridScroll
+            | ScenarioArg::ServiceSessionRuntimeCycle
+            | ScenarioArg::UiCommandCycle
+            | ScenarioArg::SettingsApplyCycle
+            | ScenarioArg::ShellResolutionPlan
+            | ScenarioArg::FontCacheMixedRaster
+            | ScenarioArg::GpuSurfacePolicy
+            | ScenarioArg::CpuRenderFull
+            | ScenarioArg::CpuRenderDelta
+            | ScenarioArg::CpuCycleIngestRenderDelta
+            | ScenarioArg::CpuPixelRasterDelta
+    )
+}
+
 pub fn selected_scenarios(selection: ScenarioArg) -> Vec<ScenarioArg> {
     match selection {
         ScenarioArg::All => vec![
@@ -143,6 +164,7 @@ pub const fn descriptor(scenario: ScenarioArg) -> ScenarioDescriptor {
             description: "Headless CPU pixel raster path over a dirty terminal buffer",
             primary_unit_label: "pixels",
         },
+        _ => panic!("invalid canonical-headless scenario"),
     }
 }
 
@@ -155,7 +177,7 @@ pub fn selected_scenario_names(selection: ScenarioArg) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BENCHMARK_SUITE_NAME, descriptor, selected_scenarios};
+    use super::{BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenarios};
     use crate::cli::ScenarioArg;
 
     #[test]
@@ -177,5 +199,13 @@ mod tests {
         assert_eq!(descriptor.layer, "features/render-gpu");
         assert_eq!(descriptor.benchmark_kind, "policy");
         assert_eq!(descriptor.primary_unit_label, "decisions");
+    }
+
+    #[test]
+    fn suite_membership_rejects_live_display_scenarios() {
+        assert!(scenario_belongs_to_suite(ScenarioArg::CoreIngestBurst));
+        assert!(!scenario_belongs_to_suite(
+            ScenarioArg::StartupFirstFrameGpu
+        ));
     }
 }
