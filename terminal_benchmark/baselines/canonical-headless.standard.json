@@ -1,0 +1,144 @@
+{
+  "baseline_tool": "terminal-benchmark-thresholds",
+  "benchmark_tool": "terminal-benchmark",
+  "suite": "canonical-headless",
+  "scale": "standard",
+  "comparison_mode": "enforced",
+  "environment_scope": "portable-headless",
+  "generated_at_utc": "2026-03-11T01:10:27+00:00",
+  "scenario_selection": "all",
+  "defaults": {
+    "max_mean_nanos_ratio": 2.5,
+    "max_p95_nanos_ratio": 3.0,
+    "min_primary_units_per_second_ratio": 0.4,
+    "min_bytes_per_second_ratio": 0.4
+  },
+  "notes": "Generated from canonical full benchmark report. Update only after intentional performance-baseline review.",
+  "scenarios": {
+    "core-ingest-burst": {
+      "baseline_metrics": {
+        "mean_nanos": 87224150,
+        "p95_nanos": 88052686,
+        "primary_units_per_second": 5297741.5085157035,
+        "bytes_per_second": 5297741.5085157035
+      },
+      "thresholds": {}
+    },
+    "core-scrollback-flood": {
+      "baseline_metrics": {
+        "mean_nanos": 311360079,
+        "p95_nanos": 320335617,
+        "primary_units_per_second": 4676257.80631948,
+        "bytes_per_second": 4676257.80631948
+      },
+      "thresholds": {}
+    },
+    "core-parser-throughput": {
+      "baseline_metrics": {
+        "mean_nanos": 12544660,
+        "p95_nanos": 12592706,
+        "primary_units_per_second": 36835673.505698845,
+        "bytes_per_second": 36835673.505698845
+      },
+      "thresholds": {}
+    },
+    "core-grid-scroll": {
+      "baseline_metrics": {
+        "mean_nanos": 65093406,
+        "p95_nanos": 65167559,
+        "primary_units_per_second": 147480.37612289021,
+        "bytes_per_second": 94387440.71864974
+      },
+      "thresholds": {}
+    },
+    "service-session-runtime-cycle": {
+      "baseline_metrics": {
+        "mean_nanos": 50532,
+        "p95_nanos": 50683,
+        "primary_units_per_second": 34196152.93279506,
+        "bytes_per_second": 547138446.924721
+      },
+      "thresholds": {}
+    },
+    "ui-command-cycle": {
+      "baseline_metrics": {
+        "mean_nanos": 103604,
+        "p95_nanos": 106630,
+        "primary_units_per_second": 8030577.969962549,
+        "bytes_per_second": 128489247.51940079
+      },
+      "thresholds": {}
+    },
+    "settings-apply-cycle": {
+      "baseline_metrics": {
+        "mean_nanos": 4802251,
+        "p95_nanos": 4841521,
+        "primary_units_per_second": 319850.00367535977,
+        "bytes_per_second": 4424591.717509143
+      },
+      "thresholds": {}
+    },
+    "shell-resolution-plan": {
+      "baseline_metrics": {
+        "mean_nanos": 240173,
+        "p95_nanos": 268145,
+        "primary_units_per_second": 4796542.49228681
+      },
+      "thresholds": {}
+    },
+    "font-cache-mixed-raster": {
+      "baseline_metrics": {
+        "mean_nanos": 10621734,
+        "p95_nanos": 11257515,
+        "primary_units_per_second": 343446.74796036124,
+        "bytes_per_second": 43961183.73892624
+      },
+      "thresholds": {}
+    },
+    "gpu-surface-policy": {
+      "baseline_metrics": {
+        "mean_nanos": 31191,
+        "p95_nanos": 31387,
+        "primary_units_per_second": 30778109.069924016,
+        "bytes_per_second": 1969798980.475137
+      },
+      "thresholds": {}
+    },
+    "cpu-render-full": {
+      "baseline_metrics": {
+        "mean_nanos": 125950,
+        "p95_nanos": 126555,
+        "primary_units_per_second": 60976578.007145695,
+        "bytes_per_second": 95815799.92060341
+      },
+      "thresholds": {}
+    },
+    "cpu-render-delta": {
+      "baseline_metrics": {
+        "mean_nanos": 123193,
+        "p95_nanos": 123403,
+        "primary_units_per_second": 62341204.45155162,
+        "bytes_per_second": 88349175.68368332
+      },
+      "thresholds": {}
+    },
+    "cpu-cycle-ingest-render-delta": {
+      "baseline_metrics": {
+        "mean_nanos": 420333,
+        "p95_nanos": 431121,
+        "primary_units_per_second": 18271227.812234584,
+        "bytes_per_second": 2983348.9162164284
+      },
+      "thresholds": {}
+    },
+    "cpu-pixel-raster-delta": {
+      "baseline_metrics": {
+        "mean_nanos": 19796760,
+        "p95_nanos": 20657739,
+        "primary_units_per_second": 53018776.80994264,
+        "bytes_per_second": 212075107.23977056
+      },
+      "thresholds": {}
+    }
+  }
+}

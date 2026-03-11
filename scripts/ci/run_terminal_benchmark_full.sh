@@ -5,6 +5,7 @@ report_path="${1:-target/terminal-benchmark/full-report.json}"
 scale="${TERMINAL_BENCHMARK_SCALE:-standard}"
 warmup_iterations="${TERMINAL_BENCHMARK_WARMUP_ITERATIONS:-1}"
 iterations="${TERMINAL_BENCHMARK_ITERATIONS:-3}"
+baseline_path="${TERMINAL_BENCHMARK_BASELINE:-}"
 
 cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
   --scenario all \
@@ -18,5 +19,11 @@ cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
 python3 scripts/ci/validate_terminal_benchmark_report.py \
   "$report_path" \
   --require-full-suite
+
+if [[ -n "$baseline_path" ]]; then
+  python3 scripts/ci/validate_terminal_benchmark_thresholds.py \
+    "$report_path" \
+    "$baseline_path"
+fi
 
 echo "benchmark full ok: $report_path"
