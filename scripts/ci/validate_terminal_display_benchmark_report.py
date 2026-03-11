@@ -46,6 +46,7 @@ REQUIRED_STATS_KEYS = {
     "mean_nanos",
     "total_nanos",
 }
+REQUIRED_CPU_PHASE_KEYS = {"buffer_acquire", "raster", "present"}
 
 
 def fail(message: str) -> None:
@@ -77,6 +78,18 @@ def validate_stats(payload: dict, scenario: str) -> None:
     for key, value in payload.items():
         if not isinstance(value, int) or value < 0:
             fail(f"scenario {scenario!r} stats.{key} must be a non-negative integer")
+
+
+def validate_cpu_phase_stats(payload: dict, scenario: str) -> None:
+    if not isinstance(payload, dict):
+        fail(f"scenario {scenario!r} cpu_phase_stats must be an object")
+    keys = set(payload)
+    if keys != REQUIRED_CPU_PHASE_KEYS:
+        fail(
+            f"scenario {scenario!r} cpu_phase_stats keys mismatch: expected {sorted(REQUIRED_CPU_PHASE_KEYS)}, got {sorted(keys)}"
+        )
+    for phase_name, stats in payload.items():
+        validate_stats(stats, f"{scenario}.{phase_name}")
 
 
 def main() -> int:
@@ -170,6 +183,11 @@ def main() -> int:
         if not isinstance(notes, list) or any(not isinstance(note, str) for note in notes):
             fail(f"scenario {scenario!r} notes must be a list of strings")
         validate_stats(entry.get("stats"), scenario)
+        cpu_phase_stats = entry.get("cpu_phase_stats")
+        if expected["backend"] == "cpu":
+            validate_cpu_phase_stats(cpu_phase_stats, scenario)
+        elif cpu_phase_stats is not None:
+            fail(f"scenario {scenario!r} cpu_phase_stats must be null for non-cpu backends")
         result_names.append(scenario)
 
     if len(result_names) != len(set(result_names)):
