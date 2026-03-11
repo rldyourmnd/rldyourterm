@@ -165,6 +165,9 @@ For CPU live-display scenarios, the JSON report also includes `cpu_phase_stats` 
 - `raster`
 - `present`
 
+All live-display scenarios also include `display_phase_stats` with:
+- `redraw_dispatch`
+
 CPU live-display reports also include `cpu_buffer_age_counts`, which records how often the live `softbuffer` framebuffer arrived with:
 - `age_0`
 - `age_1`
@@ -183,6 +186,10 @@ This is important for RCA. The production-aligned CPU display path uses the fram
 The benchmark harness now follows the same redraw-shaping rule as the production GUI runtime:
 - when monitor timing is available for CPU steady/resize scenarios, it may use cadence-timed redraw scheduling
 - when monitor timing is unavailable, it falls back to event-driven redraw scheduling instead of inventing a benchmark-only timer
+
+This is important for RCA as well:
+- large `redraw_dispatch` points to event-loop or compositor wait before `RedrawRequested`
+- large `buffer_acquire` points to time spent inside `softbuffer::buffer_mut()`
 
 ## Scale presets
 
