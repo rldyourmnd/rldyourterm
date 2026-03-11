@@ -91,6 +91,16 @@ Controlled live-display calibration run:
 bash scripts/ci/run_terminal_display_benchmark_controlled.sh
 ```
 
+Controlled live-display calibration run with baseline refresh:
+
+```bash
+bash scripts/ci/run_terminal_display_benchmark_calibration.sh \
+  target/terminal-benchmark/live-display-controlled-report.json \
+  terminal_benchmark/baselines/live-display.controlled.json
+```
+
+Use `TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE=enforced` only when you intentionally want the calibrated baseline to become a hard gate.
+
 Optional threshold validation against versioned baselines:
 
 ```bash
@@ -107,6 +117,7 @@ Benchmark baseline scope is fail-closed:
 - `portable-headless` baselines apply only to canonical headless reports
 - `local-display-session` baselines apply only to generic local live-display reports
 - `controlled-display-session` baselines can only be refreshed from, and applied to, monitor-aware controlled live-display reports
+- controlled baselines now also carry exact environment requirements for the calibrated host profile, including display server hint and per-scenario CPU monitor metadata
 
 Canonical local system suite:
 

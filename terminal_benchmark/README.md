@@ -239,13 +239,21 @@ python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
 Refresh a controlled live-display baseline only from a monitor-aware controlled report:
 
 ```bash
-python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
+bash scripts/ci/run_terminal_display_benchmark_calibration.sh \
   /tmp/live-display-controlled-report.json \
-  terminal_benchmark/baselines/live-display.controlled.json \
-  --environment-scope controlled-display-session
+  terminal_benchmark/baselines/live-display.controlled.json
 ```
+
+The calibration wrapper defaults to `comparison_mode=advisory`. Set `TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE=enforced` only when you intentionally want the controlled baseline to become a hard gate.
 
 `environment_scope` is now fail-closed:
 - `portable-headless` baselines only apply to canonical headless reports
 - `local-display-session` baselines only apply to generic live-display reports
 - `controlled-display-session` baselines can only be refreshed from, and applied to, monitor-aware controlled live-display reports
+
+Controlled baselines also embed calibrated environment requirements:
+- suite-level display server metadata
+- optional session type
+- per-scenario CPU monitor cadence, refresh rate, and scale factor
+
+That makes controlled calibration host-specific by design instead of treating all monitor-aware sessions as interchangeable.
