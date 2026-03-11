@@ -5,6 +5,8 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 
+from terminal_benchmark_environment import infer_report_environment_scope
+
 DEFAULTS_BY_SUITE = {
     "canonical-headless": {
         "comparison_mode": "enforced",
@@ -51,6 +53,10 @@ def main() -> int:
     if suite not in DEFAULTS_BY_SUITE:
         fail(f"unsupported suite {suite!r}")
     defaults = DEFAULTS_BY_SUITE[suite]
+    try:
+        report_environment_scope = infer_report_environment_scope(report)
+    except ValueError as exc:
+        fail(str(exc))
 
     results = report.get("results")
     if not isinstance(results, list) or not results:
@@ -79,13 +85,20 @@ def main() -> int:
             "thresholds": {},
         }
 
+    selected_environment_scope = args.environment_scope or defaults["environment_scope"]
+    if selected_environment_scope != report_environment_scope:
+        fail(
+            "requested environment_scope is incompatible with the benchmark report: "
+            f"requested={selected_environment_scope!r} report={report_environment_scope!r}"
+        )
+
     payload = {
         "baseline_tool": "terminal-benchmark-thresholds",
         "benchmark_tool": report.get("benchmark_tool"),
         "suite": suite,
         "scale": report.get("scale"),
         "comparison_mode": args.comparison_mode or defaults["comparison_mode"],
-        "environment_scope": args.environment_scope or defaults["environment_scope"],
+        "environment_scope": selected_environment_scope,
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "scenario_selection": report.get("scenario_selection"),
         "defaults": defaults["defaults"],
@@ -93,7 +106,12 @@ def main() -> int:
         or (
             "Generated from canonical full benchmark report. Update only after intentional performance-baseline review."
             if suite == "canonical-headless"
-            else "Generated from local live-display benchmark report. Advisory only unless calibrated for a controlled display environment."
+            else (
+                "Generated from a controlled live-display benchmark report with monitor-aware cadence. "
+                "Use only for calibrated controlled-display validation."
+                if selected_environment_scope == "controlled-display-session"
+                else "Generated from local live-display benchmark report. Advisory only unless calibrated for a controlled display environment."
+            )
         ),
         "scenarios": scenarios,
     }
