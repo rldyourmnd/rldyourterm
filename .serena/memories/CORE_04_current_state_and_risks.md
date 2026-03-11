@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 3368f27 docs(benchmark): sync dedicated runner calibration policy
+Last commit: bd482b2 docs(benchmark): sync runner readiness calibration flow
 Scope: runtime state, crates/app/src/, crates/features/, scripts/ci/, .github/workflows/
 Area: CORE
 -->
@@ -27,6 +27,7 @@ Area: CORE
 - The repository now also has a canonical controlled calibration wrapper: `scripts/ci/run_terminal_display_benchmark_calibration.sh`
 - The repository now also has a manual self-hosted workflow for that same flow: `.github/workflows/display-benchmark.yml`; it now requires a dedicated `display-benchmark` self-hosted runner label in addition to the OS label
 - That workflow now emits a runner-readiness artifact before calibration so host suitability is evidenced separately from benchmark results
+- That workflow now uploads readiness and partial calibration artifacts even when the calibration run fails, preserving RCA evidence
 - Benchmark baseline tooling now fail-closes on `environment_scope`: `controlled-display-session` baselines can only be refreshed from and applied to monitor-aware controlled live-display reports, while generic local live-display reports remain `local-display-session`
 - Controlled live-display baselines now embed calibrated environment requirements, so benchmark validation also rejects host-profile drift within the broader `controlled-display-session` scope
 - The controlled calibration wrapper defaults to advisory comparison mode; `enforced` remains opt-in for intentionally hardened calibration hosts
