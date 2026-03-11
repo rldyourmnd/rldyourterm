@@ -17,7 +17,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("report", type=pathlib.Path)
     parser.add_argument("--benchmark-report", type=pathlib.Path, required=True)
+    parser.add_argument("--benchmark-baseline", type=pathlib.Path)
     parser.add_argument("--governance-mode", choices=["ci", "release"], required=True)
+    parser.add_argument("--live-display-mode", choices=["smoke", "full"])
+    parser.add_argument("--live-display-report", type=pathlib.Path)
+    parser.add_argument("--live-display-baseline", type=pathlib.Path)
     args = parser.parse_args()
 
     with args.report.open("r", encoding="utf-8") as handle:
@@ -40,6 +44,37 @@ def main() -> int:
         fail(
             f"benchmark_report must be {str(args.benchmark_report)!r}, got {benchmark_report!r}"
         )
+    benchmark_baseline = payload.get("benchmark_baseline")
+    expected_benchmark_baseline = None if args.benchmark_baseline is None else str(args.benchmark_baseline)
+    if benchmark_baseline != expected_benchmark_baseline:
+        fail(
+            f"benchmark_baseline must be {expected_benchmark_baseline!r}, got {benchmark_baseline!r}"
+        )
+
+    live_display = payload.get("live_display")
+    if args.live_display_mode is None:
+        if live_display is not None:
+            fail("live_display must be null when no live display mode is requested")
+    else:
+        if not isinstance(live_display, dict):
+            fail("live_display must be an object when live display mode is requested")
+        if live_display.get("mode") != args.live_display_mode:
+            fail(
+                f"live_display.mode must be {args.live_display_mode!r}, got {live_display.get('mode')!r}"
+            )
+        if args.live_display_report is None:
+            fail("live display report path argument is required when live display mode is requested")
+        if live_display.get("report") != str(args.live_display_report):
+            fail(
+                f"live_display.report must be {str(args.live_display_report)!r}, got {live_display.get('report')!r}"
+            )
+        expected_live_display_baseline = (
+            None if args.live_display_baseline is None else str(args.live_display_baseline)
+        )
+        if live_display.get("baseline") != expected_live_display_baseline:
+            fail(
+                f"live_display.baseline must be {expected_live_display_baseline!r}, got {live_display.get('baseline')!r}"
+            )
 
     quality_gates = payload.get("quality_gates")
     if not isinstance(quality_gates, list) or not quality_gates:
@@ -58,6 +93,16 @@ def main() -> int:
         f"bash scripts/ci/run_terminal_benchmark_full.sh {args.benchmark_report}",
         f"bash scripts/ci/run_e2e_governance.sh --mode {args.governance_mode}",
     ]
+    if args.live_display_mode is not None:
+        if args.live_display_report is None:
+            fail("live display report path argument is required when live display mode is requested")
+        expected_gates.append(
+            f"bash scripts/ci/run_terminal_display_benchmark_{args.live_display_mode}.sh {args.live_display_report}"
+        )
+    if args.benchmark_baseline is not None:
+        expected_gates.append(f"benchmark-thresholds headless {args.benchmark_baseline}")
+    if args.live_display_baseline is not None:
+        expected_gates.append(f"benchmark-thresholds live-display {args.live_display_baseline}")
     if quality_gates != expected_gates:
         fail(f"quality_gates mismatch: expected {expected_gates!r}, got {quality_gates!r}")
 
@@ -73,6 +118,43 @@ def main() -> int:
         ],
         check=True,
     )
+    if args.benchmark_baseline is not None:
+        if not args.benchmark_baseline.is_file():
+            fail(f"benchmark baseline does not exist: {args.benchmark_baseline}")
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/ci/validate_terminal_benchmark_thresholds.py",
+                str(args.benchmark_report),
+                str(args.benchmark_baseline),
+            ],
+            check=True,
+        )
+    if args.live_display_mode is not None:
+        if not args.live_display_report.is_file():
+            fail(f"live display report does not exist: {args.live_display_report}")
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/ci/validate_terminal_display_benchmark_report.py",
+                str(args.live_display_report),
+                "--require-full-suite",
+            ],
+            check=True,
+        )
+        if args.live_display_baseline is not None:
+            if not args.live_display_baseline.is_file():
+                fail(f"live display baseline does not exist: {args.live_display_baseline}")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/ci/validate_terminal_benchmark_thresholds.py",
+                    str(args.live_display_report),
+                    str(args.live_display_baseline),
+                    "--allow-advisory",
+                ],
+                check=True,
+            )
     return 0
 
 
