@@ -2081,7 +2081,9 @@ dependencies = [
  "rldyourterm-ui",
  "serde",
  "serde_json",
+ "softbuffer",
  "wgpu",
+ "winit",
 ]
 
 [[package]]

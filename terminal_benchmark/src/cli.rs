@@ -6,6 +6,13 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
+pub enum SuiteArg {
+    CanonicalHeadless,
+    LiveDisplay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
 pub enum ScenarioArg {
     All,
     CoreIngestBurst,
@@ -22,6 +29,12 @@ pub enum ScenarioArg {
     CpuRenderDelta,
     CpuCycleIngestRenderDelta,
     CpuPixelRasterDelta,
+    StartupFirstFrameGpu,
+    StartupFirstFrameCpu,
+    SteadyRedrawGpu,
+    SteadyRedrawCpu,
+    ResizeCycleGpu,
+    ResizeCycleCpu,
 }
 
 impl ScenarioArg {
@@ -42,6 +55,12 @@ impl ScenarioArg {
             Self::CpuRenderDelta => "cpu-render-delta",
             Self::CpuCycleIngestRenderDelta => "cpu-cycle-ingest-render-delta",
             Self::CpuPixelRasterDelta => "cpu-pixel-raster-delta",
+            Self::StartupFirstFrameGpu => "startup-first-frame-gpu",
+            Self::StartupFirstFrameCpu => "startup-first-frame-cpu",
+            Self::SteadyRedrawGpu => "steady-redraw-gpu",
+            Self::SteadyRedrawCpu => "steady-redraw-cpu",
+            Self::ResizeCycleGpu => "resize-cycle-gpu",
+            Self::ResizeCycleCpu => "resize-cycle-cpu",
         }
     }
 }
@@ -68,6 +87,8 @@ pub enum OutputFormatArg {
     about = "Self-authored benchmark suite for canonical rldyourterm terminal paths"
 )]
 pub struct Cli {
+    #[arg(long, value_enum, default_value = "canonical-headless")]
+    pub suite: SuiteArg,
     #[arg(long, value_enum, default_value = "all")]
     pub scenario: ScenarioArg,
     #[arg(long, value_enum, default_value = "standard")]
