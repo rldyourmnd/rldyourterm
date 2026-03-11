@@ -96,10 +96,15 @@ Controlled live-display calibration run with baseline refresh:
 ```bash
 bash scripts/ci/run_terminal_display_benchmark_calibration.sh \
   target/terminal-benchmark/live-display-controlled-report.json \
-  terminal_benchmark/baselines/live-display.controlled.json
+  terminal_benchmark/baselines/live-display.controlled.json \
+  target/terminal-benchmark/live-display-controlled-calibration.json
 ```
 
 Use `TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE=enforced` only when you intentionally want the calibrated baseline to become a hard gate.
+
+There is also a manual self-hosted GitHub workflow for the same controlled calibration flow:
+- `.github/workflows/display-benchmark.yml`
+- it uploads three artifacts: controlled report, controlled baseline, calibration report
 
 Optional threshold validation against versioned baselines:
 
