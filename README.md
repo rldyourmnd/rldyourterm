@@ -95,6 +95,8 @@ TERMINAL_DISPLAY_BENCHMARK_BASELINE=terminal_benchmark/baselines/live-display.qu
   bash scripts/ci/run_terminal_display_benchmark_smoke.sh
 ```
 
+Headless baselines are enforced. Live-display baselines are advisory by default: regressions are reported to stderr but do not turn the command into a hard failure unless you deliberately promote that policy.
+
 Canonical local system suite:
 
 ```bash
