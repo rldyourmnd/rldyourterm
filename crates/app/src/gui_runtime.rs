@@ -428,7 +428,6 @@ impl GuiRuntimeApp {
             render_mode: initial_mode,
             refresh_rate_millihz,
             window_count,
-            scrollback_cap: DEFAULT_SCROLLBACK_CAP,
         })
         .context("failed to bootstrap UI runtime for GUI app")?;
         let mut session_policy = SessionController::new();
