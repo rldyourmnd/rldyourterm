@@ -10,6 +10,10 @@ use rldyourterm_services::terminal::{
 pub const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
 pub const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
 
+fn is_default_blank_cell(cell: &Cell) -> bool {
+    cell.ch == ' ' && cell.width == 1 && cell.attrs == Attrs::default()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_terminal_buffer(
     buffer: &mut [u32],
@@ -96,6 +100,9 @@ pub fn render_terminal_buffer(
         } else {
             let grid_row = (row_idx - sb_rows_on_screen) as u16;
             if let Ok(cells) = terminal.grid.row_cells(grid_row) {
+                if cells.iter().take(visible_cols).all(is_default_blank_cell) {
+                    continue;
+                }
                 render_grid_row_cells(
                     buffer,
                     width,
@@ -191,6 +198,9 @@ fn render_grid_row_cells(
 ) {
     for (col, cell) in cells.iter().take(visible_cols).enumerate() {
         if cell.width == 0 {
+            continue;
+        }
+        if is_default_blank_cell(cell) {
             continue;
         }
 
