@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import math
 import pathlib
 import sys
+
+from terminal_benchmark_environment import infer_report_environment_scope
 
 
 DEFAULT_METRICS = {
@@ -77,6 +78,19 @@ def main() -> int:
         fail("suite mismatch between report and baseline")
     if report.get("scale") != baseline.get("scale"):
         fail("scale mismatch between report and baseline")
+
+    baseline_environment_scope = baseline.get("environment_scope")
+    if not isinstance(baseline_environment_scope, str) or not baseline_environment_scope:
+        fail("baseline.environment_scope must be a non-empty string")
+    try:
+        report_environment_scope = infer_report_environment_scope(report)
+    except ValueError as exc:
+        fail(str(exc))
+    if report_environment_scope != baseline_environment_scope:
+        fail(
+            "environment_scope mismatch between report and baseline: "
+            f"report={report_environment_scope!r} baseline={baseline_environment_scope!r}"
+        )
 
     comparison_mode = baseline.get("comparison_mode")
     if comparison_mode not in {"enforced", "advisory"}:
