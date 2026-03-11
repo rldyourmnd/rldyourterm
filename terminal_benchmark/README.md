@@ -263,6 +263,7 @@ The same flow is also available as a manual self-hosted GitHub Actions workflow:
 - `.github/workflows/display-benchmark.yml`
 - required runner labels: `self-hosted`, `display-benchmark`, and the selected OS label
 - artifacts:
+  - `live-display-runner-readiness.json`
   - `live-display-controlled-report.json`
   - `live-display-controlled-baseline.json`
   - `live-display-controlled-calibration.json`

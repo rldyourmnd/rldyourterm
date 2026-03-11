@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: c6615cc docs(benchmark): sync calibration workflow guidance
+Last commit: 3368f27 docs(benchmark): sync dedicated runner calibration policy
 Scope: runtime state, crates/app/src/, crates/features/, scripts/ci/, .github/workflows/
 Area: CORE
 -->
@@ -26,6 +26,7 @@ Area: CORE
 - The repository now has a dedicated controlled-display validation lane for that calibration work: `scripts/ci/run_terminal_display_benchmark_controlled.sh`
 - The repository now also has a canonical controlled calibration wrapper: `scripts/ci/run_terminal_display_benchmark_calibration.sh`
 - The repository now also has a manual self-hosted workflow for that same flow: `.github/workflows/display-benchmark.yml`; it now requires a dedicated `display-benchmark` self-hosted runner label in addition to the OS label
+- That workflow now emits a runner-readiness artifact before calibration so host suitability is evidenced separately from benchmark results
 - Benchmark baseline tooling now fail-closes on `environment_scope`: `controlled-display-session` baselines can only be refreshed from and applied to monitor-aware controlled live-display reports, while generic local live-display reports remain `local-display-session`
 - Controlled live-display baselines now embed calibrated environment requirements, so benchmark validation also rejects host-profile drift within the broader `controlled-display-session` scope
 - The controlled calibration wrapper defaults to advisory comparison mode; `enforced` remains opt-in for intentionally hardened calibration hosts
@@ -48,6 +49,7 @@ Area: CORE
 - `scripts/ci/run_terminal_display_benchmark_controlled.sh` adds monitor-aware environment validation on top of the live-display suite and is intended for calibration hosts where monitor metadata must be present
 - `scripts/ci/run_terminal_display_benchmark_calibration.sh` is the canonical host-side flow for producing a controlled live-display report, refreshing a controlled baseline from that report, and validating the calibrated result end-to-end
 - `scripts/ci/validate_terminal_display_calibration_report.py` validates the machine-readable calibration report that ties together the controlled report, controlled baseline, and comparison mode
+- `scripts/ci/run_terminal_display_benchmark_runner_readiness.sh` emits a machine-readable readiness report for the self-hosted calibration host and fails early if the display session is unsuitable
 - CPU live-display reports include phase-level timing (`redraw_dispatch`, `frame_gap`, `buffer_acquire`, `raster`, `present`), `cpu_buffer_age_counts`, `pacing_mode`, `monitor_refresh_rate_millihz`, and monitor/session metadata so remaining local display regressions can be isolated before production render code is changed
 - `crates/features/render_cpu/src/rasterize.rs` now skips row and cell work for default blank regions after the row-clear pass, which materially reduced `steady-redraw-cpu` raster cost in the local live-display suite
 - `crates/features/render_cpu/src/rasterize.rs` now keeps current-frame damage separate from repaint rows so `age=2` incremental redraw stays correct and does not accumulate stale damage history across frames
