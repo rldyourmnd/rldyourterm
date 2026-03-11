@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: f29977f docs(benchmark): document controlled calibration workflow
+Last commit: c6615cc docs(benchmark): sync calibration workflow guidance
 Scope: project commands, .github/workflows/, scripts/ci/, scripts/mvp/
 Area: CORE
 -->
@@ -67,4 +67,4 @@ bash scripts/mvp/run_profile.sh codex 3 recoverable:pty-write tick mode:cpu
 - Release workflow: `.github/workflows/release.yml` via `workflow_dispatch`, with `scripts/ci/run_terminal_system_suite.sh --governance-mode release` as the canonical pre-security validation lane
 - Live-display benchmark lanes are local/manual only; they are not required PR CI gates
 - Controlled live-display validation is also local/manual; it is intended for monitor-aware calibration environments rather than generic developer sessions
-- `.github/workflows/display-benchmark.yml` is the manual self-hosted workflow for controlled display calibration and artifact collection
+- `.github/workflows/display-benchmark.yml` is the manual self-hosted workflow for controlled display calibration and artifact collection; it requires runner labels `self-hosted`, `display-benchmark`, and the selected OS label

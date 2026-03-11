@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: f29977f docs(benchmark): document controlled calibration workflow
+Last commit: c6615cc docs(benchmark): sync calibration workflow guidance
 Scope: runtime state, crates/app/src/, crates/features/, scripts/ci/, .github/workflows/
 Area: CORE
 -->
@@ -25,7 +25,7 @@ Area: CORE
 - The main remaining systemic risk is environment variance for live-display metrics: the suite is validated and baseline-aware, but thresholds remain advisory and warning-only unless calibrated for a controlled display environment
 - The repository now has a dedicated controlled-display validation lane for that calibration work: `scripts/ci/run_terminal_display_benchmark_controlled.sh`
 - The repository now also has a canonical controlled calibration wrapper: `scripts/ci/run_terminal_display_benchmark_calibration.sh`
-- The repository now also has a manual self-hosted workflow for that same flow: `.github/workflows/display-benchmark.yml`
+- The repository now also has a manual self-hosted workflow for that same flow: `.github/workflows/display-benchmark.yml`; it now requires a dedicated `display-benchmark` self-hosted runner label in addition to the OS label
 - Benchmark baseline tooling now fail-closes on `environment_scope`: `controlled-display-session` baselines can only be refreshed from and applied to monitor-aware controlled live-display reports, while generic local live-display reports remain `local-display-session`
 - Controlled live-display baselines now embed calibrated environment requirements, so benchmark validation also rejects host-profile drift within the broader `controlled-display-session` scope
 - The controlled calibration wrapper defaults to advisory comparison mode; `enforced` remains opt-in for intentionally hardened calibration hosts
