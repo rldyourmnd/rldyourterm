@@ -23,6 +23,7 @@ Area: CORE
 
 ## Current Primary Risk
 - The main remaining systemic risk is environment variance for live-display metrics: the suite is validated and baseline-aware, but thresholds remain advisory and warning-only unless calibrated for a controlled display environment
+- After aligning the live-display CPU benchmark with the production softbuffer render path and adding phase metrics, the dominant remaining local CPU display cost shifted from rasterization to `buffer_acquire`; `present` remained negligible in the measured local environment
 
 ## Mitigations Present in Repository
 - `scripts/ci/validate_authority_docs.sh` blocks known stale governance claims
@@ -31,6 +32,7 @@ Area: CORE
 - `scripts/ci/run_terminal_benchmark_full.sh` exercises the full canonical headless benchmark suite and validates its JSON report schema
 - `scripts/ci/run_terminal_display_benchmark_smoke.sh` and `scripts/ci/run_terminal_display_benchmark_full.sh` exercise the local/manual live-display suite over real `winit` plus `wgpu`/`softbuffer` presentation paths
 - CPU live-display reports include phase-level timing (`buffer_acquire`, `raster`, `present`) so remaining local display regressions can be isolated before production render code is changed
+- `crates/features/render_cpu/src/rasterize.rs` now skips row and cell work for default blank regions after the row-clear pass, which materially reduced `steady-redraw-cpu` raster cost in the local live-display suite
 - `scripts/ci/validate_terminal_benchmark_thresholds.py` compares validated benchmark reports against versioned baseline policies
 - `scripts/ci/refresh_terminal_benchmark_baseline.py` refreshes versioned baseline manifests from validated benchmark reports
 - `scripts/ci/run_terminal_system_suite.sh` runs the canonical local and release validation lane across fmt, check, test, clippy, MSRV, fuzz compile-path, benchmark smoke/full, governance, optional live-display validation, and optional baseline enforcement
