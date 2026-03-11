@@ -14,5 +14,9 @@ fuzz/artifacts/
 fuzz/corpus/
 fuzz/coverage/
 
+# Python caches
+__pycache__/
+*.pyc
+
 # MVP runtime outputs
 scripts/mvp/output/
