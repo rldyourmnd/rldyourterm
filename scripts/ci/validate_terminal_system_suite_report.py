@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--benchmark-report", type=pathlib.Path, required=True)
     parser.add_argument("--benchmark-baseline", type=pathlib.Path)
     parser.add_argument("--governance-mode", choices=["ci", "release"], required=True)
-    parser.add_argument("--live-display-mode", choices=["smoke", "full"])
+    parser.add_argument("--live-display-mode", choices=["smoke", "full", "controlled"])
     parser.add_argument("--live-display-report", type=pathlib.Path)
     parser.add_argument("--live-display-baseline", type=pathlib.Path)
     args = parser.parse_args()
