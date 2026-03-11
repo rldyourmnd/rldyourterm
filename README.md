@@ -38,7 +38,11 @@ cargo check --locked -p rldyourterm-app
 
 ## Benchmarking
 
-Canonical headless benchmark suite lives in `terminal_benchmark/`. It now covers the canonical headless owners across `core`, `services/session`, `ui`, `features/settings`, `features/shell-integration`, `features/font`, `features/render-gpu` policy helpers, and `features/render-cpu`, while explicitly marking `app`, `foundation`, `foundation-platform`, and `features/diagnostics` as correctness-only layers in the JSON coverage report.
+`terminal_benchmark/` now provides two benchmark suites:
+- `canonical-headless` for deterministic CI-safe coverage across `core`, `services/session`, `ui`, `features/settings`, `features/shell-integration`, `features/font`, `features/render-gpu` policy helpers, and `features/render-cpu`
+- `live-display` for real `winit` window plus `wgpu`/`softbuffer` presentation timing on a live display session
+
+The canonical headless JSON report still marks `app`, `foundation`, `foundation-platform`, and `features/diagnostics` as correctness-only layers. The live-display suite is intentionally local/manual and does not run as a required PR CI gate.
 
 Quick run:
 
@@ -50,13 +54,14 @@ Structured JSON output:
 
 ```bash
 cargo run --locked -p rldyourterm-terminal-benchmark -- \
+  --suite canonical-headless \
   --scenario all \
   --scale stress \
   --format json \
   --output /tmp/rldyourterm-terminal-benchmark.json
 ```
 
-CI-parity smoke run:
+Headless CI-parity smoke run:
 
 ```bash
 bash scripts/ci/run_terminal_benchmark_smoke.sh
@@ -68,13 +73,50 @@ Full benchmark suite:
 bash scripts/ci/run_terminal_benchmark_full.sh
 ```
 
+Live-display local smoke run:
+
+```bash
+bash scripts/ci/run_terminal_display_benchmark_smoke.sh
+```
+
+Live-display local full run:
+
+```bash
+bash scripts/ci/run_terminal_display_benchmark_full.sh
+```
+
+Optional threshold validation against versioned baselines:
+
+```bash
+TERMINAL_BENCHMARK_BASELINE=terminal_benchmark/baselines/canonical-headless.standard.json \
+  bash scripts/ci/run_terminal_benchmark_full.sh
+
+TERMINAL_DISPLAY_BENCHMARK_BASELINE=terminal_benchmark/baselines/live-display.quick.json \
+  bash scripts/ci/run_terminal_display_benchmark_smoke.sh
+```
+
 Canonical local system suite:
 
 ```bash
 bash scripts/ci/run_terminal_system_suite.sh
 ```
 
-The system suite emits a machine-readable JSON report and validates the referenced full benchmark report before returning success.
+Canonical local system suite with optional live-display coverage:
+
+```bash
+bash scripts/ci/run_terminal_system_suite.sh --with-live-display smoke
+```
+
+Canonical local system suite with baselines:
+
+```bash
+bash scripts/ci/run_terminal_system_suite.sh \
+  --benchmark-baseline terminal_benchmark/baselines/canonical-headless.standard.json \
+  --with-live-display smoke \
+  --live-display-baseline terminal_benchmark/baselines/live-display.quick.json
+```
+
+The system suite emits a machine-readable JSON report and validates the referenced full benchmark report and, when requested, the live-display benchmark report and benchmark baselines before returning success.
 
 ## CI/CD profile
 
