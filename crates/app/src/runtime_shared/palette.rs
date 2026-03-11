@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
-use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
+use rldyourterm_settings::{
+    SettingsCommand, SettingsPaletteApplyOutcome, SettingsService, parse_palette_command,
+};
 use tracing::warn;
 
 use crate::runtime_shared::display::{on_off_token, render_mode_token};
@@ -142,7 +144,32 @@ pub(crate) fn dispatch_runtime_palette_command(
     input: &str,
     active_render_path: Option<ActiveRenderPath>,
 ) -> RuntimePaletteDispatchResult {
-    match settings.apply_palette_command(input) {
+    let input = canonical_runtime_palette_input(input);
+    let parsed = match parse_palette_command(&input) {
+        Ok(parsed) => parsed,
+        Err(reason) => {
+            warn!(?reason, input = input, "runtime palette command rejected");
+            return RuntimePaletteDispatchResult {
+                command: None,
+                message: format!("[palette] rejected input={input} reason={reason:?}"),
+                updated_mode: None,
+            };
+        }
+    };
+    if !runtime_palette_command_supported(parsed) {
+        warn!(
+            ?parsed,
+            input = input,
+            "runtime palette command rejected as unsupported in the live runtime"
+        );
+        return RuntimePaletteDispatchResult {
+            command: None,
+            message: format!("[palette] rejected input={input} reason=UnsupportedInRuntimePalette"),
+            updated_mode: None,
+        };
+    }
+
+    match settings.apply_palette_command(&input) {
         SettingsPaletteApplyOutcome::Applied {
             command, current, ..
         } => runtime_palette_dispatch_result(
@@ -242,9 +269,24 @@ pub(crate) fn runtime_palette_status_line(
         | SettingsCommand::SetRenderCadencePolicy(_)
         | SettingsCommand::SetTheme(_)
         | SettingsCommand::SetRuntimeProfile(_) => {
-            format!("[palette] saved (restart required) input={command:?}")
+            format!("[palette] rejected input={command:?} reason=UnsupportedInRuntimePalette")
         }
     }
+}
+
+fn runtime_palette_command_supported(command: SettingsCommand) -> bool {
+    matches!(
+        command,
+        SettingsCommand::SetMode(_) | SettingsCommand::SetDebugMode(_)
+    )
+}
+
+fn canonical_runtime_palette_input(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) fn active_render_path_token(active_render_path: ActiveRenderPath) -> &'static str {
@@ -258,7 +300,7 @@ pub(crate) fn active_render_path_token(active_render_path: ActiveRenderPath) -> 
 mod tests {
     use super::{
         RUNTIME_PALETTE_CLOSED_LINE, RUNTIME_PALETTE_HELP_LINE, RuntimePaletteView,
-        handle_runtime_palette_key_input, toggle_runtime_palette,
+        dispatch_runtime_palette_command, handle_runtime_palette_key_input, toggle_runtime_palette,
     };
     use crate::runtime_shared::input::RuntimeKey;
     use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
@@ -325,5 +367,24 @@ mod tests {
             decision.notice.as_deref(),
             Some("[palette] mode=cpu active-path=gpu")
         );
+    }
+
+    #[test]
+    fn dispatch_runtime_palette_command_rejects_unsupported_command_without_mutation() {
+        let mut settings = SettingsService::default();
+        let initial = settings.state().clone();
+
+        let result =
+            dispatch_runtime_palette_command(&mut settings, "theme set aurora", None);
+
+        assert_eq!(settings.state(), &initial);
+        assert!(result.command.is_none());
+        assert!(result.updated_mode.is_none());
+        assert!(
+            result
+                .message
+                .contains("reason=UnsupportedInRuntimePalette")
+        );
+        assert!(result.message.contains("input=theme set aurora"));
     }
 }
