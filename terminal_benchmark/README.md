@@ -241,7 +241,8 @@ Refresh a controlled live-display baseline only from a monitor-aware controlled 
 ```bash
 bash scripts/ci/run_terminal_display_benchmark_calibration.sh \
   /tmp/live-display-controlled-report.json \
-  terminal_benchmark/baselines/live-display.controlled.json
+  terminal_benchmark/baselines/live-display.controlled.json \
+  /tmp/live-display-controlled-calibration.json
 ```
 
 The calibration wrapper defaults to `comparison_mode=advisory`. Set `TERMINAL_DISPLAY_BENCHMARK_COMPARISON_MODE=enforced` only when you intentionally want the controlled baseline to become a hard gate.
@@ -257,3 +258,10 @@ Controlled baselines also embed calibrated environment requirements:
 - per-scenario CPU monitor cadence, refresh rate, and scale factor
 
 That makes controlled calibration host-specific by design instead of treating all monitor-aware sessions as interchangeable.
+
+The same flow is also available as a manual self-hosted GitHub Actions workflow:
+- `.github/workflows/display-benchmark.yml`
+- artifacts:
+  - `live-display-controlled-report.json`
+  - `live-display-controlled-baseline.json`
+  - `live-display-controlled-calibration.json`
