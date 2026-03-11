@@ -2,9 +2,11 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 mod cli;
+mod coverage;
 mod data;
 mod metrics;
 mod report;
+mod scenario_registry;
 mod scenarios;
 
 use anyhow::Result;

@@ -2,16 +2,21 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::cli::OutputFormatArg;
+use crate::coverage::CoverageSummary;
 use crate::data::WorkloadSummary;
 use crate::metrics::IterationStats;
 use serde::Serialize;
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkSuiteReport {
     pub benchmark_tool: &'static str,
+    pub suite: &'static str,
     pub scenario_selection: String,
+    pub selected_scenarios: Vec<&'static str>,
     pub scale: &'static str,
     pub warmup_iterations: u32,
     pub measured_iterations: u32,
@@ -20,12 +25,15 @@ pub struct BenchmarkSuiteReport {
     pub chunk_bytes: usize,
     pub scrollback_cap: usize,
     pub workload: WorkloadSummary,
+    pub coverage: CoverageSummary,
     pub results: Vec<ScenarioReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ScenarioReport {
     pub scenario: &'static str,
+    pub layer: &'static str,
+    pub benchmark_kind: &'static str,
     pub description: &'static str,
     pub primary_unit_label: &'static str,
     pub primary_units_per_iteration: u64,
@@ -41,8 +49,11 @@ impl BenchmarkSuiteReport {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let payload = serde_json::to_string_pretty(self)? + "\n";
-        std::fs::write(path, payload)?;
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, self)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
         Ok(())
     }
 
@@ -57,7 +68,9 @@ impl BenchmarkSuiteReport {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "terminal-benchmark scale={} warmup={} measured={} grid={}x{} chunk_bytes={} scrollback_cap={}",
+            "terminal-benchmark suite={} selection={} scale={} warmup={} measured={} grid={}x{} chunk_bytes={} scrollback_cap={}",
+            self.suite,
+            self.scenario_selection,
             self.scale,
             self.warmup_iterations,
             self.measured_iterations,
@@ -68,28 +81,50 @@ impl BenchmarkSuiteReport {
         );
         let _ = writeln!(
             out,
-            "workload ai_burst_bytes={} scrollback_flood_bytes={} render_seed_bytes={} delta_batches={} delta_batch_bytes={}",
+            "selected_scenarios count={} names={}",
+            self.selected_scenarios.len(),
+            self.selected_scenarios.join(","),
+        );
+        let _ = writeln!(
+            out,
+            "workload ai_burst_bytes={} scrollback_flood_bytes={} render_seed_bytes={} delta_batches={} delta_batch_bytes={} session_cycles={} ui_batch_repetitions={} settings_rounds={} shell_rounds={} font_passes={} surface_rounds={}",
             self.workload.ai_burst_bytes,
             self.workload.scrollback_flood_bytes,
             self.workload.render_seed_bytes,
             self.workload.delta_batches,
             self.workload.delta_batch_bytes,
+            self.workload.session_cycles,
+            self.workload.ui_batch_repetitions,
+            self.workload.settings_rounds,
+            self.workload.shell_rounds,
+            self.workload.font_passes,
+            self.workload.surface_rounds,
         );
         let _ = writeln!(
             out,
-            "{:<32} {:>10} {:>10} {:>10} {:>10} {:>16} {:>16}",
-            "scenario", "mean_ms", "p95_ms", "min_ms", "max_ms", "units/sec", "bytes/sec",
+            "{:<32} {:<24} {:<14} {:>10} {:>10} {:>10} {:>10} {:>16} {:>16}",
+            "scenario",
+            "layer",
+            "kind",
+            "mean_ms",
+            "p95_ms",
+            "min_ms",
+            "max_ms",
+            "units/sec",
+            "bytes/sec",
         );
         let _ = writeln!(
             out,
-            "{:-<32} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16} {:-<16}",
-            "", "", "", "", "", "", ""
+            "{:-<32} {:-<24} {:-<14} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16} {:-<16}",
+            "", "", "", "", "", "", "", "", ""
         );
         for result in &self.results {
             let _ = writeln!(
                 out,
-                "{:<32} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2} {:>16.2}",
+                "{:<32} {:<24} {:<14} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2} {:>16.2}",
                 result.scenario,
+                result.layer,
+                result.benchmark_kind,
                 nanos_to_millis(result.stats.mean_nanos),
                 nanos_to_millis(result.stats.p95_nanos),
                 nanos_to_millis(result.stats.min_nanos),
