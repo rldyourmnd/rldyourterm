@@ -29,7 +29,6 @@ pub struct UiBootstrapConfig {
     pub render_mode: RenderMode,
     pub refresh_rate_millihz: u32,
     pub window_count: u8,
-    pub scrollback_cap: usize,
 }
 
 impl UiBootstrapConfig {
@@ -38,7 +37,6 @@ impl UiBootstrapConfig {
             render_mode,
             refresh_rate_millihz,
             window_count: SINGLE_WINDOW_BASELINE,
-            scrollback_cap: DEFAULT_SCROLLBACK_CAP,
         }
     }
 }
@@ -47,7 +45,6 @@ impl UiBootstrapConfig {
 pub enum UiBootstrapError {
     UnsupportedWindowCount { requested: u8 },
     InvalidRefreshRate,
-    InvalidScrollbackCap,
 }
 
 impl Display for UiBootstrapError {
@@ -62,9 +59,6 @@ impl Display for UiBootstrapError {
                     f,
                     "invalid monitor refresh rate: value must be greater than zero"
                 )
-            }
-            Self::InvalidScrollbackCap => {
-                write!(f, "invalid scrollback cap: value must be greater than zero")
             }
         }
     }
@@ -191,9 +185,6 @@ impl UiRuntime {
         commands::validate_single_window(config.window_count)?;
         if config.refresh_rate_millihz == 0 {
             return Err(UiBootstrapError::InvalidRefreshRate);
-        }
-        if config.scrollback_cap == 0 {
-            return Err(UiBootstrapError::InvalidScrollbackCap);
         }
 
         let session = SessionController::new();
