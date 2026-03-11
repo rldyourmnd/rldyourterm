@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: run_terminal_system_suite.sh [report-path] [--governance-mode <ci|release>] [--benchmark-report <path>] [--benchmark-baseline <path>] [--with-live-display <smoke|full>] [--live-display-report <path>] [--live-display-baseline <path>]
+usage: run_terminal_system_suite.sh [report-path] [--governance-mode <ci|release>] [--benchmark-report <path>] [--benchmark-baseline <path>] [--with-live-display <smoke|full|controlled>] [--live-display-report <path>] [--live-display-baseline <path>]
 USAGE
 }
 
@@ -97,7 +97,7 @@ case "$governance_mode" in
 esac
 
 case "$live_display_mode" in
-  ""|smoke|full) ;;
+  ""|smoke|full|controlled) ;;
   *)
     echo "invalid live display mode: $live_display_mode" >&2
     usage
