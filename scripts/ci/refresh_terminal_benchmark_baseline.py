@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timezone
 
 from terminal_benchmark_environment import infer_report_environment_scope
+from terminal_benchmark_environment import extract_environment_requirements_for_baseline
 
 DEFAULTS_BY_SUITE = {
     "canonical-headless": {
@@ -91,6 +92,14 @@ def main() -> int:
             "requested environment_scope is incompatible with the benchmark report: "
             f"requested={selected_environment_scope!r} report={report_environment_scope!r}"
         )
+    environment_requirements = None
+    if selected_environment_scope == "controlled-display-session":
+        try:
+            environment_requirements = extract_environment_requirements_for_baseline(report)
+        except ValueError as exc:
+            fail(str(exc))
+        if environment_requirements is None:
+            fail("controlled-display-session baseline refresh requires a controlled live-display report")
 
     payload = {
         "baseline_tool": "terminal-benchmark-thresholds",
@@ -102,6 +111,7 @@ def main() -> int:
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "scenario_selection": report.get("scenario_selection"),
         "defaults": defaults["defaults"],
+        "environment_requirements": environment_requirements,
         "notes": args.notes
         or (
             "Generated from canonical full benchmark report. Update only after intentional performance-baseline review."
