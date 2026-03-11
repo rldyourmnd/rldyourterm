@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use anyhow::{Context, Result, anyhow};
-use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+use rldyourterm_diagnostics::{DiagnosticsSink, Event, EventKind};
 use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode, RenderTransitionReason};
 use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransitionOutcome};
-use rldyourterm_settings::{SettingsApplyOutcome, SettingsPaletteApplyOutcome, SettingsService};
+use rldyourterm_settings::{
+    SettingsApplyOutcome, SettingsCommand, SettingsService, parse_palette_command,
+};
 use rldyourterm_shell_integration::ShellTarget;
 use rldyourterm_ui::{
     SINGLE_WINDOW_BASELINE, UiCommandOutcome, UiCommandReceipt, UiRuntime, UiRuntimeCommand,
@@ -24,11 +26,9 @@ pub(crate) fn emit_settings_outcome(diagnostics: &DiagnosticsSink, outcome: Sett
             diagnostics.emit_kind(
                 EventKind::SettingsApply,
                 format!(
-                    "settings applied mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
+                    "settings applied mode={} diagnostics={}",
                     render_mode_token(current.mode),
-                    current.shell_target,
-                    current.shell_auto_init,
-                    current.render_cadence_policy
+                    yes_no_token(current.debug_mode),
                 ),
             );
         }
@@ -46,51 +46,90 @@ pub(crate) fn apply_palette_commands(
     diagnostics: &DiagnosticsSink,
     settings: &mut SettingsService,
     commands: &[String],
-) {
+) -> Vec<Event> {
+    let mut events = Vec::with_capacity(commands.len());
     for (index, command) in commands.iter().enumerate() {
-        let outcome = settings.apply_palette_command(command);
+        let input = canonical_startup_palette_input(command);
+        let parsed = match parse_palette_command(command) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                events.push(diagnostics.emit_kind(
+                    EventKind::SettingsRejected,
+                    format!(
+                        "palette command rejected step={} input={} reason={reason:?}",
+                        index + 1,
+                        input
+                    ),
+                ));
+                continue;
+            }
+        };
+        if !startup_palette_command_supported(parsed) {
+            events.push(diagnostics.emit_kind(
+                EventKind::SettingsRejected,
+                format!(
+                    "palette command rejected step={} input={} reason=UnsupportedInAppRuntime",
+                    index + 1,
+                    input
+                ),
+            ));
+            continue;
+        }
+
+        let outcome = settings.apply(parsed);
         match outcome {
-            SettingsPaletteApplyOutcome::Applied { input, current, .. } => {
-                diagnostics.emit_kind(
+            SettingsApplyOutcome::Applied { current, .. } => {
+                events.push(diagnostics.emit_kind(
                     EventKind::SettingsApply,
                     format!(
-                        "palette command applied step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
+                        "palette command applied step={} input={} mode={} diagnostics={}",
                         index + 1,
                         input,
                         render_mode_token(current.mode),
-                        current.shell_target,
-                        current.shell_auto_init,
-                        current.render_cadence_policy,
+                        yes_no_token(current.debug_mode),
                     ),
-                );
+                ));
             }
-            SettingsPaletteApplyOutcome::Noop { input, state, .. } => {
-                diagnostics.emit_kind(
+            SettingsApplyOutcome::Noop { state, .. } => {
+                events.push(diagnostics.emit_kind(
                     EventKind::SettingsApply,
                     format!(
-                        "palette command noop step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
+                        "palette command noop step={} input={} mode={} diagnostics={}",
                         index + 1,
                         input,
                         render_mode_token(state.mode),
-                        state.shell_target,
-                        state.shell_auto_init,
-                        state.render_cadence_policy,
+                        yes_no_token(state.debug_mode),
                     ),
-                );
+                ));
             }
-            SettingsPaletteApplyOutcome::Rejected { input, reason, .. } => {
-                diagnostics.emit_kind(
+            SettingsApplyOutcome::Rejected { reason, .. } => {
+                events.push(diagnostics.emit_kind(
                     EventKind::SettingsRejected,
                     format!(
-                        "palette command rejected step={} input={} reason={:?}",
+                        "palette command rejected step={} input={} reason={reason:?}",
                         index + 1,
-                        input,
-                        reason
+                        input
                     ),
-                );
+                ));
             }
         }
     }
+    events
+}
+
+fn startup_palette_command_supported(command: SettingsCommand) -> bool {
+    matches!(
+        command,
+        SettingsCommand::SetMode(_) | SettingsCommand::SetDebugMode(_)
+    )
+}
+
+fn canonical_startup_palette_input(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) fn build_bootstrap_commands(cli: &Cli) -> Result<Vec<UiRuntimeCommand>> {
@@ -476,5 +515,72 @@ fn command_token(command: UiRuntimeCommand) -> String {
             refresh_rate_millihz,
         } => format!("transfer-cadence:{refresh_rate_millihz}"),
         UiRuntimeCommand::AssertSingleWindow { requested } => format!("single-window:{requested}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_palette_commands, emit_settings_outcome};
+    use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+    use rldyourterm_services::render_mode::RenderMode;
+    use rldyourterm_settings::{SettingsCommand, SettingsService};
+
+    #[test]
+    fn startup_palette_commands_apply_mode_and_debug_only() {
+        let diagnostics = DiagnosticsSink::default();
+        let mut settings = SettingsService::default();
+        let commands = vec!["mode gpu".to_string(), "debug on".to_string()];
+
+        let events = apply_palette_commands(&diagnostics, &mut settings, &commands);
+
+        assert_eq!(settings.state().mode, RenderMode::Gpu);
+        assert!(settings.state().debug_mode);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.kind == EventKind::SettingsApply));
+        assert!(events[0].message.contains("mode=gpu"));
+        assert!(events[1].message.contains("diagnostics=yes"));
+    }
+
+    #[test]
+    fn startup_palette_commands_reject_unsupported_command_without_mutation() {
+        let diagnostics = DiagnosticsSink::default();
+        let mut settings = SettingsService::default();
+        let initial = settings.state().clone();
+        let commands = vec!["shell zsh".to_string()];
+
+        let events = apply_palette_commands(&diagnostics, &mut settings, &commands);
+
+        assert_eq!(settings.state(), &initial);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, EventKind::SettingsRejected);
+        assert!(events[0].message.contains("input=shell zsh"));
+        assert!(events[0].message.contains("reason=UnsupportedInAppRuntime"));
+    }
+
+    #[test]
+    fn startup_settings_outcome_reports_only_live_fields() {
+        let diagnostics = DiagnosticsSink::default();
+        let mut settings = SettingsService::default();
+        let outcome = settings.apply(SettingsCommand::SetDebugMode(true));
+
+        let event = match &outcome {
+            rldyourterm_settings::SettingsApplyOutcome::Applied { current, .. } => {
+                diagnostics.emit_kind(
+                    EventKind::SettingsApply,
+                    format!(
+                        "settings applied mode={} diagnostics={}",
+                        crate::runtime_shared::display::render_mode_token(current.mode),
+                        crate::yes_no_token(current.debug_mode),
+                    ),
+                )
+            }
+            _ => panic!("expected applied outcome"),
+        };
+
+        emit_settings_outcome(&diagnostics, outcome);
+
+        assert_eq!(event.kind, EventKind::SettingsApply);
+        assert!(event.message.contains("diagnostics=yes"));
+        assert!(!event.message.contains("shell_target"));
     }
 }
