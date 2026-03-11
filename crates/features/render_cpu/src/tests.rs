@@ -164,6 +164,67 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
 }
 
 #[test]
+fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
+    let mut state = state_with_default_scrollback(2, 1);
+    let width = CELL_WIDTH * 2;
+    let height = CELL_HEIGHT;
+    let mut buffer = vec![0; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut dirty_rows = Vec::new();
+
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        None,
+        &mut dirty_rows,
+        true,
+        0,
+        0,
+        0,
+    );
+
+    assert!(
+        buffer.iter().any(|pixel| *pixel != DEFAULT_BG_U32),
+        "selection overlay must still invert blank default cells"
+    );
+}
+
+#[test]
+fn pixel_renderer_draws_cursor_on_blank_default_row() {
+    let mut state = state_with_default_scrollback(2, 1);
+    state.cursor.row = 0;
+    state.cursor.col = 0;
+
+    let width = CELL_WIDTH * 2;
+    let height = CELL_HEIGHT;
+    let mut buffer = vec![0; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut dirty_rows = Vec::new();
+
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        None,
+        &mut dirty_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+    );
+
+    assert!(
+        buffer.iter().any(|pixel| *pixel != DEFAULT_BG_U32),
+        "cursor overlay must still draw on a blank default row"
+    );
+}
+
+#[test]
 fn stats_account_for_utf8_bytes_without_losing_cell_count() {
     let mut state = state_with_default_scrollback(2, 1);
     state
