@@ -164,8 +164,11 @@ impl GlyphCache {
     /// Check if any font in the chain contains a real glyph for `ch`.
     #[must_use]
     pub fn has_glyph(&self, ch: char) -> bool {
+        if self.try_font8x8_box_block(ch).is_some() {
+            return true;
+        }
         if self.fonts.is_empty() {
-            return BASIC_FONTS.get(ch).is_some();
+            return self.try_font8x8_basic(ch).is_some();
         }
 
         self.fonts
@@ -242,6 +245,10 @@ impl GlyphCache {
     /// Try to render a Box Drawing or Block Element character using font8x8.
     /// Returns `None` if `ch` is not in these ranges.
     fn try_font8x8_box_block(&self, ch: char) -> Option<GlyphBitmap> {
+        if self.cell_width != 8 || self.cell_height != 16 {
+            return None;
+        }
+
         let code = ch as u32;
         let is_box = (0x2500..=0x257F).contains(&code);
         let is_block = (0x2580..=0x259F).contains(&code);
@@ -475,6 +482,25 @@ mod tests {
         assert!(cache.has_glyph('A'));
         assert!(!cache.has_glyph('\u{FFFF}'));
         let glyph = cache.get('A');
+        assert_eq!(glyph.glyph_width, 8);
+        assert_eq!(glyph.glyph_height, 16);
+        assert!(glyph.data.iter().any(|&pixel| pixel > 0));
+    }
+
+    #[test]
+    fn degraded_cache_reports_box_drawing_support_without_primary_font() {
+        let mut cache = GlyphCache {
+            fonts: Vec::new(),
+            px_size: 16.0,
+            cell_width: 8,
+            cell_height: 16,
+            cache: HashMap::new(),
+            eviction_queue: VecDeque::new(),
+            max_entries: 16,
+        };
+
+        assert!(cache.has_glyph('─'));
+        let glyph = cache.get('─');
         assert_eq!(glyph.glyph_width, 8);
         assert_eq!(glyph.glyph_height, 16);
         assert!(glyph.data.iter().any(|&pixel| pixel > 0));
