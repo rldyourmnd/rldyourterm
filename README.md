@@ -120,7 +120,11 @@ bash scripts/ci/run_terminal_system_suite.sh \
 
 The system suite emits a machine-readable JSON report and validates the referenced full benchmark report and, when requested, the live-display benchmark report and benchmark baselines before returning success.
 
-CPU live-display reports now include phase-level timing for `buffer_acquire`, `raster`, and `present`, so local display regressions can be localized before touching production render code.
+CPU live-display reports now include:
+- phase-level timing for `buffer_acquire`, `raster`, and `present`
+- `cpu_buffer_age_counts`, which shows how often the softbuffer framebuffer arrives with `age=0`, `age=1`, `age=2`, or `age>=3`
+
+That keeps local display regressions explainable before touching production render code. The current CPU display path is explicitly age-aware and replays a two-frame damage history when `softbuffer` returns `age=2`.
 
 ## CI/CD profile
 
