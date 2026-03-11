@@ -44,6 +44,7 @@ reject_fixed 'push/PR to `main` and `dev`' .serena/memories/CORE_02_commands.md 
 reject_fixed 'rustsec/audit-check@v2' .serena/memories/CORE_02_commands.md .serena/memories/CORE_03_dependency_status.md
 reject_fixed 'planning validation' README.md
 reject_fixed 'planning + `scripts/mvp/*` flow' .serena/memories/CORE_04_current_state_and_risks.md
+reject_fixed 'separate future GPU/display benchmark lane' README.md terminal_benchmark/README.md
 
 python3 - <<'PY'
 from pathlib import Path
@@ -75,6 +76,13 @@ if ci.count("bash scripts/ci/run_terminal_benchmark_smoke.sh") != 1:
     sys.exit(1)
 if "bash scripts/ci/run_terminal_system_suite.sh" in ci:
     print("[FAIL] ci workflow must not inline the full terminal system suite", file=sys.stderr)
+    sys.exit(1)
+if "run_terminal_display_benchmark" in ci:
+    print("[FAIL] ci workflow must not require live display benchmark lanes", file=sys.stderr)
+    sys.exit(1)
+
+if "run_terminal_display_benchmark" in release:
+    print("[FAIL] release workflow must not hard-require live display benchmark lanes", file=sys.stderr)
     sys.exit(1)
 
 claude = Path("CLAUDE.md").read_text(encoding="utf-8")
