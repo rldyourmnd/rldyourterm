@@ -19,8 +19,8 @@ use rldyourterm_shell_integration::{
     resolve_shell,
 };
 use rldyourterm_ui::{
-    DEFAULT_SCROLLBACK_CAP, DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ReleaseGovernance,
-    SINGLE_WINDOW_BASELINE, UiBootstrapConfig, UiBootstrapHooks, UiRuntime,
+    DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ReleaseGovernance, SINGLE_WINDOW_BASELINE,
+    UiBootstrapConfig, UiBootstrapHooks, UiRuntime,
 };
 use tracing::{info, warn};
 
@@ -198,7 +198,6 @@ fn run(cli: Cli) -> Result<RunOutcome> {
                 render_mode,
                 refresh_rate_millihz,
                 window_count: cli.window_count,
-                scrollback_cap: DEFAULT_SCROLLBACK_CAP,
             },
             &hooks,
         )
