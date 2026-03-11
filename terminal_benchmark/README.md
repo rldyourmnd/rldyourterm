@@ -177,6 +177,8 @@ CPU live-display reports also include `cpu_buffer_age_counts`, which records how
 The live-display JSON report also records:
 - `pacing_mode`
 - `monitor_refresh_rate_millihz`
+- `monitor_name`
+- `monitor_scale_factor`
 
 This is important for RCA. The production-aligned CPU display path uses the framebuffer age contract directly:
 - `age=1`: repaint current-frame damage only
@@ -189,6 +191,7 @@ The benchmark harness now follows the same redraw-shaping rule as the production
 
 This is important for RCA as well:
 - large `redraw_dispatch` points to event-loop or compositor wait before `RedrawRequested`
+- large `frame_gap` points to wide effective spacing between completed redraws
 - large `buffer_acquire` points to time spent inside `softbuffer::buffer_mut()`
 
 ## Scale presets
