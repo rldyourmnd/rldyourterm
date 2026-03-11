@@ -123,6 +123,7 @@ The system suite emits a machine-readable JSON report and validates the referenc
 CPU live-display reports now include:
 - phase-level timing for `buffer_acquire`, `raster`, and `present`
 - `cpu_buffer_age_counts`, which shows how often the softbuffer framebuffer arrives with `age=0`, `age=1`, `age=2`, or `age>=3`
+- `pacing_mode` and `monitor_refresh_rate_millihz`, which show whether the live run used monitor-driven cadence or the same `event-driven` fallback that production uses when monitor timing is unavailable
 
 That keeps local display regressions explainable before touching production render code. The current CPU display path is explicitly age-aware and replays a two-frame damage history when `softbuffer` returns `age=2`.
 
