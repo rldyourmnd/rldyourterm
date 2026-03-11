@@ -44,7 +44,7 @@ def compare_max_ratio(scenario: str, metric_name: str, current: float, baseline:
         fail(f"scenario {scenario!r} baseline {metric_name} must be > 0")
     limit = baseline * ratio
     if current > limit:
-        fail(
+        raise ValueError(
             f"scenario {scenario!r} {metric_name} regression: current={current:.6f} exceeds baseline={baseline:.6f} * ratio={ratio:.3f} (limit={limit:.6f})"
         )
 
@@ -54,7 +54,7 @@ def compare_min_ratio(scenario: str, metric_name: str, current: float, baseline:
         fail(f"scenario {scenario!r} baseline {metric_name} must be > 0")
     floor = baseline * ratio
     if current < floor:
-        fail(
+        raise ValueError(
             f"scenario {scenario!r} {metric_name} regression: current={current:.6f} is below baseline={baseline:.6f} * ratio={ratio:.3f} (floor={floor:.6f})"
         )
 
@@ -83,6 +83,8 @@ def main() -> int:
         fail("comparison_mode must be 'enforced' or 'advisory'")
     if comparison_mode == "advisory" and not args.allow_advisory:
         fail("baseline comparison_mode is advisory; rerun with --allow-advisory to acknowledge environment-specific thresholds")
+
+    advisory_violations = []
 
     defaults = require_object(baseline, "defaults")
     scenarios = require_object(baseline, "scenarios")
@@ -126,10 +128,16 @@ def main() -> int:
             baseline_value = require_metric(baseline_metrics, metric_name, label=f"baseline[{scenario}]")
             source = current_stats if metric_name.endswith("_nanos") else current_entry
             current_value = require_metric(source, metric_name, label=f"report[{scenario}]")
-            if ratio_key.startswith("max_"):
-                compare_max_ratio(scenario, metric_name, current_value, baseline_value, float(ratio))
-            else:
-                compare_min_ratio(scenario, metric_name, current_value, baseline_value, float(ratio))
+            try:
+                if ratio_key.startswith("max_"):
+                    compare_max_ratio(scenario, metric_name, current_value, baseline_value, float(ratio))
+                else:
+                    compare_min_ratio(scenario, metric_name, current_value, baseline_value, float(ratio))
+            except ValueError as exc:
+                if comparison_mode == "advisory":
+                    advisory_violations.append(str(exc))
+                else:
+                    fail(str(exc))
 
         for ratio_key, metric_name in OPTIONAL_METRICS.items():
             ratio = threshold_overrides.get(ratio_key, defaults.get(ratio_key))
@@ -145,9 +153,22 @@ def main() -> int:
                 fail(f"scenario {scenario!r} optional metric {metric_name} must be numeric when present")
             if float(baseline_value) <= 0:
                 continue
-            compare_min_ratio(scenario, metric_name, float(current_value), float(baseline_value), float(ratio))
+            try:
+                compare_min_ratio(scenario, metric_name, float(current_value), float(baseline_value), float(ratio))
+            except ValueError as exc:
+                if comparison_mode == "advisory":
+                    advisory_violations.append(str(exc))
+                else:
+                    fail(str(exc))
 
     mode_note = "advisory" if comparison_mode == "advisory" else "enforced"
+    if advisory_violations:
+        print(
+            f"benchmark threshold validation advisory regressions ({len(advisory_violations)}): {args.report} vs {args.baseline}",
+            file=sys.stderr,
+        )
+        for violation in advisory_violations:
+            print(f"- {violation}", file=sys.stderr)
     print(f"benchmark threshold validation ok ({mode_note}): {args.report} vs {args.baseline}")
     return 0
 
