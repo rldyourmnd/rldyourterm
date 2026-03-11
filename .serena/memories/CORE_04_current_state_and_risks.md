@@ -22,7 +22,7 @@ Area: CORE
 - Release authority remains manual via `.github/workflows/release.yml`
 
 ## Current Primary Risk
-- The main remaining systemic risk is environment variance for live-display metrics: the suite is validated and baseline-aware, but thresholds remain advisory unless calibrated for a controlled display environment
+- The main remaining systemic risk is environment variance for live-display metrics: the suite is validated and baseline-aware, but thresholds remain advisory and warning-only unless calibrated for a controlled display environment
 
 ## Mitigations Present in Repository
 - `scripts/ci/validate_authority_docs.sh` blocks known stale governance claims
