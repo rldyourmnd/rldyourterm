@@ -19,6 +19,7 @@ def main() -> int:
     parser.add_argument("--benchmark-report", type=pathlib.Path, required=True)
     parser.add_argument("--baseline", type=pathlib.Path, required=True)
     parser.add_argument("--comparison-mode", choices=["advisory", "enforced"], required=True)
+    parser.add_argument("--runner-readiness-report", type=pathlib.Path)
     args = parser.parse_args()
 
     with args.report.open("r", encoding="utf-8") as handle:
@@ -41,11 +42,20 @@ def main() -> int:
         fail(
             f"comparison_mode must be {args.comparison_mode!r}, got {payload.get('comparison_mode')!r}"
         )
+    expected_runner_readiness_report = (
+        None if args.runner_readiness_report is None else str(args.runner_readiness_report)
+    )
+    if payload.get("runner_readiness_report") != expected_runner_readiness_report:
+        fail(
+            f"runner_readiness_report must be {expected_runner_readiness_report!r}, got {payload.get('runner_readiness_report')!r}"
+        )
 
     if not args.benchmark_report.is_file():
         fail(f"benchmark report does not exist: {args.benchmark_report}")
     if not args.baseline.is_file():
         fail(f"baseline does not exist: {args.baseline}")
+    if args.runner_readiness_report is not None and not args.runner_readiness_report.is_file():
+        fail(f"runner readiness report does not exist: {args.runner_readiness_report}")
 
     subprocess.run(
         [
@@ -66,6 +76,16 @@ def main() -> int:
     if args.comparison_mode == "advisory":
         threshold_args.append("--allow-advisory")
     subprocess.run(threshold_args, check=True)
+    if args.runner_readiness_report is not None:
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/ci/validate_terminal_display_runner_readiness_report.py",
+                str(args.runner_readiness_report),
+                "--require-pass",
+            ],
+            check=True,
+        )
     return 0
 
 
