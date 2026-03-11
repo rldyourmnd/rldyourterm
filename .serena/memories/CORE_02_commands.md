@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 30a4aa0 feat(benchmark): add controlled display validation lane
+Last commit: 39cf16c docs(benchmark): document controlled display validation flow
 Scope: project commands, .github/workflows/, scripts/ci/, scripts/mvp/
 Area: CORE
 -->
@@ -49,6 +49,7 @@ bash scripts/ci/run_terminal_system_suite.sh --benchmark-baseline terminal_bench
 python3 scripts/ci/validate_terminal_system_suite_report.py target/terminal-benchmark/system-suite-report.json --benchmark-report target/terminal-benchmark/system-suite-report.benchmark.json --governance-mode ci
 python3 scripts/ci/validate_terminal_display_environment.py /tmp/report.json --require-monitor-cadence --require-monitor-scale-factor
 python3 scripts/ci/refresh_terminal_benchmark_baseline.py /tmp/report.json terminal_benchmark/baselines/custom.json
+python3 scripts/ci/refresh_terminal_benchmark_baseline.py /tmp/live-display-controlled-report.json terminal_benchmark/baselines/live-display.controlled.json --environment-scope controlled-display-session
 ```
 
 ## Compatibility Harness

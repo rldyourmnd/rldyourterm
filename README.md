@@ -103,6 +103,11 @@ TERMINAL_DISPLAY_BENCHMARK_BASELINE=terminal_benchmark/baselines/live-display.qu
 
 Headless baselines are enforced. Live-display baselines are advisory by default: regressions are reported to stderr but do not turn the command into a hard failure unless you deliberately promote that policy.
 
+Benchmark baseline scope is fail-closed:
+- `portable-headless` baselines apply only to canonical headless reports
+- `local-display-session` baselines apply only to generic local live-display reports
+- `controlled-display-session` baselines can only be refreshed from, and applied to, monitor-aware controlled live-display reports
+
 Canonical local system suite:
 
 ```bash

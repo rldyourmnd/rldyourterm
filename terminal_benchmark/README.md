@@ -235,3 +235,17 @@ python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
   /tmp/report.json \
   terminal_benchmark/baselines/custom.json
 ```
+
+Refresh a controlled live-display baseline only from a monitor-aware controlled report:
+
+```bash
+python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
+  /tmp/live-display-controlled-report.json \
+  terminal_benchmark/baselines/live-display.controlled.json \
+  --environment-scope controlled-display-session
+```
+
+`environment_scope` is now fail-closed:
+- `portable-headless` baselines only apply to canonical headless reports
+- `local-display-session` baselines only apply to generic live-display reports
+- `controlled-display-session` baselines can only be refreshed from, and applied to, monitor-aware controlled live-display reports
