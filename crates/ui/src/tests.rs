@@ -47,6 +47,18 @@ fn assert_single_window_command_rejects_multi_window() {
 }
 
 #[test]
+fn bootstrap_rejects_zero_refresh_rate_without_scrollback_field() {
+    let err = UiRuntime::bootstrap(UiBootstrapConfig {
+        render_mode: RenderMode::Auto,
+        refresh_rate_millihz: 0,
+        window_count: SINGLE_WINDOW_BASELINE,
+    })
+    .expect_err("expected invalid refresh rate");
+
+    assert_eq!(err, UiBootstrapError::InvalidRefreshRate);
+}
+
+#[test]
 fn cadence_resync_command_updates_refresh_rate() {
     let mut runtime = UiRuntime::bootstrap(test_config()).expect("bootstrap");
 
