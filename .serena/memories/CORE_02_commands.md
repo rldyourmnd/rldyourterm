@@ -1,6 +1,6 @@
 <!-- Memory Metadata
 Last updated: 2026-03-11
-Last commit: 32bdafe docs(governance): align benchmark and system suite guidance
+Last commit: 30a4aa0 feat(benchmark): add controlled display validation lane
 Scope: project commands, .github/workflows/, scripts/ci/, scripts/mvp/
 Area: CORE
 -->
@@ -41,10 +41,13 @@ bash scripts/ci/run_terminal_benchmark_smoke.sh
 bash scripts/ci/run_terminal_benchmark_full.sh
 bash scripts/ci/run_terminal_display_benchmark_smoke.sh
 bash scripts/ci/run_terminal_display_benchmark_full.sh
+bash scripts/ci/run_terminal_display_benchmark_controlled.sh
 bash scripts/ci/run_terminal_system_suite.sh
 bash scripts/ci/run_terminal_system_suite.sh --with-live-display smoke
+bash scripts/ci/run_terminal_system_suite.sh --with-live-display controlled
 bash scripts/ci/run_terminal_system_suite.sh --benchmark-baseline terminal_benchmark/baselines/canonical-headless.standard.json --with-live-display smoke --live-display-baseline terminal_benchmark/baselines/live-display.quick.json
 python3 scripts/ci/validate_terminal_system_suite_report.py target/terminal-benchmark/system-suite-report.json --benchmark-report target/terminal-benchmark/system-suite-report.benchmark.json --governance-mode ci
+python3 scripts/ci/validate_terminal_display_environment.py /tmp/report.json --require-monitor-cadence --require-monitor-scale-factor
 python3 scripts/ci/refresh_terminal_benchmark_baseline.py /tmp/report.json terminal_benchmark/baselines/custom.json
 ```
 
@@ -61,3 +64,4 @@ bash scripts/mvp/run_profile.sh codex 3 recoverable:pty-write tick mode:cpu
 - Additional PR-visible workflows: CodeQL, ClusterFuzzLite PR fuzzing, Scorecard, Semantic PR, PR Automation
 - Release workflow: `.github/workflows/release.yml` via `workflow_dispatch`, with `scripts/ci/run_terminal_system_suite.sh --governance-mode release` as the canonical pre-security validation lane
 - Live-display benchmark lanes are local/manual only; they are not required PR CI gates
+- Controlled live-display validation is also local/manual; it is intended for monitor-aware calibration environments rather than generic developer sessions

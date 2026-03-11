@@ -85,6 +85,12 @@ Live-display local full run:
 bash scripts/ci/run_terminal_display_benchmark_full.sh
 ```
 
+Controlled live-display calibration run:
+
+```bash
+bash scripts/ci/run_terminal_display_benchmark_controlled.sh
+```
+
 Optional threshold validation against versioned baselines:
 
 ```bash
@@ -109,6 +115,12 @@ Canonical local system suite with optional live-display coverage:
 bash scripts/ci/run_terminal_system_suite.sh --with-live-display smoke
 ```
 
+Canonical local system suite with controlled live-display validation:
+
+```bash
+bash scripts/ci/run_terminal_system_suite.sh --with-live-display controlled
+```
+
 Canonical local system suite with baselines:
 
 ```bash
@@ -127,6 +139,11 @@ CPU live-display reports now include:
 - `cpu_buffer_age_counts`, which shows how often the softbuffer framebuffer arrives with `age=0`, `age=1`, `age=2`, or `age>=3`
 - `pacing_mode` and `monitor_refresh_rate_millihz`, which show whether the live run used monitor-driven cadence or the same `event-driven` fallback that production uses when monitor timing is unavailable
 - `monitor_name` and `monitor_scale_factor`, which show whether `winit` exposed concrete monitor metadata for the run
+
+Controlled live-display validation adds monitor-aware requirements:
+- `steady-redraw-cpu` and `resize-cycle-cpu` must use `pacing_mode=monitor-cadence`
+- monitor refresh and scale metadata must be present for those scenarios
+- optional session/display-server expectations can be provided through `TERMINAL_DISPLAY_BENCHMARK_REQUIRED_SESSION_TYPE` and `TERMINAL_DISPLAY_BENCHMARK_REQUIRED_DISPLAY_SERVER_HINT`
 
 That keeps local display regressions explainable before touching production render code. The current CPU display path is explicitly age-aware and replays a two-frame damage history when `softbuffer` returns `age=2`.
 

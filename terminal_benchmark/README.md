@@ -100,6 +100,12 @@ Live-display local full suite:
 bash scripts/ci/run_terminal_display_benchmark_full.sh
 ```
 
+Controlled live-display suite for monitor-aware calibration:
+
+```bash
+bash scripts/ci/run_terminal_display_benchmark_controlled.sh
+```
+
 Threshold validation against versioned baselines:
 
 ```bash
@@ -121,6 +127,13 @@ Canonical local system suite with optional live-display extension:
 ```bash
 bash scripts/ci/run_terminal_system_suite.sh \
   --with-live-display smoke
+```
+
+Canonical local system suite with controlled live-display validation:
+
+```bash
+bash scripts/ci/run_terminal_system_suite.sh \
+  --with-live-display controlled
 ```
 
 System suite with benchmark baselines:
@@ -167,6 +180,7 @@ For CPU live-display scenarios, the JSON report also includes `cpu_phase_stats` 
 
 All live-display scenarios also include `display_phase_stats` with:
 - `redraw_dispatch`
+- `frame_gap`
 
 CPU live-display reports also include `cpu_buffer_age_counts`, which records how often the live `softbuffer` framebuffer arrived with:
 - `age_0`
@@ -193,6 +207,12 @@ This is important for RCA as well:
 - large `redraw_dispatch` points to event-loop or compositor wait before `RedrawRequested`
 - large `frame_gap` points to wide effective spacing between completed redraws
 - large `buffer_acquire` points to time spent inside `softbuffer::buffer_mut()`
+
+The controlled live-display runner adds environment validation on top of schema validation:
+- CPU monitor-aware scenarios (`steady-redraw-cpu`, `resize-cycle-cpu`) must use `monitor-cadence`
+- `monitor_refresh_rate_millihz` must be present and positive for those scenarios
+- `monitor_scale_factor` must be present and positive for those scenarios
+- optional session/display-server expectations can be supplied through environment variables
 
 ## Scale presets
 
