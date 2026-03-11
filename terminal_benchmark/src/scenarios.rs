@@ -2,25 +2,43 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::cli::{Cli, ScaleArg, ScenarioArg};
-use crate::data::{Workload, WorkloadScale};
+use crate::coverage::benchmark_coverage_summary;
+use crate::data::{SurfacePolicyCase, Workload, WorkloadScale};
 use crate::metrics::IterationStats;
 use crate::report::{BenchmarkSuiteReport, ScenarioReport};
+use crate::scenario_registry::{
+    BENCHMARK_SUITE_NAME, descriptor, selected_scenario_names,
+    selected_scenarios as registry_selected_scenarios,
+};
 use anyhow::Result;
-use rldyourterm_font::GlyphCache;
+use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
 use rldyourterm_render_cpu::{CpuRenderer, render_terminal_buffer};
+use rldyourterm_render_gpu::{
+    SurfaceRecoveryPolicy, SurfaceRuntimeState, update_frame_latency_hint, update_surface_extent,
+    validate_surface_configuration,
+};
+use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_services::session::{SessionController, SessionTransition};
 use rldyourterm_services::terminal::{
     Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, MAX_FEED_BYTES_PER_CALL, Parser, TerminalState,
 };
+use rldyourterm_settings::SettingsService;
+use rldyourterm_shell_integration::plan_shell_launch;
+use rldyourterm_ui::{UiBootstrapConfig, UiBootstrapHooks, UiRuntime};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 const PIXEL_BUFFER_MARGIN_COLS: usize = 4;
 const PIXEL_BUFFER_MARGIN_ROWS: usize = 2;
+const SURFACE_BASE_WIDTH: u32 = 960;
+const SURFACE_BASE_HEIGHT: u32 = 540;
+const SURFACE_BASE_FRAME_LATENCY: u32 = 2;
+const FONT_CACHE_MAX_ENTRIES: usize = 256;
 
 pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
     let scale = WorkloadScale::from_arg(cli.scale);
     let workload = Workload::generate(cli.cols, scale);
-    let scenarios = selected_scenarios(cli.scenario);
+    let scenarios = registry_selected_scenarios(cli.scenario);
     let mut results = Vec::with_capacity(scenarios.len());
 
     for scenario in scenarios {
@@ -30,7 +48,9 @@ pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
 
     Ok(BenchmarkSuiteReport {
         benchmark_tool: "terminal-benchmark",
+        suite: BENCHMARK_SUITE_NAME,
         scenario_selection: cli.scenario.as_str().to_owned(),
+        selected_scenarios: selected_scenario_names(cli.scenario),
         scale: scale_name(cli.scale),
         warmup_iterations: cli.warmup_iterations,
         measured_iterations: cli.iterations,
@@ -39,24 +59,9 @@ pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
         chunk_bytes: canonical_chunk_bytes(cli.chunk_bytes),
         scrollback_cap: cli.scrollback_cap,
         workload: workload.summary(),
+        coverage: benchmark_coverage_summary(),
         results,
     })
-}
-
-fn selected_scenarios(selection: ScenarioArg) -> Vec<ScenarioArg> {
-    match selection {
-        ScenarioArg::All => vec![
-            ScenarioArg::CoreIngestBurst,
-            ScenarioArg::CoreScrollbackFlood,
-            ScenarioArg::CoreParserThroughput,
-            ScenarioArg::CoreGridScroll,
-            ScenarioArg::CpuRenderFull,
-            ScenarioArg::CpuRenderDelta,
-            ScenarioArg::CpuCycleIngestRenderDelta,
-            ScenarioArg::CpuPixelRasterDelta,
-        ],
-        one => vec![one],
-    }
 }
 
 fn warmup_scenario(scenario: ScenarioArg, cli: &Cli, workload: &Workload) -> Result<()> {
@@ -71,6 +76,7 @@ fn run_measured_scenario(
     cli: &Cli,
     workload: &Workload,
 ) -> Result<ScenarioReport> {
+    let metadata = descriptor(scenario);
     let mut durations = Vec::with_capacity(cli.iterations as usize);
     let mut primary_units = 0u64;
     let mut byte_units = 0u64;
@@ -89,9 +95,11 @@ fn run_measured_scenario(
     let stats = IterationStats::from_durations(&durations);
     let mean_seconds = stats.mean_nanos as f64 / 1_000_000_000.0;
     Ok(ScenarioReport {
-        scenario: scenario_name(scenario),
-        description: scenario_description(scenario),
-        primary_unit_label: scenario_primary_unit(scenario),
+        scenario: metadata.name,
+        layer: metadata.layer,
+        benchmark_kind: metadata.benchmark_kind,
+        description: metadata.description,
+        primary_unit_label: metadata.primary_unit_label,
         primary_units_per_iteration: primary_units,
         byte_units_per_iteration: byte_units,
         stats,
@@ -127,6 +135,12 @@ fn run_iteration(
         ScenarioArg::CoreScrollbackFlood => bench_core_scrollback_flood(cli, workload),
         ScenarioArg::CoreParserThroughput => bench_core_parser_throughput(cli, workload),
         ScenarioArg::CoreGridScroll => bench_core_grid_scroll(cli),
+        ScenarioArg::ServiceSessionRuntimeCycle => bench_service_session_runtime_cycle(workload),
+        ScenarioArg::UiCommandCycle => bench_ui_command_cycle(workload),
+        ScenarioArg::SettingsApplyCycle => bench_settings_apply_cycle(workload),
+        ScenarioArg::ShellResolutionPlan => bench_shell_resolution_plan(workload),
+        ScenarioArg::FontCacheMixedRaster => bench_font_cache_mixed_raster(workload),
+        ScenarioArg::GpuSurfacePolicy => bench_gpu_surface_policy(workload),
         ScenarioArg::CpuRenderFull => bench_cpu_render_full(cli, workload),
         ScenarioArg::CpuRenderDelta => bench_cpu_render_delta(cli, workload),
         ScenarioArg::CpuCycleIngestRenderDelta => {
@@ -231,6 +245,250 @@ fn bench_core_grid_scroll(cli: &Cli) -> Result<IterationOutcome> {
             "scroll_iterations={} grid={}x{}",
             scroll_iterations, cli.cols, cli.rows
         )],
+    })
+}
+
+fn bench_service_session_runtime_cycle(workload: &Workload) -> Result<IterationOutcome> {
+    let mut transitions = 0u64;
+    let start = Instant::now();
+    for _ in 0..workload.session_cycles {
+        let mut controller = SessionController::with_recoverable_budget(3);
+        consume_transition(controller.mark_running()?, &mut transitions);
+        for boundary in &workload.session_boundaries {
+            consume_transition(
+                controller.handle_boundary_failure(*boundary)?,
+                &mut transitions,
+            );
+            if controller.state() == rldyourterm_services::session::SessionState::Degraded {
+                consume_transition(controller.mark_running()?, &mut transitions);
+            }
+        }
+        consume_transition(controller.request_stop()?, &mut transitions);
+        consume_transition(controller.mark_stopped()?, &mut transitions);
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: transitions,
+        byte_units: transitions * std::mem::size_of::<SessionTransition>() as u64,
+        notes: vec![
+            format!("cycles={}", workload.session_cycles),
+            format!("boundaries_per_cycle={}", workload.session_boundaries.len()),
+            "recoverable_budget=3".to_string(),
+        ],
+    })
+}
+
+fn bench_ui_command_cycle(workload: &Workload) -> Result<IterationOutcome> {
+    let mut commands_handled = 0u64;
+    let mut receipts_observed = 0usize;
+    let start = Instant::now();
+    for batch_index in 0..workload.ui_batch_repetitions {
+        let commands =
+            &workload.ui_command_batches[batch_index % workload.ui_command_batches.len()];
+        let hooks = UiBootstrapHooks::from_commands(commands.iter().copied());
+        let (runtime, receipts) = UiRuntime::bootstrap_with_hooks(
+            UiBootstrapConfig::single_window(RenderMode::Auto, 60_000),
+            &hooks,
+        )?;
+        black_box(runtime.state());
+        black_box(runtime.active_render_path());
+        black_box(runtime.cadence().refresh_rate_millihz);
+        commands_handled += receipts.len() as u64;
+        receipts_observed += receipts.len();
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: commands_handled,
+        byte_units: commands_handled
+            * std::mem::size_of::<rldyourterm_ui::UiRuntimeCommand>() as u64,
+        notes: vec![
+            format!("batch_templates={}", workload.ui_command_batches.len()),
+            format!("batch_repetitions={}", workload.ui_batch_repetitions),
+            format!("receipts={receipts_observed}"),
+        ],
+    })
+}
+
+fn bench_settings_apply_cycle(workload: &Workload) -> Result<IterationOutcome> {
+    let mut commands = 0u64;
+    let mut bytes = 0u64;
+    let start = Instant::now();
+    for _ in 0..workload.settings_rounds {
+        let mut service = SettingsService::default();
+        for input in &workload.settings_palette_inputs {
+            let outcome = service.apply_palette_command(input);
+            black_box(&outcome);
+            commands += 1;
+            bytes += input.len() as u64;
+        }
+        let profile = service.export_runtime_profile_state();
+        let profile_outcome = service.apply_runtime_profile_state(profile.clone());
+        black_box(profile);
+        black_box(profile_outcome);
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: commands,
+        byte_units: bytes,
+        notes: vec![
+            format!(
+                "inputs_per_round={}",
+                workload.settings_palette_inputs.len()
+            ),
+            format!("rounds={}", workload.settings_rounds),
+            "runtime_profile_roundtrip=1".to_string(),
+        ],
+    })
+}
+
+fn bench_shell_resolution_plan(workload: &Workload) -> Result<IterationOutcome> {
+    let mut cases = 0u64;
+    let start = Instant::now();
+    for _ in 0..workload.shell_rounds {
+        for shell_case in &workload.shell_cases {
+            let resolution = plan_shell_launch(shell_case.requested, shell_case.availability);
+            black_box(&resolution);
+            cases += 1;
+        }
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: cases,
+        byte_units: 0,
+        notes: vec![
+            format!("cases_per_round={}", workload.shell_cases.len()),
+            format!("rounds={}", workload.shell_rounds),
+        ],
+    })
+}
+
+fn bench_font_cache_mixed_raster(workload: &Workload) -> Result<IterationOutcome> {
+    let mut glyphs = 0u64;
+    let mut bytes = 0u64;
+    let mut cache = GlyphCache::new_with_max_entries(
+        CELL_WIDTH as u16,
+        CELL_HEIGHT as u16,
+        FONT_CACHE_MAX_ENTRIES,
+    );
+    let start = Instant::now();
+    for _ in 0..workload.font_passes {
+        for &ch in &workload.font_glyphs {
+            black_box(cache.has_glyph(ch));
+            let cell = rasterize_for_atlas(&mut cache, ch);
+            bytes += cell.len() as u64;
+            glyphs += 1;
+            black_box(cell.len());
+        }
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: glyphs,
+        byte_units: bytes,
+        notes: vec![
+            format!("glyphs_per_pass={}", workload.font_glyphs.len()),
+            format!("passes={}", workload.font_passes),
+            format!("cache_max_entries={FONT_CACHE_MAX_ENTRIES}"),
+        ],
+    })
+}
+
+fn bench_gpu_surface_policy(workload: &Workload) -> Result<IterationOutcome> {
+    let policy = SurfaceRecoveryPolicy::default();
+    let mut decisions = 0u64;
+    let mut config = base_surface_configuration();
+    let mut state = SurfaceRuntimeState::default();
+    let start = Instant::now();
+    for _ in 0..workload.surface_rounds {
+        for &case in &workload.surface_policy_cases {
+            match case {
+                SurfacePolicyCase::AcquireTimeout => {
+                    let decision =
+                        policy.on_surface_acquire_error(&mut state, wgpu::SurfaceError::Timeout);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::AcquireOutdated => {
+                    let decision =
+                        policy.on_surface_acquire_error(&mut state, wgpu::SurfaceError::Outdated);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::AcquireLost => {
+                    let decision =
+                        policy.on_surface_acquire_error(&mut state, wgpu::SurfaceError::Lost);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::AcquireOutOfMemory => {
+                    let decision = policy
+                        .on_surface_acquire_error(&mut state, wgpu::SurfaceError::OutOfMemory);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::AcquireOther => {
+                    let decision =
+                        policy.on_surface_acquire_error(&mut state, wgpu::SurfaceError::Other);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::ConfigureZeroWidth => {
+                    let invalid = wgpu::SurfaceConfiguration {
+                        width: 0,
+                        ..base_surface_configuration()
+                    };
+                    let error = validate_surface_configuration(&invalid).expect_err("zero width");
+                    let decision = policy.on_surface_configuration_error(&mut state, error);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::ConfigureZeroHeight => {
+                    let invalid = wgpu::SurfaceConfiguration {
+                        height: 0,
+                        ..base_surface_configuration()
+                    };
+                    let error = validate_surface_configuration(&invalid).expect_err("zero height");
+                    let decision = policy.on_surface_configuration_error(&mut state, error);
+                    black_box(decision.action);
+                }
+                SurfacePolicyCase::ExtentNominal {
+                    width,
+                    height,
+                    max_texture_dimension_2d,
+                }
+                | SurfacePolicyCase::ExtentClamped {
+                    width,
+                    height,
+                    max_texture_dimension_2d,
+                } => {
+                    update_surface_extent(&mut config, width, height, max_texture_dimension_2d)?;
+                    black_box(config.width);
+                    black_box(config.height);
+                    policy.on_reconfigure_success(&mut state);
+                }
+                SurfacePolicyCase::FrameLatency {
+                    desired_maximum_frame_latency,
+                } => {
+                    update_frame_latency_hint(&mut config, desired_maximum_frame_latency);
+                    black_box(config.desired_maximum_frame_latency);
+                    policy.on_acquire_success(&mut state);
+                }
+            }
+            decisions += 1;
+        }
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: decisions,
+        byte_units: decisions * std::mem::size_of::<wgpu::SurfaceConfiguration>() as u64,
+        notes: vec![
+            format!("cases_per_round={}", workload.surface_policy_cases.len()),
+            format!("rounds={}", workload.surface_rounds),
+            format!(
+                "surface_failures=acquire:{} reconfigure:{}",
+                state.consecutive_acquire_failures(),
+                state.consecutive_reconfigure_failures()
+            ),
+        ],
     })
 }
 
@@ -388,53 +646,21 @@ fn canonical_chunk_bytes(requested: usize) -> usize {
     requested.clamp(1, MAX_FEED_BYTES_PER_CALL)
 }
 
-fn scenario_name(scenario: ScenarioArg) -> &'static str {
-    match scenario {
-        ScenarioArg::All => "all",
-        ScenarioArg::CoreIngestBurst => "core-ingest-burst",
-        ScenarioArg::CoreScrollbackFlood => "core-scrollback-flood",
-        ScenarioArg::CoreParserThroughput => "core-parser-throughput",
-        ScenarioArg::CoreGridScroll => "core-grid-scroll",
-        ScenarioArg::CpuRenderFull => "cpu-render-full",
-        ScenarioArg::CpuRenderDelta => "cpu-render-delta",
-        ScenarioArg::CpuCycleIngestRenderDelta => "cpu-cycle-ingest-render-delta",
-        ScenarioArg::CpuPixelRasterDelta => "cpu-pixel-raster-delta",
-    }
+fn consume_transition(transition: SessionTransition, transitions: &mut u64) {
+    black_box(transition.sequence);
+    *transitions += 1;
 }
 
-fn scenario_description(scenario: ScenarioArg) -> &'static str {
-    match scenario {
-        ScenarioArg::All => "all scenarios",
-        ScenarioArg::CoreIngestBurst => "Chunked ANSI-heavy AI output ingest through TerminalState",
-        ScenarioArg::CoreScrollbackFlood => {
-            "Deep scrollback ingest and trimming pressure through TerminalState"
-        }
-        ScenarioArg::CoreParserThroughput => {
-            "Isolated ANSI parser throughput without grid dispatch"
-        }
-        ScenarioArg::CoreGridScroll => {
-            "Grid scroll_up_discard throughput with copy_within and dirty tracking"
-        }
-        ScenarioArg::CpuRenderFull => "Canonical full-frame CPU render snapshot",
-        ScenarioArg::CpuRenderDelta => "Canonical dirty-row CPU delta render",
-        ScenarioArg::CpuCycleIngestRenderDelta => "Steady-state ingest plus CPU delta render cycle",
-        ScenarioArg::CpuPixelRasterDelta => {
-            "Headless CPU pixel raster path over a dirty terminal buffer"
-        }
-    }
-}
-
-fn scenario_primary_unit(scenario: ScenarioArg) -> &'static str {
-    match scenario {
-        ScenarioArg::All => "n/a",
-        ScenarioArg::CoreIngestBurst
-        | ScenarioArg::CoreScrollbackFlood
-        | ScenarioArg::CoreParserThroughput => "bytes",
-        ScenarioArg::CoreGridScroll => "scrolls",
-        ScenarioArg::CpuRenderFull
-        | ScenarioArg::CpuRenderDelta
-        | ScenarioArg::CpuCycleIngestRenderDelta => "cells",
-        ScenarioArg::CpuPixelRasterDelta => "pixels",
+fn base_surface_configuration() -> wgpu::SurfaceConfiguration {
+    wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        width: SURFACE_BASE_WIDTH,
+        height: SURFACE_BASE_HEIGHT,
+        present_mode: wgpu::PresentMode::Fifo,
+        desired_maximum_frame_latency: SURFACE_BASE_FRAME_LATENCY,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        view_formats: vec![],
     }
 }
 
@@ -448,17 +674,18 @@ fn scale_name(scale: ScaleArg) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_chunk_bytes, selected_scenarios};
+    use super::canonical_chunk_bytes;
     use crate::cli::ScenarioArg;
+    use crate::scenario_registry::{descriptor, selected_scenarios};
     use rldyourterm_services::terminal::MAX_FEED_BYTES_PER_CALL;
 
     #[test]
     fn all_selection_expands_to_canonical_suite() {
         let scenarios = selected_scenarios(ScenarioArg::All);
-        assert_eq!(scenarios.len(), 8);
-        assert!(scenarios.contains(&ScenarioArg::CoreParserThroughput));
-        assert!(scenarios.contains(&ScenarioArg::CoreGridScroll));
-        assert!(scenarios.contains(&ScenarioArg::CpuPixelRasterDelta));
+        assert_eq!(scenarios.len(), 14);
+        assert!(scenarios.contains(&ScenarioArg::ServiceSessionRuntimeCycle));
+        assert!(scenarios.contains(&ScenarioArg::GpuSurfacePolicy));
+        assert_eq!(descriptor(ScenarioArg::UiCommandCycle).layer, "ui");
     }
 
     #[test]
