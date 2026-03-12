@@ -1981,7 +1981,6 @@ version = "0.1.0"
 dependencies = [
  "rldyourterm-foundation",
  "serde",
- "serde_json",
  "tracing",
 ]
 
