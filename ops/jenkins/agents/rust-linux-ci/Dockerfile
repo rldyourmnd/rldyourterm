@@ -9,6 +9,8 @@ ARG CODEQL_BUNDLE_VERSION=2.24.3
 ARG SCORECARD_VERSION=5.4.0
 ARG CARGO_FUZZ_VERSION=0.13.1
 ARG RUST_FUZZ_TOOLCHAIN=nightly-2026-03-11
+ARG JENKINS_UID=1001
+ARG JENKINS_GID=1001
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -31,7 +33,8 @@ RUN apt-get update \
         zsh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --shell /bin/bash jenkins \
+RUN groupadd --gid ${JENKINS_GID} jenkins \
+    && useradd --uid ${JENKINS_UID} --gid ${JENKINS_GID} --create-home --shell /bin/bash jenkins \
     && mkdir -p /opt/rust /opt/codeql /home/jenkins/agent \
     && chown -R jenkins:jenkins /opt/rust /opt/codeql /home/jenkins
 

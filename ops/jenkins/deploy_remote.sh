@@ -11,6 +11,10 @@ remote_root="${2:-/srv/rldyourterm-jenkins}"
 remote_env_file="${3:-$remote_root/.env}"
 legacy_root="/srv/jenkins"
 legacy_env_file="/srv/jenkins-runtime/stack.env"
+controller_uid=1000
+controller_gid=1000
+agent_uid=1001
+agent_gid=1001
 
 ssh "$ssh_target" "mkdir -p '$remote_root'"
 
@@ -37,8 +41,8 @@ ssh "$ssh_target" "
   if [[ -d '$remote_root/data/controller_home/jobs/Rldyourterm/jobs/PR-Validation' && -d '$remote_root/data/controller_home/jobs/rldyourterm-pr' ]]; then
     rm -rf '$remote_root/data/controller_home/jobs/rldyourterm-pr'
   fi
-  chown -R 1000:1000 '$remote_root/data/controller_home'
-  chown -R 1001:1001 '$remote_root/data/agent_rust_linux_ci'
+  chown -R '$controller_uid:$controller_gid' '$remote_root/data/controller_home'
+  chown -R '$agent_uid:$agent_gid' '$remote_root/data/agent_rust_linux_ci'
   if [[ '$remote_root' != '$legacy_root' && -f '$legacy_root/compose.yaml' && -f '$legacy_env_file' ]]; then
     cd '$legacy_root' && docker compose --env-file '$legacy_env_file' down || true
   fi
