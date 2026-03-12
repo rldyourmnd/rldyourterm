@@ -3,16 +3,11 @@
 
 use rldyourterm_foundation::api::common::ContractResult;
 use rldyourterm_foundation::api::diagnostics::{
-    DiagnosticConfig as FoundationDiagnosticConfig, DiagnosticEvent as FoundationDiagnosticEvent,
-    DiagnosticSink as FoundationDiagnosticSink,
+    DiagnosticEvent as FoundationDiagnosticEvent, DiagnosticSink as FoundationDiagnosticSink,
 };
-use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{
-    CorrelationId, DiagnosticsPayloadError, Event, EventKind, SettingsApplyTypedPayload,
-    ShellLaunchPayload, ShellLaunchTypedPayload, ShellResolutionTypedPayload, now_timestamp_ms,
-};
+use crate::{CorrelationId, Event, EventKind, now_timestamp_ms};
 
 #[derive(Debug)]
 pub struct DiagnosticsSink {
@@ -57,74 +52,6 @@ impl DiagnosticsSink {
         self.emit(Event::new(kind, message))
     }
 
-    fn emit_serialized_payload<T: Serialize>(
-        &self,
-        kind: EventKind,
-        message: impl Into<String>,
-        correlation_id: Option<CorrelationId>,
-        payload: &T,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        let mut event = Event::new(kind, message).try_with_payload(payload)?;
-        if let Some(correlation_id) = correlation_id {
-            event = event.with_correlation(correlation_id);
-        }
-        Ok(self.emit(event))
-    }
-
-    pub fn emit_settings_apply_typed(
-        &self,
-        correlation_id: Option<CorrelationId>,
-        payload: &SettingsApplyTypedPayload,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        payload.validate()?;
-        self.emit_serialized_payload(
-            payload.event_kind(),
-            "settings.apply",
-            correlation_id,
-            payload,
-        )
-    }
-
-    pub fn emit_shell_resolution_typed(
-        &self,
-        correlation_id: Option<CorrelationId>,
-        payload: &ShellResolutionTypedPayload,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        payload.validate()?;
-        self.emit_serialized_payload(
-            payload.event_kind(),
-            "shell.resolve",
-            correlation_id,
-            payload,
-        )
-    }
-
-    pub fn emit_shell_launch(
-        &self,
-        correlation_id: Option<CorrelationId>,
-        payload: &ShellLaunchPayload,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        self.emit_serialized_payload(
-            EventKind::ShellLaunchPlanned,
-            "shell.launch.plan",
-            correlation_id,
-            payload,
-        )
-    }
-
-    pub fn emit_shell_launch_typed(
-        &self,
-        correlation_id: Option<CorrelationId>,
-        payload: &ShellLaunchTypedPayload,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        self.emit_serialized_payload(
-            EventKind::ShellLaunchPlanned,
-            "shell.launch.plan",
-            correlation_id,
-            payload,
-        )
-    }
-
     pub fn with_correlation<'a>(
         &'a self,
         correlation_id: CorrelationId,
@@ -152,40 +79,6 @@ impl FoundationDiagnosticSink for DiagnosticsSink {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DiagnosticsRuntimeConfig {
-    enabled: bool,
-    debug_mode: bool,
-}
-
-impl Default for DiagnosticsRuntimeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            debug_mode: false,
-        }
-    }
-}
-
-impl DiagnosticsRuntimeConfig {
-    pub const fn new(enabled: bool, debug_mode: bool) -> Self {
-        Self {
-            enabled,
-            debug_mode,
-        }
-    }
-}
-
-impl FoundationDiagnosticConfig for DiagnosticsRuntimeConfig {
-    fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    fn is_debug_mode(&self) -> bool {
-        self.debug_mode
-    }
-}
-
 #[derive(Debug)]
 pub struct CorrelatedDiagnosticsSink<'a> {
     sink: &'a DiagnosticsSink,
@@ -204,15 +97,5 @@ impl<'a> CorrelatedDiagnosticsSink<'a> {
 
     pub fn emit_kind(&self, kind: EventKind, message: impl Into<String>) -> Event {
         self.emit(Event::new(kind, message))
-    }
-
-    pub fn emit_kind_with_payload<T: Serialize>(
-        &self,
-        kind: EventKind,
-        message: impl Into<String>,
-        payload: &T,
-    ) -> Result<Event, DiagnosticsPayloadError> {
-        let event = Event::new(kind, message).try_with_payload(payload)?;
-        Ok(self.emit(event))
     }
 }
