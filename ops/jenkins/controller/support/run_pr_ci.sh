@@ -72,6 +72,16 @@ run_ci_suite() {
 
   validate_semantic_pr_title "$pr_title" "$ci_root/semantic-pr-title.txt"
 
+  bash -n ops/jenkins/deploy_remote.sh
+  bash -n ops/jenkins/controller/support/run_pr_ci.sh
+  bash -n scripts/ci/run_jenkins_pr_ci.sh
+  python3 -m py_compile ops/jenkins/router/router.py
+  python3 -m json.tool < ops/jenkins/router/repositories.json >/dev/null
+
+  if compgen -G "ops/jenkins/router/test_*.py" >/dev/null; then
+    python3 -m unittest discover -s ops/jenkins/router -p 'test_*.py'
+  fi
+
   bash scripts/ci/validate_cflite_toolchain_pin.sh
 
   if [[ -f "scripts/ci/test_terminal_display_governance.py" ]]; then
