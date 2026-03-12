@@ -34,7 +34,7 @@ pipeline {
     agent { label 'linux-ci' }
 
     options {
-        disableConcurrentBuilds(abortPrevious: true)
+        disableConcurrentBuilds()
         timestamps()
         ansiColor('xterm')
         timeout(time: 120, unit: 'MINUTES')
