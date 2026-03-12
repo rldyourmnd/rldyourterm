@@ -7,6 +7,5 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
 rldyourterm-foundation.workspace = true
