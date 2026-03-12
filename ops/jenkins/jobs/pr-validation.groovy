@@ -182,6 +182,10 @@ git rev-parse HEAD
                                 validation.pendingDescription,
                                 env.BUILD_URL
                             )
+                        }
+
+                        validations.each { validation ->
+                            String supersededDescription = "Jenkins ${validation.context} validation was superseded by a newer run"
 
                             String state = 'success'
                             String description = validation.successDescription
@@ -196,9 +200,14 @@ git rev-parse HEAD
                                     "JENKINS_TRIGGER_EVENT=${params.TRIGGER_EVENT}",
                                     "JENKINS_TRIGGER_ACTION=${params.TRIGGER_ACTION}",
                                     "JENKINS_TRIGGER_ACTOR=${params.TRIGGER_ACTOR}",
-                                ]) {
+                                        ]) {
                                     sh "${runner} ${validation.mode} '${validation.reportRoot}'"
                                 }
+                            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException err) {
+                                state = 'pending'
+                                description = supersededDescription
+                                echo "Validation stage ${validation.context} was interrupted by a newer Jenkins run"
+                                throw err
                             } catch (err) {
                                 state = 'failure'
                                 description = validation.failureDescription
