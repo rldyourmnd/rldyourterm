@@ -8,6 +8,7 @@ from typing import Any
 PORTABLE_HEADLESS_SCOPE = "portable-headless"
 LOCAL_DISPLAY_SCOPE = "local-display-session"
 CONTROLLED_DISPLAY_SCOPE = "controlled-display-session"
+CONTROLLED_DISPLAY_CPU_SCENARIOS = frozenset({"steady-redraw-cpu", "resize-cycle-cpu"})
 
 
 def _is_positive_number(value: Any) -> bool:
@@ -25,11 +26,17 @@ def infer_report_environment_scope(report: dict[str, Any]) -> str:
     if not isinstance(results, list) or not results:
         raise ValueError("report.results must be a non-empty list")
 
-    cpu_results = [entry for entry in results if isinstance(entry, dict) and entry.get("backend") == "cpu"]
+    cpu_results = {
+        entry.get("scenario"): entry
+        for entry in results
+        if isinstance(entry, dict)
+        and entry.get("backend") == "cpu"
+        and entry.get("scenario") in CONTROLLED_DISPLAY_CPU_SCENARIOS
+    }
     if not cpu_results:
         return LOCAL_DISPLAY_SCOPE
 
-    for entry in cpu_results:
+    for entry in cpu_results.values():
         pacing_mode = entry.get("pacing_mode")
         refresh_rate_millihz = entry.get("monitor_refresh_rate_millihz")
         monitor_scale_factor = entry.get("monitor_scale_factor")
@@ -75,6 +82,8 @@ def extract_environment_requirements_for_baseline(report: dict[str, Any]) -> dic
         scenario = entry.get("scenario")
         if not isinstance(scenario, str) or not scenario:
             raise ValueError("cpu benchmark result scenario must be a non-empty string")
+        if scenario not in CONTROLLED_DISPLAY_CPU_SCENARIOS:
+            continue
 
         pacing_mode = entry.get("pacing_mode")
         refresh_rate_millihz = entry.get("monitor_refresh_rate_millihz")
