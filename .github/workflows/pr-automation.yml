@@ -1,8 +1,7 @@
 name: PR Automation
 
 on:
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: pr-automation-${{ github.workflow }}-${{ github.ref }}
