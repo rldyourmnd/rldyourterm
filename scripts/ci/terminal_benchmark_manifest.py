@@ -3,6 +3,15 @@ from __future__ import annotations
 
 from typing import Any
 
+EXPECTED_HEADLESS_VERIFIED_ONLY_LAYERS = frozenset(
+    {
+        "app",
+        "foundation",
+        "foundation-platform",
+        "features/diagnostics",
+    }
+)
+
 
 def require_suite_manifest(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     manifest = payload.get("suite_manifest")
@@ -45,6 +54,26 @@ def require_suite_manifest(payload: dict[str, Any]) -> dict[str, dict[str, Any]]
 
 def require_suite_manifest_names(payload: dict[str, Any]) -> set[str]:
     return set(require_suite_manifest(payload))
+
+
+def headless_benchmarked_layer_scenarios(payload: dict[str, Any]) -> dict[str, set[str]]:
+    if payload.get("suite") != "canonical-headless":
+        raise ValueError("headless coverage helpers require canonical-headless suite")
+
+    layers: dict[str, set[str]] = {}
+    for scenario, entry in require_suite_manifest(payload).items():
+        layers.setdefault(entry["layer"], set()).add(scenario)
+    return layers
+
+
+def headless_verified_only_layer_scenarios(payload: dict[str, Any]) -> dict[str, set[str]]:
+    if payload.get("suite") != "canonical-headless":
+        raise ValueError("headless coverage helpers require canonical-headless suite")
+
+    return {
+        layer: set()
+        for layer in EXPECTED_HEADLESS_VERIFIED_ONLY_LAYERS
+    }
 
 
 def controlled_display_cpu_scenarios(payload: dict[str, Any]) -> set[str]:
