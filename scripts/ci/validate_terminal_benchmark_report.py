@@ -5,9 +5,17 @@ import pathlib
 import sys
 
 try:
-    from scripts.ci.terminal_benchmark_manifest import require_suite_manifest
+    from scripts.ci.terminal_benchmark_manifest import (
+        headless_benchmarked_layer_scenarios,
+        headless_verified_only_layer_scenarios,
+        require_suite_manifest,
+    )
 except ModuleNotFoundError:
-    from terminal_benchmark_manifest import require_suite_manifest
+    from terminal_benchmark_manifest import (
+        headless_benchmarked_layer_scenarios,
+        headless_verified_only_layer_scenarios,
+        require_suite_manifest,
+    )
 
 EXPECTED_TOOL = "terminal-benchmark"
 EXPECTED_SUITE = "canonical-headless"
@@ -24,20 +32,28 @@ def require_list(payload: dict, key: str) -> list:
     return value
 
 
-def validate_coverage_layers(entries: list, manifest_names: set[str], label: str) -> None:
-    actual_layers = set()
+def validate_coverage_layers(
+    entries: list,
+    expected_layer_scenarios: dict[str, set[str]],
+    manifest_names: set[str],
+    label: str,
+) -> None:
+    actual_layer_scenarios: dict[str, set[str]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             fail(f"coverage.{label} entries must be objects")
         layer = entry.get("layer")
         if not isinstance(layer, str) or not layer:
             fail(f"coverage.{label}.layer must be a non-empty string")
-        actual_layers.add(layer)
+        if layer in actual_layer_scenarios:
+            fail(f"coverage.{label} must not contain duplicate layers")
         benchmark_scenarios = entry.get("benchmark_scenarios")
         validation_commands = entry.get("validation_commands")
         notes = entry.get("notes")
         if not isinstance(benchmark_scenarios, list):
             fail(f"coverage entry {layer} benchmark_scenarios must be a list")
+        if len(benchmark_scenarios) != len(set(benchmark_scenarios)):
+            fail(f"coverage entry {layer} benchmark_scenarios must be unique")
         for scenario in benchmark_scenarios:
             if not isinstance(scenario, str) or not scenario:
                 fail(f"coverage entry {layer} benchmark_scenarios must contain non-empty strings")
@@ -47,8 +63,22 @@ def validate_coverage_layers(entries: list, manifest_names: set[str], label: str
             fail(f"coverage entry {layer} validation_commands must be a non-empty list")
         if not isinstance(notes, str) or not notes:
             fail(f"coverage entry {layer} notes must be a non-empty string")
-    if len(actual_layers) != len(entries):
-        fail(f"coverage.{label} must not contain duplicate layers")
+        actual_layer_scenarios[layer] = set(benchmark_scenarios)
+
+    expected_layers = set(expected_layer_scenarios)
+    actual_layers = set(actual_layer_scenarios)
+    if actual_layers != expected_layers:
+        fail(
+            f"coverage.{label} mismatch: expected {sorted(expected_layers)}, got {sorted(actual_layers)}"
+        )
+
+    for layer, expected_scenarios in expected_layer_scenarios.items():
+        actual_scenarios = actual_layer_scenarios[layer]
+        if actual_scenarios != expected_scenarios:
+            fail(
+                f"coverage entry {layer} benchmark_scenarios mismatch: "
+                f"expected {sorted(expected_scenarios)}, got {sorted(actual_scenarios)}"
+            )
 
 
 def main() -> int:
@@ -130,13 +160,20 @@ def main() -> int:
     if not isinstance(coverage, dict):
         fail("coverage must be an object")
     manifest_names = set(manifest_map)
+    try:
+        expected_benchmarked_layers = headless_benchmarked_layer_scenarios(payload)
+        expected_verified_only_layers = headless_verified_only_layer_scenarios(payload)
+    except ValueError as exc:
+        fail(str(exc))
     validate_coverage_layers(
         require_list(coverage, "benchmarked_layers"),
+        expected_benchmarked_layers,
         manifest_names,
         "benchmarked_layers",
     )
     validate_coverage_layers(
         require_list(coverage, "verified_only_layers"),
+        expected_verified_only_layers,
         manifest_names,
         "verified_only_layers",
     )
