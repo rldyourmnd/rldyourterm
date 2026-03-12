@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import hmac
 import importlib.util
+import io
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
 import unittest
+from unittest import mock
+import urllib.error
 
 
 MODULE_PATH = Path(__file__).with_name("router.py")
@@ -65,6 +68,28 @@ class RouterHelpersTest(unittest.TestCase):
         self.assertTrue(router.verify_signature(secret, body, signature))
         self.assertFalse(router.verify_signature(secret, body, "sha256=deadbeef"))
 
+    def test_transient_jenkins_error_detects_retryable_failures(self) -> None:
+        bad_gateway = urllib.error.HTTPError(
+            "https://jenkins.example/job/test",
+            HTTPStatus.BAD_GATEWAY,
+            "bad gateway",
+            {},
+            io.BytesIO(),
+        )
+        unauthorized = urllib.error.HTTPError(
+            "https://jenkins.example/job/test",
+            HTTPStatus.UNAUTHORIZED,
+            "unauthorized",
+            {},
+            io.BytesIO(),
+        )
+
+        self.assertTrue(router.is_transient_jenkins_error(urllib.error.URLError("controller restarting")))
+        self.assertTrue(router.is_transient_jenkins_error(bad_gateway))
+        self.assertFalse(router.is_transient_jenkins_error(unauthorized))
+        bad_gateway.close()
+        unauthorized.close()
+
     def test_json_response_ignores_broken_pipe(self) -> None:
         handler = DummyHandler(BrokenPipeStream())
 
@@ -87,6 +112,46 @@ class RouterHelpersTest(unittest.TestCase):
 
         self.assertTrue(handler.close_connection)
         self.assertIn(("status", HTTPStatus.OK), handler.responses)
+
+    def test_trigger_jenkins_build_retries_transient_errors(self) -> None:
+        class DummyResponse:
+            def __init__(self, status: HTTPStatus) -> None:
+                self.status = status
+
+            def __enter__(self) -> "DummyResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+        opener = mock.Mock()
+        opener.open.return_value = DummyResponse(HTTPStatus.CREATED)
+
+        with (
+            mock.patch.object(router, "build_basic_auth_header", return_value="Basic test"),
+            mock.patch.object(router, "build_jenkins_opener", return_value=opener),
+            mock.patch.object(
+                router,
+                "load_crumb",
+                side_effect=[
+                    urllib.error.URLError("controller restarting"),
+                    ("Jenkins-Crumb", "crumb-value"),
+                ],
+            ) as load_crumb,
+            mock.patch.object(router, "stop_matching_running_builds") as stop_builds,
+            mock.patch.object(router.time, "sleep") as sleep_mock,
+        ):
+            router.trigger_jenkins_build(
+                base_url="https://jenkins.example",
+                job_name="Rldyourterm/PR-Validation",
+                username="jenkins",
+                password="secret",
+                params={"PR_NUMBER": "32", "REPO_FULL_NAME": "rldyourmnd/rldyourterm"},
+            )
+
+        self.assertEqual(load_crumb.call_count, 2)
+        stop_builds.assert_called_once()
+        sleep_mock.assert_called_once_with(2.0)
 
 
 if __name__ == "__main__":

@@ -71,29 +71,54 @@ def extract_pr_number(value: object) -> str | None:
     return None
 
 
+def is_transient_jenkins_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (
+            HTTPStatus.BAD_GATEWAY,
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            HTTPStatus.GATEWAY_TIMEOUT,
+        )
+    return isinstance(exc, urllib.error.URLError)
+
+
 def trigger_jenkins_build(base_url: str, job_name: str, username: str, password: str, params: dict[str, str]) -> None:
-    auth_header = build_basic_auth_header(username, password)
-    opener = build_jenkins_opener(auth_header)
-    crumb_header, crumb_value = load_crumb(base_url, opener)
-    stop_matching_running_builds(
-        base_url=base_url,
-        job_name=job_name,
-        pr_number=params.get("PR_NUMBER", ""),
-        opener=opener,
-        crumb_header=crumb_header,
-        crumb_value=crumb_value,
-    )
-    query = urllib.parse.urlencode(params)
-    job_path = build_job_path(job_name)
-    url = f"{base_url.rstrip('/')}/{job_path}/buildWithParameters?{query}"
-    request = urllib.request.Request(
-        url=url,
-        method="POST",
-        headers={crumb_header: crumb_value},
-    )
-    with opener.open(request, timeout=15) as response:
-        if response.status not in (HTTPStatus.CREATED, HTTPStatus.FOUND, HTTPStatus.OK, HTTPStatus.ACCEPTED):
-            raise RuntimeError(f"unexpected Jenkins response status: {response.status}")
+    retry_attempts = int(os.environ.get("JENKINS_TRIGGER_RETRY_ATTEMPTS", "15"))
+    retry_delay_seconds = float(os.environ.get("JENKINS_TRIGGER_RETRY_DELAY_SECONDS", "2"))
+    last_error: Exception | None = None
+
+    for attempt in range(retry_attempts):
+        try:
+            auth_header = build_basic_auth_header(username, password)
+            opener = build_jenkins_opener(auth_header)
+            crumb_header, crumb_value = load_crumb(base_url, opener)
+            stop_matching_running_builds(
+                base_url=base_url,
+                job_name=job_name,
+                pr_number=params.get("PR_NUMBER", ""),
+                opener=opener,
+                crumb_header=crumb_header,
+                crumb_value=crumb_value,
+            )
+            query = urllib.parse.urlencode(params)
+            job_path = build_job_path(job_name)
+            url = f"{base_url.rstrip('/')}/{job_path}/buildWithParameters?{query}"
+            request = urllib.request.Request(
+                url=url,
+                method="POST",
+                headers={crumb_header: crumb_value},
+            )
+            with opener.open(request, timeout=15) as response:
+                if response.status not in (HTTPStatus.CREATED, HTTPStatus.FOUND, HTTPStatus.OK, HTTPStatus.ACCEPTED):
+                    raise RuntimeError(f"unexpected Jenkins response status: {response.status}")
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt == retry_attempts - 1 or not is_transient_jenkins_error(exc):
+                raise
+            time.sleep(retry_delay_seconds)
+
+    assert last_error is not None
+    raise last_error
 
 
 def list_job_builds(base_url: str, job_name: str, opener: urllib.request.OpenerDirector) -> list[dict[str, object]]:
