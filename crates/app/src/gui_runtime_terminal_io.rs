@@ -31,7 +31,21 @@ impl GuiRuntimeApp {
 
         if let Some(dispatch) = decision.dispatch {
             let result_line = if let Some(command) = dispatch.command {
-                apply_palette_settings_command_to_ui_runtime(&mut self.ui_runtime, command)?;
+                if let Some(receipt) =
+                    apply_palette_settings_command_to_ui_runtime(&mut self.ui_runtime, command)?
+                    && let Err(error) = self.diagnostics.emit_runtime_command_receipt(
+                        None,
+                        RuntimeCommandSourceKind::PaletteCommand,
+                        None,
+                        &receipt,
+                    )
+                {
+                    warn!(
+                        error = ?error,
+                        command = ?receipt.command,
+                        "failed to emit typed palette runtime command diagnostics"
+                    );
+                }
                 self.sync_deferred_gpu_init_state();
                 shared_runtime_palette_status_line(
                     command,
@@ -320,7 +334,7 @@ pub(super) fn dispatch_runtime_palette_command(
         Some(ui_runtime.active_render_path()),
     );
     if let Some(command) = result.command {
-        apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
+        let _ = apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
         result.message = shared_runtime_palette_status_line(
             command,
             settings.state().mode,
@@ -334,13 +348,14 @@ pub(super) fn dispatch_runtime_palette_command(
 pub(super) fn apply_palette_settings_command_to_ui_runtime(
     ui_runtime: &mut UiRuntime,
     command: SettingsCommand,
-) -> Result<()> {
+) -> Result<Option<UiCommandReceipt>> {
     if let SettingsCommand::SetMode(mode) = command {
-        let _ = ui_runtime
+        let receipt = ui_runtime
             .handle_command(UiRuntimeCommand::SetRenderMode(mode))
             .context("failed to dispatch UiRuntimeCommand::SetRenderMode from runtime palette")?;
+        return Ok(Some(receipt));
     }
-    Ok(())
+    Ok(None)
 }
 
 fn is_paste_shortcut(key: &Key, modifiers: ModifiersState) -> bool {

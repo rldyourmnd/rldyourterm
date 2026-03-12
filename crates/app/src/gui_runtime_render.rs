@@ -96,7 +96,7 @@ impl GuiRuntimeApp {
                     failure_kind,
                     observed_at_millis,
                 );
-                let outcome = handling.and_then(|handling| {
+                let outcome = handling.and_then(|(_, handling)| {
                     self.route_gpu_failure_handling(
                         handling,
                         GpuFailureRouteContext {
@@ -303,11 +303,24 @@ impl GuiRuntimeApp {
                         "gpu render failed; routing through ui runtime command path"
                     );
 
-                    let handling = dispatch_gpu_failure_command(
+                    let (receipt, handling) = dispatch_gpu_failure_command(
                         &mut self.ui_runtime,
                         failure_kind,
                         observed_at_millis,
                     )?;
+                    if let Err(error) = self.diagnostics.emit_runtime_command_receipt(
+                        None,
+                        RuntimeCommandSourceKind::GpuFailureHandler,
+                        None,
+                        &receipt,
+                    ) {
+                        warn!(
+                            error = ?error,
+                            failure_kind = ?failure_kind,
+                            observed_at_millis,
+                            "failed to emit typed GPU failure command diagnostics"
+                        );
+                    }
                     self.route_gpu_failure_handling(
                         handling,
                         GpuFailureRouteContext {

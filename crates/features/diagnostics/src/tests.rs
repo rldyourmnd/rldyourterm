@@ -9,9 +9,21 @@ use rldyourterm_foundation::api::diagnostics::{
 
 use crate::{
     CorrelationId, DiagnosticsPayloadError, DiagnosticsRuntimeConfig, DiagnosticsSink, Event,
-    EventKind, FishBaselineFailureCauseKind, SettingsApplyOutcomeKind, SettingsApplyTypedPayload,
-    ShellLaunchPayload, ShellLaunchProfileKind, ShellLaunchTypedPayload, ShellResolutionErrorKind,
-    ShellResolutionReasonKind, ShellResolutionTypedPayload, ShellTargetKind,
+    EventKind, FishBaselineFailureCauseKind, RenderCadencePolicyKind, RenderModeKind,
+    RuntimeCommandReceiptTypedPayload, RuntimeCommandSourceKind, RuntimeProfilePresetKind,
+    SettingsApplyOutcomeKind, SettingsApplySourceKind, SettingsApplyTypedPayload,
+    SettingsStateTypedPayload, ShellLaunchPayload, ShellLaunchProfileKind, ShellLaunchTypedPayload,
+    ShellResolutionErrorKind, ShellResolutionReasonKind, ShellResolutionTypedPayload,
+    ShellTargetKind, ThemePresetKind,
+};
+use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode};
+use rldyourterm_services::runtime_protocol::{
+    UiCommandOutcome, UiCommandReceipt, UiRuntimeCommand,
+};
+use rldyourterm_services::session::SessionState;
+use rldyourterm_settings::{SettingsCommand, SettingsService};
+use rldyourterm_shell_integration::{
+    ShellDiagnosticsEvent, ShellLaunchPlan, ShellResolution, ShellResolutionReason, ShellTarget,
 };
 
 #[test]
@@ -108,10 +120,12 @@ fn emit_settings_apply_typed_validates_payload_shape() {
         .emit_settings_apply_typed(
             None,
             &SettingsApplyTypedPayload {
-                command: "mode gpu".to_string(),
+                source: SettingsApplySourceKind::RuntimeBootstrap,
+                step: None,
+                command_input: "mode gpu".to_string(),
                 outcome: SettingsApplyOutcomeKind::Rejected,
-                previous_state: "{\"mode\":\"auto\"}".to_string(),
-                current_state: Some("{\"mode\":\"gpu\"}".to_string()),
+                previous_state: sample_settings_state_payload(),
+                current_state: Some(sample_settings_state_payload()),
                 reject_reason: None,
             },
         )
@@ -124,6 +138,23 @@ fn emit_settings_apply_typed_validates_payload_shape() {
             reason: "rejected outcome requires reject_reason",
         }
     );
+}
+
+#[test]
+fn emit_settings_apply_outcome_serializes_structured_state() {
+    let sink = DiagnosticsSink::default();
+    let mut settings = SettingsService::default();
+    let outcome = settings.apply(SettingsCommand::SetDebugMode(true));
+
+    let emitted = sink
+        .emit_settings_apply_outcome(None, SettingsApplySourceKind::RuntimeBootstrap, &outcome)
+        .unwrap();
+
+    assert_eq!(emitted.kind, EventKind::SettingsApply);
+    let payload_json = emitted.payload_json.expect("payload must exist");
+    assert!(payload_json.contains("\"source\":\"runtime-bootstrap\""));
+    assert!(payload_json.contains("\"command_input\":\"debug on\""));
+    assert!(payload_json.contains("\"debug_mode\":true"));
 }
 
 #[test]
@@ -201,6 +232,35 @@ fn emit_shell_launch_typed_serializes_profile() {
 }
 
 #[test]
+fn emit_shell_event_typed_maps_shell_hook_events() {
+    let sink = DiagnosticsSink::default();
+    let event = ShellDiagnosticsEvent::ShellLaunchPlanned(ShellLaunchPlan {
+        resolution: ShellResolution {
+            requested: ShellTarget::Auto,
+            resolved: ShellTarget::Zsh,
+            fallback_applied: true,
+            reason: ShellResolutionReason::AutoFallbackToZsh,
+            fallback_cause: Some(
+                rldyourterm_shell_integration::FishBaselineFailureCause::FishUnavailable,
+            ),
+        },
+        executable: "zsh".to_string(),
+        args: vec!["-i".to_string(), "-l".to_string()],
+        profile: rldyourterm_shell_integration::ShellLaunchProfile::ZshFallback,
+    });
+
+    let emitted = sink.emit_shell_event_typed(None, &event).unwrap();
+
+    assert_eq!(emitted.kind, EventKind::ShellLaunchPlanned);
+    assert!(
+        emitted
+            .payload_json
+            .expect("payload must exist")
+            .contains("\"profile\":\"zsh-fallback\"")
+    );
+}
+
+#[test]
 fn correlated_sink_emits_payload_with_existing_correlation() {
     let sink = DiagnosticsSink::default();
     let correlated = sink.with_correlation(CorrelationId::new("corr-launch"));
@@ -251,4 +311,117 @@ fn diagnostics_runtime_config_implements_foundation_contract() {
 
     assert!(foundation_config.is_enabled());
     assert!(foundation_config.is_debug_mode());
+}
+
+#[test]
+fn emit_runtime_command_receipt_serializes_structured_protocol_payload() {
+    let sink = DiagnosticsSink::default();
+    let emitted = sink
+        .emit_runtime_command_receipt(
+            None,
+            RuntimeCommandSourceKind::GpuFailureHandler,
+            None,
+            &sample_gpu_retry_receipt(),
+        )
+        .unwrap();
+
+    assert_eq!(emitted.kind, EventKind::ResourceWarning);
+    let payload_json = emitted.payload_json.expect("payload must exist");
+    assert!(payload_json.contains("\"source\":\"gpu-failure-handler\""));
+    assert!(payload_json.contains("\"kind\":\"gpu-failure\""));
+    assert!(payload_json.contains("\"failure_kind\":\"surface-error\""));
+    assert!(payload_json.contains("\"outcome\":{\"kind\":\"gpu-retry-scheduled\""));
+}
+
+#[test]
+fn emit_runtime_command_receipt_maps_cadence_resync_to_cadence_event() {
+    let sink = DiagnosticsSink::default();
+    let emitted = sink
+        .emit_runtime_command_receipt(
+            None,
+            RuntimeCommandSourceKind::MonitorEvent,
+            None,
+            &sample_cadence_receipt(),
+        )
+        .unwrap();
+
+    assert_eq!(emitted.kind, EventKind::RenderCadenceUpdated);
+    assert!(
+        emitted
+            .payload_json
+            .expect("payload must exist")
+            .contains("\"kind\":\"cadence-resynced\"")
+    );
+}
+
+#[test]
+fn emit_runtime_command_receipt_rejects_bootstrap_without_step() {
+    let sink = DiagnosticsSink::default();
+    let err = sink
+        .emit_runtime_command_receipt_typed(
+            None,
+            &RuntimeCommandReceiptTypedPayload {
+                source: RuntimeCommandSourceKind::BootstrapHook,
+                step: None,
+                receipt: sample_gpu_retry_receipt(),
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        err,
+        DiagnosticsPayloadError::InvalidPayload {
+            payload: "runtime.command.receipt",
+            reason: "bootstrap-hook payload requires step",
+        }
+    );
+}
+
+fn sample_settings_state_payload() -> SettingsStateTypedPayload {
+    SettingsStateTypedPayload {
+        mode: RenderModeKind::Auto,
+        shell_target: ShellTargetKind::Auto,
+        shell_auto_init: true,
+        render_cadence_policy: RenderCadencePolicyKind::MonitorAuto,
+        theme: ThemePresetKind::Cuberpunk,
+        runtime_profile: RuntimeProfilePresetKind::Balanced,
+        debug_mode: false,
+    }
+}
+
+fn sample_gpu_retry_receipt() -> UiCommandReceipt {
+    UiCommandReceipt {
+        command: UiRuntimeCommand::GpuFailure {
+            kind: GpuFailureKind::SurfaceError,
+            observed_at_millis: 24,
+        },
+        outcome: UiCommandOutcome::GpuRetryScheduled {
+            failure_kind: GpuFailureKind::SurfaceError,
+            failure_streak: 2,
+            retry_budget_remaining: 0,
+        },
+        state: SessionState::Degraded,
+        render_mode: RenderMode::Auto,
+        cadence_millihz: 60_000,
+        window_count: 1,
+    }
+}
+
+fn sample_cadence_receipt() -> UiCommandReceipt {
+    UiCommandReceipt {
+        command: UiRuntimeCommand::ResyncCadence {
+            refresh_rate_millihz: 144_000,
+        },
+        outcome: UiCommandOutcome::CadenceResynced {
+            previous_refresh_rate_millihz: Some(60_000),
+            current_refresh_rate_millihz: Some(144_000),
+            generation: 2,
+            schedule_invalidated: true,
+            monitor_transfer: false,
+        },
+        state: SessionState::Running,
+        render_mode: RenderMode::Auto,
+        cadence_millihz: 144_000,
+        window_count: 1,
+    }
 }

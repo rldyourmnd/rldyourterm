@@ -1971,6 +1971,7 @@ dependencies = [
 name = "rldyourterm-core"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror 2.0.18",
  "unicode-width",
 ]
@@ -1980,6 +1981,9 @@ name = "rldyourterm-diagnostics"
 version = "0.1.0"
 dependencies = [
  "rldyourterm-foundation",
+ "rldyourterm-services",
+ "rldyourterm-settings",
+ "rldyourterm-shell-integration",
  "serde",
  "serde_json",
  "tracing",
@@ -2046,6 +2050,7 @@ dependencies = [
  "anyhow",
  "rldyourterm-core",
  "rldyourterm-foundation",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
 ]

@@ -6,6 +6,18 @@ use rldyourterm_foundation::api::diagnostics::{
     DiagnosticLayer as FoundationDiagnosticLayer,
     DiagnosticSeverity as FoundationDiagnosticSeverity,
 };
+use rldyourterm_services::render_mode::RenderMode;
+use rldyourterm_services::runtime_protocol::{UiCommandOutcome, UiCommandReceipt};
+use rldyourterm_services::session::SessionTransitionOutcome;
+use rldyourterm_settings::{
+    RenderCadencePolicy, RuntimeProfilePreset, SettingsApplyOutcome, SettingsCommand,
+    SettingsPaletteApplyOutcome, SettingsPaletteRejectReason, SettingsState,
+    ShellTarget as SettingsShellTarget, ThemePreset,
+};
+use rldyourterm_shell_integration::{
+    FishBaselineFailureCause, ShellLaunchPlan, ShellLaunchProfile, ShellResolution,
+    ShellResolutionError, ShellResolutionReason, ShellTarget as IntegrationShellTarget,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::now_timestamp_ms;
@@ -15,6 +27,8 @@ pub enum EventKind {
     SessionStarted,
     SessionEnded,
     SessionError,
+    RuntimeCommandProcessed,
+    RenderCadenceUpdated,
     SettingsApply,
     SettingsRejected,
     ShellResolved,
@@ -31,6 +45,8 @@ impl EventKind {
             Self::SessionStarted => FoundationDiagnosticKind::SessionStarted,
             Self::SessionEnded => FoundationDiagnosticKind::SessionEnded,
             Self::SessionError => FoundationDiagnosticKind::SessionError,
+            Self::RuntimeCommandProcessed => FoundationDiagnosticKind::RuntimeCommandProcessed,
+            Self::RenderCadenceUpdated => FoundationDiagnosticKind::RenderCadenceUpdated,
             Self::SettingsApply => FoundationDiagnosticKind::SettingsApply,
             Self::SettingsRejected => FoundationDiagnosticKind::SettingsRejected,
             Self::ShellResolved => FoundationDiagnosticKind::ShellResolved,
@@ -50,6 +66,9 @@ impl EventKind {
             }
             Self::RenderModeTransition => FoundationDiagnosticSeverity::Warn,
             Self::ResourceWarning => FoundationDiagnosticSeverity::Warn,
+            Self::RuntimeCommandProcessed | Self::RenderCadenceUpdated => {
+                FoundationDiagnosticSeverity::Info
+            }
             Self::SessionStarted
             | Self::SessionEnded
             | Self::SettingsApply
@@ -152,13 +171,79 @@ pub enum SettingsApplyOutcomeKind {
     Rejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingsApplySourceKind {
+    RuntimeBootstrap,
+    PaletteCommand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeCommandSourceKind {
+    BootstrapHook,
+    MonitorEvent,
+    PaletteCommand,
+    GpuFailureHandler,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RenderModeKind {
+    Cpu,
+    Gpu,
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RenderCadencePolicyKind {
+    MonitorAuto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemePresetKind {
+    Cuberpunk,
+    Aurora,
+    Monochrome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeProfilePresetKind {
+    Balanced,
+    Throughput,
+    Stability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsStateTypedPayload {
+    pub mode: RenderModeKind,
+    pub shell_target: ShellTargetKind,
+    pub shell_auto_init: bool,
+    pub render_cadence_policy: RenderCadencePolicyKind,
+    pub theme: ThemePresetKind,
+    pub runtime_profile: RuntimeProfilePresetKind,
+    pub debug_mode: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsApplyTypedPayload {
-    pub command: String,
+    pub source: SettingsApplySourceKind,
+    pub step: Option<u32>,
+    pub command_input: String,
     pub outcome: SettingsApplyOutcomeKind,
-    pub previous_state: String,
-    pub current_state: Option<String>,
+    pub previous_state: SettingsStateTypedPayload,
+    pub current_state: Option<SettingsStateTypedPayload>,
     pub reject_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeCommandReceiptTypedPayload {
+    pub source: RuntimeCommandSourceKind,
+    pub step: Option<u32>,
+    pub receipt: UiCommandReceipt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +312,95 @@ pub struct ShellLaunchTypedPayload {
 }
 
 impl SettingsApplyTypedPayload {
+    pub fn from_settings_outcome(
+        source: SettingsApplySourceKind,
+        outcome: &SettingsApplyOutcome,
+    ) -> Self {
+        match outcome {
+            SettingsApplyOutcome::Applied {
+                command,
+                previous,
+                current,
+            } => Self {
+                source,
+                step: None,
+                command_input: settings_command_input(command),
+                outcome: SettingsApplyOutcomeKind::Applied,
+                previous_state: previous.into(),
+                current_state: Some(current.into()),
+                reject_reason: None,
+            },
+            SettingsApplyOutcome::Noop { command, state, .. } => Self {
+                source,
+                step: None,
+                command_input: settings_command_input(command),
+                outcome: SettingsApplyOutcomeKind::Noop,
+                previous_state: state.into(),
+                current_state: Some(state.into()),
+                reject_reason: None,
+            },
+            SettingsApplyOutcome::Rejected {
+                command,
+                state,
+                reason,
+            } => Self {
+                source,
+                step: None,
+                command_input: settings_command_input(command),
+                outcome: SettingsApplyOutcomeKind::Rejected,
+                previous_state: state.into(),
+                current_state: None,
+                reject_reason: Some(format!("{reason:?}")),
+            },
+        }
+    }
+
+    pub fn from_palette_outcome(step: u32, outcome: &SettingsPaletteApplyOutcome) -> Self {
+        match outcome {
+            SettingsPaletteApplyOutcome::Applied {
+                input,
+                previous,
+                current,
+                ..
+            } => Self {
+                source: SettingsApplySourceKind::PaletteCommand,
+                step: Some(step),
+                command_input: input.clone(),
+                outcome: SettingsApplyOutcomeKind::Applied,
+                previous_state: previous.into(),
+                current_state: Some(current.into()),
+                reject_reason: None,
+            },
+            SettingsPaletteApplyOutcome::Noop { input, state, .. } => Self {
+                source: SettingsApplySourceKind::PaletteCommand,
+                step: Some(step),
+                command_input: input.clone(),
+                outcome: SettingsApplyOutcomeKind::Noop,
+                previous_state: state.into(),
+                current_state: Some(state.into()),
+                reject_reason: None,
+            },
+            SettingsPaletteApplyOutcome::Rejected {
+                input,
+                reason,
+                state,
+            } => Self {
+                source: SettingsApplySourceKind::PaletteCommand,
+                step: Some(step),
+                command_input: input.clone(),
+                outcome: SettingsApplyOutcomeKind::Rejected,
+                previous_state: state.into(),
+                current_state: None,
+                reject_reason: Some(match reason {
+                    SettingsPaletteRejectReason::Parse(reason) => format!("parse:{reason:?}"),
+                    SettingsPaletteRejectReason::Validation(reason) => {
+                        format!("validation:{reason:?}")
+                    }
+                }),
+            },
+        }
+    }
+
     pub(crate) fn event_kind(&self) -> EventKind {
         match self.outcome {
             SettingsApplyOutcomeKind::Rejected => EventKind::SettingsRejected,
@@ -237,6 +411,28 @@ impl SettingsApplyTypedPayload {
     }
 
     pub(crate) fn validate(&self) -> Result<(), DiagnosticsPayloadError> {
+        if self.command_input.is_empty() {
+            return Err(DiagnosticsPayloadError::InvalidPayload {
+                payload: "settings.apply.typed",
+                reason: "command_input must be non-empty",
+            });
+        }
+        match self.source {
+            SettingsApplySourceKind::RuntimeBootstrap if self.step.is_some() => {
+                return Err(DiagnosticsPayloadError::InvalidPayload {
+                    payload: "settings.apply.typed",
+                    reason: "runtime-bootstrap payload must not include step",
+                });
+            }
+            SettingsApplySourceKind::PaletteCommand if self.step.is_none() => {
+                return Err(DiagnosticsPayloadError::InvalidPayload {
+                    payload: "settings.apply.typed",
+                    reason: "palette-command payload requires step",
+                });
+            }
+            _ => {}
+        }
+
         match self.outcome {
             SettingsApplyOutcomeKind::Rejected => {
                 if self.reject_reason.is_none() {
@@ -271,7 +467,97 @@ impl SettingsApplyTypedPayload {
     }
 }
 
+impl RuntimeCommandReceiptTypedPayload {
+    pub fn from_receipt(
+        source: RuntimeCommandSourceKind,
+        step: Option<u32>,
+        receipt: &UiCommandReceipt,
+    ) -> Self {
+        Self {
+            source,
+            step,
+            receipt: *receipt,
+        }
+    }
+
+    pub(crate) fn event_kind(&self) -> EventKind {
+        match self.receipt.outcome {
+            UiCommandOutcome::Noop | UiCommandOutcome::SingleWindowConfirmed { .. } => {
+                EventKind::RuntimeCommandProcessed
+            }
+            UiCommandOutcome::SessionTransition(transition) => match transition.outcome {
+                SessionTransitionOutcome::Started { .. } => EventKind::SessionStarted,
+                SessionTransitionOutcome::RecoverableBoundary { .. } => EventKind::ResourceWarning,
+                SessionTransitionOutcome::FatalBoundary { .. } => EventKind::SessionError,
+                SessionTransitionOutcome::StopRequested | SessionTransitionOutcome::Stopped => {
+                    EventKind::SessionEnded
+                }
+            },
+            UiCommandOutcome::RenderModeTransition(_) => EventKind::RenderModeTransition,
+            UiCommandOutcome::CadenceResynced { .. } => EventKind::RenderCadenceUpdated,
+            UiCommandOutcome::GpuRetryScheduled { .. } => EventKind::ResourceWarning,
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), DiagnosticsPayloadError> {
+        match self.source {
+            RuntimeCommandSourceKind::BootstrapHook if self.step.is_none() => {
+                return Err(DiagnosticsPayloadError::InvalidPayload {
+                    payload: "runtime.command.receipt",
+                    reason: "bootstrap-hook payload requires step",
+                });
+            }
+            RuntimeCommandSourceKind::MonitorEvent
+            | RuntimeCommandSourceKind::PaletteCommand
+            | RuntimeCommandSourceKind::GpuFailureHandler
+                if self.step.is_some() =>
+            {
+                return Err(DiagnosticsPayloadError::InvalidPayload {
+                    payload: "runtime.command.receipt",
+                    reason: "non-bootstrap payload must not include step",
+                });
+            }
+            _ => {}
+        }
+
+        if self.receipt.window_count == 0 {
+            return Err(DiagnosticsPayloadError::InvalidPayload {
+                payload: "runtime.command.receipt",
+                reason: "receipt.window_count must be greater than zero",
+            });
+        }
+
+        Ok(())
+    }
+}
+
 impl ShellResolutionTypedPayload {
+    pub fn from_resolution(resolution: ShellResolution) -> Self {
+        Self {
+            requested: resolution.requested.into(),
+            resolved: Some(resolution.resolved.into()),
+            fallback_applied: resolution.fallback_applied,
+            fallback_cause: resolution.fallback_cause.map(Into::into),
+            reason: Some(resolution.reason.into()),
+            error: None,
+        }
+    }
+
+    pub fn from_resolution_failure(
+        requested: IntegrationShellTarget,
+        error: ShellResolutionError,
+        fallback_cause: Option<FishBaselineFailureCause>,
+    ) -> Self {
+        Self {
+            requested: requested.into(),
+            resolved: None,
+            fallback_applied: false,
+            fallback_cause: fallback_cause.map(Into::into),
+            reason: None,
+            error: Some(error.into()),
+        }
+    }
+
     pub(crate) fn event_kind(&self) -> EventKind {
         if self.error.is_some() {
             EventKind::ShellResolutionFailed
@@ -290,10 +576,10 @@ impl ShellResolutionTypedPayload {
                     reason: "error payload must not be marked as fallback_applied",
                 });
             }
-            if self.fallback_cause.is_some() {
+            if self.resolved.is_some() {
                 return Err(DiagnosticsPayloadError::InvalidPayload {
                     payload: "shell.resolve.typed",
-                    reason: "error payload must not include fallback_cause",
+                    reason: "error payload must not include resolved target",
                 });
             }
             return Ok(());
@@ -320,5 +606,186 @@ impl ShellResolutionTypedPayload {
         }
 
         Ok(())
+    }
+}
+
+impl ShellLaunchTypedPayload {
+    pub fn from_plan(plan: &ShellLaunchPlan) -> Self {
+        Self {
+            executable: plan.executable.clone(),
+            args: plan.args.clone(),
+            profile: plan.profile.into(),
+        }
+    }
+}
+
+impl From<RenderMode> for RenderModeKind {
+    fn from(value: RenderMode) -> Self {
+        match value {
+            RenderMode::Cpu => Self::Cpu,
+            RenderMode::Gpu => Self::Gpu,
+            RenderMode::Auto => Self::Auto,
+        }
+    }
+}
+
+impl From<RenderCadencePolicy> for RenderCadencePolicyKind {
+    fn from(value: RenderCadencePolicy) -> Self {
+        match value {
+            RenderCadencePolicy::MonitorAuto => Self::MonitorAuto,
+        }
+    }
+}
+
+impl From<ThemePreset> for ThemePresetKind {
+    fn from(value: ThemePreset) -> Self {
+        match value {
+            ThemePreset::Cuberpunk => Self::Cuberpunk,
+            ThemePreset::Aurora => Self::Aurora,
+            ThemePreset::Monochrome => Self::Monochrome,
+        }
+    }
+}
+
+impl From<RuntimeProfilePreset> for RuntimeProfilePresetKind {
+    fn from(value: RuntimeProfilePreset) -> Self {
+        match value {
+            RuntimeProfilePreset::Balanced => Self::Balanced,
+            RuntimeProfilePreset::Throughput => Self::Throughput,
+            RuntimeProfilePreset::Stability => Self::Stability,
+        }
+    }
+}
+
+impl From<&SettingsState> for SettingsStateTypedPayload {
+    fn from(value: &SettingsState) -> Self {
+        Self {
+            mode: value.mode.into(),
+            shell_target: value.shell_target.into(),
+            shell_auto_init: value.shell_auto_init,
+            render_cadence_policy: value.render_cadence_policy.into(),
+            theme: value.theme.into(),
+            runtime_profile: value.runtime_profile.into(),
+            debug_mode: value.debug_mode,
+        }
+    }
+}
+
+impl From<SettingsShellTarget> for ShellTargetKind {
+    fn from(value: SettingsShellTarget) -> Self {
+        match value {
+            SettingsShellTarget::Fish => Self::Fish,
+            SettingsShellTarget::Zsh => Self::Zsh,
+            SettingsShellTarget::Auto => Self::Auto,
+        }
+    }
+}
+
+impl From<IntegrationShellTarget> for ShellTargetKind {
+    fn from(value: IntegrationShellTarget) -> Self {
+        match value {
+            IntegrationShellTarget::Fish => Self::Fish,
+            IntegrationShellTarget::Zsh => Self::Zsh,
+            IntegrationShellTarget::Auto => Self::Auto,
+        }
+    }
+}
+
+impl From<FishBaselineFailureCause> for FishBaselineFailureCauseKind {
+    fn from(value: FishBaselineFailureCause) -> Self {
+        match value {
+            FishBaselineFailureCause::FishUnavailable => Self::FishUnavailable,
+            FishBaselineFailureCause::StarshipUnavailable => Self::StarshipUnavailable,
+            FishBaselineFailureCause::FishAndStarshipUnavailable => {
+                Self::FishAndStarshipUnavailable
+            }
+        }
+    }
+}
+
+impl From<ShellResolutionReason> for ShellResolutionReasonKind {
+    fn from(value: ShellResolutionReason) -> Self {
+        match value {
+            ShellResolutionReason::FishBaselineReady => Self::FishBaselineReady,
+            ShellResolutionReason::FishRequestedFallbackToZsh => Self::FishRequestedFallbackToZsh,
+            ShellResolutionReason::AutoSelectedFishBaseline => Self::AutoSelectedFishBaseline,
+            ShellResolutionReason::AutoFallbackToZsh => Self::AutoFallbackToZsh,
+            ShellResolutionReason::ZshRequested => Self::ZshRequested,
+        }
+    }
+}
+
+impl From<ShellResolutionError> for ShellResolutionErrorKind {
+    fn from(value: ShellResolutionError) -> Self {
+        match value {
+            ShellResolutionError::FishBaselineUnavailableAndZshUnavailable => {
+                Self::FishBaselineUnavailableAndZshUnavailable
+            }
+            ShellResolutionError::ZshRequestedButUnavailable => Self::ZshRequestedButUnavailable,
+        }
+    }
+}
+
+impl From<ShellLaunchProfile> for ShellLaunchProfileKind {
+    fn from(value: ShellLaunchProfile) -> Self {
+        match value {
+            ShellLaunchProfile::FishStarshipBaseline => Self::FishStarshipBaseline,
+            ShellLaunchProfile::ZshRequested => Self::ZshRequested,
+            ShellLaunchProfile::ZshFallback => Self::ZshFallback,
+        }
+    }
+}
+
+fn settings_command_input(command: &SettingsCommand) -> String {
+    match command {
+        SettingsCommand::SetMode(mode) => format!("mode {}", render_mode_input(*mode)),
+        SettingsCommand::SetShellTarget(target) => {
+            format!("shell {}", settings_shell_input(*target))
+        }
+        SettingsCommand::SetShellAutoInit(enabled) => {
+            format!("shell auto-init {}", if *enabled { "on" } else { "off" })
+        }
+        SettingsCommand::SetRenderCadencePolicy(RenderCadencePolicy::MonitorAuto) => {
+            "render cadence monitor-auto".to_owned()
+        }
+        SettingsCommand::SetTheme(theme) => format!("theme set {}", theme_input(*theme)),
+        SettingsCommand::SetRuntimeProfile(profile) => {
+            format!("profile {}", runtime_profile_input(*profile))
+        }
+        SettingsCommand::SetDebugMode(enabled) => {
+            format!("debug {}", if *enabled { "on" } else { "off" })
+        }
+    }
+}
+
+fn render_mode_input(mode: RenderMode) -> &'static str {
+    match mode {
+        RenderMode::Cpu => "cpu",
+        RenderMode::Gpu => "gpu",
+        RenderMode::Auto => "auto",
+    }
+}
+
+fn settings_shell_input(target: SettingsShellTarget) -> &'static str {
+    match target {
+        SettingsShellTarget::Fish => "fish",
+        SettingsShellTarget::Zsh => "zsh",
+        SettingsShellTarget::Auto => "auto",
+    }
+}
+
+fn theme_input(theme: ThemePreset) -> &'static str {
+    match theme {
+        ThemePreset::Cuberpunk => "cuberpunk",
+        ThemePreset::Aurora => "aurora",
+        ThemePreset::Monochrome => "monochrome",
+    }
+}
+
+fn runtime_profile_input(profile: RuntimeProfilePreset) -> &'static str {
+    match profile {
+        RuntimeProfilePreset::Balanced => "balanced",
+        RuntimeProfilePreset::Throughput => "throughput",
+        RuntimeProfilePreset::Stability => "stability",
     }
 }

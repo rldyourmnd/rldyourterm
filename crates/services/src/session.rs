@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::error::{BoundaryClassification, BoundarySeverity, BoundaryStage, ServiceError};
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_RECOVERABLE_BOUNDARY_BUDGET: u8 = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SessionState {
     Starting,
     Running,
@@ -26,13 +28,15 @@ impl SessionState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SessionShell {
     Fish,
     Zsh,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SessionBoundary {
     StartupSpawn,
     PtyRead,
@@ -91,19 +95,22 @@ impl SessionBoundary {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "kebab-case")]
 pub enum RecoverableAction {
     RetryCurrentPath,
     SwitchShell(SessionShell),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum FatalBoundaryReason {
     BoundaryFatal,
     RecoverableBudgetExhausted,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "kebab-case")]
 pub enum SessionTransitionOutcome {
     Started {
         shell: SessionShell,
@@ -122,7 +129,7 @@ pub enum SessionTransitionOutcome {
     Stopped,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionTransition {
     pub from: SessionState,
     pub to: SessionState,

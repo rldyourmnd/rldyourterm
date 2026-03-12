@@ -6,7 +6,7 @@ use std::{io::IsTerminal, sync::Arc};
 use crate::runtime_shared::runtime_config::DEFAULT_REFRESH_RATE_MILLIHZ;
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, ValueEnum};
-use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+use rldyourterm_diagnostics::{DiagnosticsSink, EventKind, ShellDiagnosticsEmitter};
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation_platform::clipboard::PlatformClipboard;
 use rldyourterm_render_cpu::CpuRenderer;
@@ -14,10 +14,7 @@ use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, Render
 use rldyourterm_services::session::SessionState;
 use rldyourterm_services::terminal::TerminalState;
 use rldyourterm_settings::{SettingsCommand, SettingsService};
-use rldyourterm_shell_integration::{
-    ShellAvailability, ShellLaunchPlan, ShellResolution, ShellResolutionReason, ShellTarget,
-    resolve_shell,
-};
+use rldyourterm_shell_integration::{ShellAvailability, ShellTarget, plan_shell_launch_with_hook};
 use rldyourterm_ui::{
     DEFAULT_SCROLLBACK_CAP, DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ReleaseGovernance,
     SINGLE_WINDOW_BASELINE, UiBootstrapConfig, UiBootstrapHooks, UiRuntime,
@@ -176,18 +173,23 @@ fn init_tracing(level: LogLevelArg) {
 fn run(cli: Cli) -> Result<RunOutcome> {
     let render_mode: RenderMode = cli.mode.into();
     let preferred_shell: ShellTarget = cli.shell.into();
-    let selected_shell = resolve_startup_shell(preferred_shell)?;
+    let diagnostics = DiagnosticsSink::default();
+    diagnostics.emit_kind(EventKind::SessionStarted, "app bootstrap start");
+    let mut shell_diagnostics = ShellDiagnosticsEmitter::new(&diagnostics, None);
+    let launch_plan = plan_shell_launch_with_hook(
+        preferred_shell,
+        shell_availability(),
+        &mut shell_diagnostics,
+    )
+    .map_err(|err| anyhow!("failed to resolve startup shell target: {err:?}"))?;
     let refresh_rate_millihz = crate::runtime_shared::runtime_config::sanitize_refresh_rate_millihz(
         cli.refresh_rate_millihz,
     );
 
-    let diagnostics = DiagnosticsSink::default();
-    diagnostics.emit_kind(EventKind::SessionStarted, "app bootstrap start");
-
     let mut settings = SettingsService::default();
     app_harness::apply_palette_commands(&diagnostics, &mut settings, &cli.palette_command);
     let startup_settings = settings.apply(settings_command_for_mode(render_mode));
-    app_harness::emit_settings_outcome(&diagnostics, startup_settings);
+    app_harness::emit_settings_outcome(&diagnostics, &startup_settings);
 
     if harness_enabled(&cli) {
         let bootstrap_commands = app_harness::build_bootstrap_commands(&cli)?;
@@ -206,11 +208,10 @@ fn run(cli: Cli) -> Result<RunOutcome> {
         app_harness::emit_command_receipts(&diagnostics, &command_receipts);
 
         let post_hook_settings = settings.apply(settings_command_for_mode(ui.render_mode()));
-        app_harness::emit_settings_outcome(&diagnostics, post_hook_settings);
+        app_harness::emit_settings_outcome(&diagnostics, &post_hook_settings);
 
         let cpu_renderer = CpuRenderer::default();
         render_initial_frame(&ui, &cpu_renderer);
-        emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
 
         if ui.release_governance() == ReleaseGovernance::ManualOnly {
             diagnostics.emit_kind(EventKind::ResourceWarning, "manual-only release governance");
@@ -221,7 +222,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             mvp_commands = command_receipts.len(),
             mode = ?ui.render_mode(),
             state = ?ui.state(),
-            shell = ?selected_shell.resolved,
+            shell = ?launch_plan.resolution.resolved,
             cadence_millihz = ui.cadence().refresh_rate_millihz,
             windows = ui.window_count(),
             single_window_required = SINGLE_WINDOW_BASELINE,
@@ -231,15 +232,18 @@ fn run(cli: Cli) -> Result<RunOutcome> {
         );
 
         if app_harness::should_print_mvp_output(&cli) {
-            app_harness::print_mvp_output(&cli, &command_receipts, &ui, selected_shell.resolved);
+            app_harness::print_mvp_output(
+                &cli,
+                &command_receipts,
+                &ui,
+                launch_plan.resolution.resolved,
+            );
         }
 
         diagnostics.emit_kind(EventKind::SessionEnded, "app bootstrap ready");
         return Ok(RunOutcome::Harness);
     }
 
-    emit_shell_fallback_if_needed(&diagnostics, selected_shell.reason);
-    let launch_plan = ShellLaunchPlan::from_resolution(selected_shell);
     let tty_stdio_snapshot = TtyStdioSnapshot::capture();
     let tty_runtime_config = pty_runtime::TtyRuntimeConfig {
         initial_mode: render_mode,
@@ -324,11 +328,6 @@ fn tty_runtime_unavailable_reason(snapshot: TtyStdioSnapshot) -> String {
     )
 }
 
-fn resolve_startup_shell(preferred_shell: ShellTarget) -> Result<ShellResolution> {
-    resolve_shell(preferred_shell, shell_availability())
-        .map_err(|err| anyhow!("failed to resolve startup shell target: {err:?}"))
-}
-
 fn shell_availability() -> ShellAvailability {
     ShellAvailability {
         fish_available: shell_available_on_path("fish"),
@@ -350,20 +349,6 @@ fn render_initial_frame(ui: &UiRuntime, cpu_renderer: &CpuRenderer) {
                 "GPU render path selected in harness without window; initial frame intentionally skipped"
             );
         }
-    }
-}
-
-fn emit_shell_fallback_if_needed(diagnostics: &DiagnosticsSink, reason: ShellResolutionReason) {
-    if matches!(
-        reason,
-        ShellResolutionReason::FishRequestedFallbackToZsh
-            | ShellResolutionReason::AutoFallbackToZsh
-    ) {
-        warn!("fish baseline unavailable; continuing with zsh fallback");
-        diagnostics.emit_kind(
-            EventKind::ShellFallbackApplied,
-            "fish baseline unavailable; zsh fallback selected",
-        );
     }
 }
 

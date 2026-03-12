@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use super::*;
+use rldyourterm_services::render_mode::{GpuFailureKind, RenderModeTransition};
 use rldyourterm_services::session::SessionBoundary;
 
 fn test_config() -> UiBootstrapConfig {
