@@ -10,9 +10,7 @@ mod tests;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use sink::{CorrelatedDiagnosticsSink, DiagnosticsSink};
-pub use types::{
-    CorrelationId, Event, EventKind,
-};
+pub use types::{CorrelationId, Event, EventKind};
 
 fn now_timestamp_ms() -> u64 {
     let duration = SystemTime::now()
