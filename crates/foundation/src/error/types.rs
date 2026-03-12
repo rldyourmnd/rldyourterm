@@ -118,7 +118,6 @@ impl FoundationBoundary {
 pub enum PtyOperation {
     SpawnShell,
     AcquireWriterLease,
-    ReleaseWriterLease,
     Resize,
     Write,
     Read,
@@ -131,7 +130,6 @@ impl PtyOperation {
         match self {
             Self::SpawnShell => "spawn-shell",
             Self::AcquireWriterLease => "acquire-writer-lease",
-            Self::ReleaseWriterLease => "release-writer-lease",
             Self::Resize => "resize",
             Self::Write => "write",
             Self::Read => "read",
@@ -185,8 +183,6 @@ impl WindowOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowFailureCode {
-    EventLoopUnavailable,
-    MonitorUnavailable,
     InvalidWindowState,
     Unsupported,
     BoundaryFault,
@@ -195,8 +191,6 @@ pub enum WindowFailureCode {
 impl WindowFailureCode {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::EventLoopUnavailable => "event-loop-unavailable",
-            Self::MonitorUnavailable => "monitor-unavailable",
             Self::InvalidWindowState => "invalid-window-state",
             Self::Unsupported => "unsupported",
             Self::BoundaryFault => "boundary-fault",
