@@ -4,40 +4,13 @@ import json
 import pathlib
 import sys
 
+try:
+    from scripts.ci.terminal_benchmark_manifest import require_suite_manifest
+except ModuleNotFoundError:
+    from terminal_benchmark_manifest import require_suite_manifest
+
 EXPECTED_TOOL = "terminal-benchmark"
 EXPECTED_SUITE = "live-display"
-LIVE_DISPLAY_SCENARIOS = {
-    "startup-first-frame-gpu": {
-        "layer": "features/render-gpu",
-        "kind": "display-startup",
-        "backend": "gpu",
-    },
-    "startup-first-frame-cpu": {
-        "layer": "features/render-cpu",
-        "kind": "display-startup",
-        "backend": "cpu",
-    },
-    "steady-redraw-gpu": {
-        "layer": "features/render-gpu",
-        "kind": "display-frame",
-        "backend": "gpu",
-    },
-    "steady-redraw-cpu": {
-        "layer": "features/render-cpu",
-        "kind": "display-frame",
-        "backend": "cpu",
-    },
-    "resize-cycle-gpu": {
-        "layer": "features/render-gpu",
-        "kind": "display-resize",
-        "backend": "gpu",
-    },
-    "resize-cycle-cpu": {
-        "layer": "features/render-cpu",
-        "kind": "display-resize",
-        "backend": "cpu",
-    },
-}
 REQUIRED_STATS_KEYS = {
     "min_nanos",
     "median_nanos",
@@ -128,6 +101,10 @@ def main() -> int:
         fail(f"benchmark_tool must be {EXPECTED_TOOL!r}")
     if payload.get("suite") != EXPECTED_SUITE:
         fail(f"suite must be {EXPECTED_SUITE!r}")
+    try:
+        manifest_map = require_suite_manifest(payload)
+    except ValueError as exc:
+        fail(str(exc))
 
     selected_scenarios = require_list(payload, "selected_scenarios")
     if not selected_scenarios:
@@ -182,12 +159,12 @@ def main() -> int:
         scenario = entry.get("scenario")
         if not isinstance(scenario, str) or not scenario:
             fail("result scenario must be a non-empty string")
-        expected = LIVE_DISPLAY_SCENARIOS.get(scenario)
+        expected = manifest_map.get(scenario)
         if expected is None:
             fail(f"unexpected scenario {scenario!r}")
         if entry.get("layer") != expected["layer"]:
             fail(f"scenario {scenario!r} has unexpected layer {entry.get('layer')!r}")
-        if entry.get("benchmark_kind") != expected["kind"]:
+        if entry.get("benchmark_kind") != expected["benchmark_kind"]:
             fail(
                 f"scenario {scenario!r} has unexpected benchmark_kind {entry.get('benchmark_kind')!r}"
             )
@@ -264,7 +241,7 @@ def main() -> int:
             fail(f"missing required scenario {scenario!r}")
 
     if args.require_full_suite:
-        expected_names = set(LIVE_DISPLAY_SCENARIOS)
+        expected_names = set(manifest_map)
         if set(selected_scenarios) != expected_names:
             fail(
                 f"full suite mismatch: expected {sorted(expected_names)}, got {sorted(selected_scenarios)}"

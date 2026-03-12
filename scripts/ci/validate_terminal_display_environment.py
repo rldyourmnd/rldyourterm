@@ -4,7 +4,10 @@ import json
 import pathlib
 import sys
 
-from terminal_benchmark_environment import CONTROLLED_DISPLAY_CPU_SCENARIOS
+try:
+    from scripts.ci.terminal_benchmark_manifest import controlled_display_cpu_scenarios
+except ModuleNotFoundError:
+    from terminal_benchmark_manifest import controlled_display_cpu_scenarios
 
 
 def fail(message: str) -> None:
@@ -55,6 +58,10 @@ def main() -> int:
     results = payload.get("results")
     if not isinstance(results, list) or not results:
         fail("results must be a non-empty list")
+    try:
+        controlled_cpu_scenarios = controlled_display_cpu_scenarios(payload)
+    except ValueError as exc:
+        fail(str(exc))
 
     scenario_map = {}
     for entry in results:
@@ -66,7 +73,7 @@ def main() -> int:
         scenario_map[scenario] = entry
 
     if args.require_monitor_cadence:
-        available = sorted(CONTROLLED_DISPLAY_CPU_SCENARIOS & set(scenario_map))
+        available = sorted(controlled_cpu_scenarios & set(scenario_map))
         if not available:
             fail("report does not contain any CPU monitor-cadence scenarios")
         for scenario in available:
@@ -82,7 +89,7 @@ def main() -> int:
                 )
 
     if args.require_monitor_scale_factor:
-        available = sorted(CONTROLLED_DISPLAY_CPU_SCENARIOS & set(scenario_map))
+        available = sorted(controlled_cpu_scenarios & set(scenario_map))
         if not available:
             fail("report does not contain any CPU monitor scenarios")
         for scenario in available:

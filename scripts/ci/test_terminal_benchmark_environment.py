@@ -22,6 +22,38 @@ except ModuleNotFoundError:
 def make_live_display_report() -> dict:
     return {
         "suite": "live-display",
+        "suite_manifest": {
+            "schema_version": 1,
+            "scenarios": [
+                {
+                    "scenario": "startup-first-frame-cpu",
+                    "layer": "features/render-cpu",
+                    "benchmark_kind": "display-startup",
+                    "description": "startup",
+                    "primary_unit_label": "windows",
+                    "backend": "cpu",
+                    "controlled_monitor_cadence": False,
+                },
+                {
+                    "scenario": "steady-redraw-cpu",
+                    "layer": "features/render-cpu",
+                    "benchmark_kind": "display-frame",
+                    "description": "steady",
+                    "primary_unit_label": "frames",
+                    "backend": "cpu",
+                    "controlled_monitor_cadence": True,
+                },
+                {
+                    "scenario": "resize-cycle-cpu",
+                    "layer": "features/render-cpu",
+                    "benchmark_kind": "display-resize",
+                    "description": "resize",
+                    "primary_unit_label": "resizes",
+                    "backend": "cpu",
+                    "controlled_monitor_cadence": True,
+                },
+            ],
+        },
         "environment": {
             "display_server_hint": "wayland",
             "session_type": "wayland",

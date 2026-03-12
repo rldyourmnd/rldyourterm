@@ -17,6 +17,25 @@ pub enum BenchmarkReport {
     LiveDisplay(LiveDisplayBenchmarkSuiteReport),
 }
 
+pub const SUITE_MANIFEST_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SuiteManifest {
+    pub schema_version: u16,
+    pub scenarios: Vec<SuiteScenarioManifest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SuiteScenarioManifest {
+    pub scenario: &'static str,
+    pub layer: &'static str,
+    pub benchmark_kind: &'static str,
+    pub description: &'static str,
+    pub primary_unit_label: &'static str,
+    pub backend: Option<&'static str>,
+    pub controlled_monitor_cadence: bool,
+}
+
 impl BenchmarkReport {
     pub fn write_output(&self, path: &Path) -> anyhow::Result<()> {
         match self {
@@ -37,6 +56,7 @@ impl BenchmarkReport {
 pub struct BenchmarkSuiteReport {
     pub benchmark_tool: &'static str,
     pub suite: &'static str,
+    pub suite_manifest: SuiteManifest,
     pub scenario_selection: String,
     pub selected_scenarios: Vec<&'static str>,
     pub scale: &'static str,
@@ -76,6 +96,7 @@ pub struct LiveDisplayWorkloadSummary {
 pub struct LiveDisplayBenchmarkSuiteReport {
     pub benchmark_tool: &'static str,
     pub suite: &'static str,
+    pub suite_manifest: SuiteManifest,
     pub scenario_selection: String,
     pub selected_scenarios: Vec<&'static str>,
     pub scale: &'static str,

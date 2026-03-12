@@ -118,41 +118,40 @@ if [[ -n "$live_display_report_path" ]]; then
   mkdir -p "$(dirname "$live_display_report_path")"
 fi
 
-quality_gates=(
-  "cargo fmt --all -- --check"
-  "cargo check --workspace --all-targets --locked"
-  "cargo test --workspace --locked"
-  "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
-  "cargo +1.92.0 check --workspace --all-targets --locked"
-  "cargo check --manifest-path fuzz/Cargo.toml --locked"
-  "bash scripts/ci/run_terminal_benchmark_smoke.sh"
-  "bash scripts/ci/run_terminal_benchmark_full.sh $benchmark_report_path"
-  "bash scripts/ci/run_e2e_governance.sh --mode $governance_mode"
-)
+quality_gates=()
 
-if [[ -n "$live_display_mode" ]]; then
-  quality_gates+=("bash scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh $live_display_report_path")
-fi
+run_gate() {
+  local label="$1"
+  shift
+  quality_gates+=("$label")
+  "$@"
+}
+
+run_gate "cargo fmt --all -- --check" cargo fmt --all -- --check
+run_gate "cargo check --workspace --all-targets --locked" cargo check --workspace --all-targets --locked
+run_gate "cargo test --workspace --locked" cargo test --workspace --locked
+run_gate "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings" cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+run_gate "cargo +1.92.0 check --workspace --all-targets --locked" cargo +1.92.0 check --workspace --all-targets --locked
+run_gate "cargo check --manifest-path fuzz/Cargo.toml --locked" cargo check --manifest-path fuzz/Cargo.toml --locked
+run_gate "bash scripts/ci/run_terminal_benchmark_smoke.sh" bash scripts/ci/run_terminal_benchmark_smoke.sh
 if [[ -n "$benchmark_baseline_path" ]]; then
-  quality_gates+=("benchmark-thresholds headless $benchmark_baseline_path")
+  run_gate "TERMINAL_BENCHMARK_BASELINE=$benchmark_baseline_path bash scripts/ci/run_terminal_benchmark_full.sh $benchmark_report_path" \
+    env TERMINAL_BENCHMARK_BASELINE="$benchmark_baseline_path" \
+    bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report_path"
+else
+  run_gate "bash scripts/ci/run_terminal_benchmark_full.sh $benchmark_report_path" \
+    bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report_path"
 fi
-if [[ -n "$live_display_baseline_path" ]]; then
-  quality_gates+=("benchmark-thresholds live-display $live_display_baseline_path")
-fi
-
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo +1.92.0 check --workspace --all-targets --locked
-cargo check --manifest-path fuzz/Cargo.toml --locked
-bash scripts/ci/run_terminal_benchmark_smoke.sh
-TERMINAL_BENCHMARK_BASELINE="$benchmark_baseline_path" \
-  bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report_path"
-bash scripts/ci/run_e2e_governance.sh --mode "$governance_mode"
+run_gate "bash scripts/ci/run_e2e_governance.sh --mode $governance_mode" bash scripts/ci/run_e2e_governance.sh --mode "$governance_mode"
 if [[ -n "$live_display_mode" ]]; then
-  TERMINAL_DISPLAY_BENCHMARK_BASELINE="$live_display_baseline_path" \
-    bash "scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh" "$live_display_report_path"
+  if [[ -n "$live_display_baseline_path" ]]; then
+    run_gate "TERMINAL_DISPLAY_BENCHMARK_BASELINE=$live_display_baseline_path bash scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh $live_display_report_path" \
+      env TERMINAL_DISPLAY_BENCHMARK_BASELINE="$live_display_baseline_path" \
+      bash "scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh" "$live_display_report_path"
+  else
+    run_gate "bash scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh $live_display_report_path" \
+      bash "scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh" "$live_display_report_path"
+  fi
 fi
 
 python3 - "$report_path" "$benchmark_report_path" "$governance_mode" "$benchmark_baseline_path" "$live_display_mode" "$live_display_report_path" "$live_display_baseline_path" "${quality_gates[@]}" <<'PY'

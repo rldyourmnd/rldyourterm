@@ -29,7 +29,7 @@ use crate::data::Workload;
 use crate::fixtures::seeded_terminal_state;
 use crate::live_display::scenario_registry::{
     BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenario_names,
-    selected_scenarios,
+    selected_scenarios, suite_manifest,
 };
 use rldyourterm_font::GlyphCache;
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
@@ -171,6 +171,7 @@ pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
     Ok(LiveDisplayBenchmarkSuiteReport {
         benchmark_tool: "terminal-benchmark",
         suite: BENCHMARK_SUITE_NAME,
+        suite_manifest: suite_manifest(),
         scenario_selection: cli.scenario.as_str().to_owned(),
         selected_scenarios: selected_scenario_names(cli.scenario),
         scale: scale_name(cli.scale),
