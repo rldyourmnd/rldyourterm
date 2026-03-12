@@ -29,6 +29,7 @@ require_command() {
 pr_title="${JENKINS_PR_TITLE:-}"
 repo_full_name="${JENKINS_REPO_FULL_NAME:-rldyourmnd/rldyourterm}"
 pr_head_sha="${JENKINS_PR_HEAD_SHA:-}"
+pr_checkout_sha="${JENKINS_PR_CHECKOUT_SHA:-}"
 fuzz_toolchain="${JENKINS_RUST_FUZZ_TOOLCHAIN:-nightly-2026-03-11}"
 fuzz_seconds="${JENKINS_PR_FUZZ_SECONDS:-300}"
 codeql_max_extracted_with_errors="${JENKINS_CODEQL_MAX_EXTRACTED_WITH_ERRORS:-5}"
@@ -82,6 +83,12 @@ run_ci_suite() {
   fi
 
   python3 -m unittest "${unittest_modules[@]}"
+
+  cargo fmt --all -- --check
+  cargo check --workspace --all-targets --locked
+  cargo test --workspace --locked
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  cargo +1.92.0 check --workspace --all-targets --locked
 
   bash scripts/ci/run_terminal_system_suite.sh \
     "$system_suite_report" \
@@ -182,7 +189,7 @@ run_codeql_suite() {
 run_scorecard_suite() {
   local root="$1"
   local scorecard_root="$root/scorecard"
-  local commit_ref="${pr_head_sha:-HEAD}"
+  local commit_ref="${pr_checkout_sha:-${pr_head_sha:-HEAD}}"
 
   require_command scorecard
 
