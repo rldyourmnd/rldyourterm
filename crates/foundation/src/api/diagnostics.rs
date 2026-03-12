@@ -23,6 +23,7 @@ pub enum DiagnosticKind {
     SessionStarted,
     SessionEnded,
     SessionError,
+    RuntimeCommandProcessed,
     PtyError,
     RenderModeTransition,
     DisplayRefreshChanged,

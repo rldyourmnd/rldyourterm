@@ -9,12 +9,16 @@ mod tests;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use sink::{CorrelatedDiagnosticsSink, DiagnosticsRuntimeConfig, DiagnosticsSink};
+pub use sink::{
+    CorrelatedDiagnosticsSink, DiagnosticsRuntimeConfig, DiagnosticsSink, ShellDiagnosticsEmitter,
+};
 pub use types::{
     CorrelationId, DiagnosticsPayloadError, Event, EventKind, FishBaselineFailureCauseKind,
-    SettingsApplyOutcomeKind, SettingsApplyTypedPayload, ShellLaunchPayload,
-    ShellLaunchProfileKind, ShellLaunchTypedPayload, ShellResolutionErrorKind,
-    ShellResolutionReasonKind, ShellResolutionTypedPayload, ShellTargetKind,
+    RenderCadencePolicyKind, RenderModeKind, RuntimeCommandReceiptTypedPayload,
+    RuntimeCommandSourceKind, RuntimeProfilePresetKind, SettingsApplyOutcomeKind,
+    SettingsApplySourceKind, SettingsApplyTypedPayload, SettingsStateTypedPayload,
+    ShellLaunchPayload, ShellLaunchProfileKind, ShellLaunchTypedPayload, ShellResolutionErrorKind,
+    ShellResolutionReasonKind, ShellResolutionTypedPayload, ShellTargetKind, ThemePresetKind,
 };
 
 fn now_timestamp_ms() -> u64 {

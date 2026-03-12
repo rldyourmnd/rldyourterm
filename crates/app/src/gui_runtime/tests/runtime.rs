@@ -73,8 +73,9 @@ fn injected_gpu_failure_falls_back_without_forcing_exit_in_auto_mode() {
     let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
     assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
 
-    let first = dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SurfaceError, 10)
-        .expect("first gpu failure");
+    let (_, first) =
+        dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SurfaceError, 10)
+            .expect("first gpu failure");
     assert_eq!(
         first,
         GpuFailureHandling::RetryScheduled {
@@ -84,8 +85,9 @@ fn injected_gpu_failure_falls_back_without_forcing_exit_in_auto_mode() {
     );
     assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
 
-    let second = dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SubmitError, 20)
-        .expect("second gpu failure");
+    let (_, second) =
+        dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SubmitError, 20)
+            .expect("second gpu failure");
     assert_eq!(
         second,
         GpuFailureHandling::RetryScheduled {
@@ -95,7 +97,7 @@ fn injected_gpu_failure_falls_back_without_forcing_exit_in_auto_mode() {
     );
     assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
 
-    let third =
+    let (_, third) =
         dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SwapchainOutOfDate, 30)
             .expect("third gpu failure");
     assert_eq!(
@@ -112,8 +114,9 @@ fn forced_gpu_mode_reports_explicit_gpu_failure() {
     let mut ui_runtime = test_ui_runtime(RenderMode::Gpu);
     assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
 
-    let decision = dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SurfaceError, 7)
-        .expect("gpu failure decision");
+    let (_, decision) =
+        dispatch_gpu_failure_command(&mut ui_runtime, GpuFailureKind::SurfaceError, 7)
+            .expect("gpu failure decision");
     assert_eq!(decision, GpuFailureHandling::FatalForcedGpu);
     assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
 }

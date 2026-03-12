@@ -73,7 +73,7 @@ use crate::runtime_shared::terminal::{
     TerminalResponseBuffer, terminal_feed_chunks, terminal_feed_max_bytes_per_call,
 };
 use anyhow::{Context, Result, anyhow};
-use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+use rldyourterm_diagnostics::{DiagnosticsSink, EventKind, RuntimeCommandSourceKind};
 use rldyourterm_font::GlyphCache;
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
@@ -91,8 +91,8 @@ use rldyourterm_services::terminal::{
 };
 use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_ui::{
-    DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome, UiRuntime,
-    UiRuntimeCommand,
+    DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome,
+    UiCommandReceipt, UiRuntime, UiRuntimeCommand,
 };
 use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use tracing::{debug, info, trace, warn};

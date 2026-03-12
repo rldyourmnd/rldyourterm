@@ -5,13 +5,12 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 use rldyourterm_services::error::ServiceError;
-use rldyourterm_services::render_mode::{
-    ActiveRenderPath, GpuFailureKind, RenderMode, RenderModeController, RenderModeTransition,
-};
+use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode, RenderModeController};
 use rldyourterm_services::render_pacing::{RenderCadence, RenderPacingController};
-use rldyourterm_services::session::{
-    SessionBoundary, SessionController, SessionState, SessionTransition,
+pub use rldyourterm_services::runtime_protocol::{
+    UiCommandOutcome, UiCommandReceipt, UiRuntimeCommand,
 };
+use rldyourterm_services::session::{SessionController, SessionState};
 use tracing::info;
 
 pub const SINGLE_WINDOW_BASELINE: u8 = 1;
@@ -101,30 +100,6 @@ impl From<ServiceError> for UiRuntimeError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiRuntimeCommand {
-    Tick,
-    RecoverableBoundary(SessionBoundary),
-    FatalBoundary(SessionBoundary),
-    RequestStop,
-    MarkStopped,
-    SetRenderMode(RenderMode),
-    GpuFailure {
-        kind: GpuFailureKind,
-        observed_at_millis: u64,
-    },
-    GpuFramePresented,
-    ResyncCadence {
-        refresh_rate_millihz: u32,
-    },
-    ResyncCadenceAfterTransfer {
-        refresh_rate_millihz: u32,
-    },
-    AssertSingleWindow {
-        requested: u8,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UiBootstrapHooks {
     commands: Vec<UiRuntimeCommand>,
@@ -143,38 +118,6 @@ impl UiBootstrapHooks {
     pub fn commands(&self) -> &[UiRuntimeCommand] {
         &self.commands
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiCommandOutcome {
-    Noop,
-    SessionTransition(SessionTransition),
-    RenderModeTransition(RenderModeTransition),
-    CadenceResynced {
-        previous_refresh_rate_millihz: Option<u32>,
-        current_refresh_rate_millihz: Option<u32>,
-        generation: u64,
-        schedule_invalidated: bool,
-        monitor_transfer: bool,
-    },
-    GpuRetryScheduled {
-        failure_kind: GpuFailureKind,
-        failure_streak: u8,
-        retry_budget_remaining: u8,
-    },
-    SingleWindowConfirmed {
-        window_count: u8,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UiCommandReceipt {
-    pub command: UiRuntimeCommand,
-    pub outcome: UiCommandOutcome,
-    pub state: SessionState,
-    pub render_mode: RenderMode,
-    pub cadence_millihz: u32,
-    pub window_count: u8,
 }
 
 #[derive(Debug)]

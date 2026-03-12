@@ -6,11 +6,15 @@ use rldyourterm_foundation::api::diagnostics::{
     DiagnosticConfig as FoundationDiagnosticConfig, DiagnosticEvent as FoundationDiagnosticEvent,
     DiagnosticSink as FoundationDiagnosticSink,
 };
+use rldyourterm_services::runtime_protocol::UiCommandReceipt;
+use rldyourterm_settings::{SettingsApplyOutcome, SettingsPaletteApplyOutcome};
+use rldyourterm_shell_integration::{ShellDiagnosticsEvent, ShellDiagnosticsHook};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    CorrelationId, DiagnosticsPayloadError, Event, EventKind, SettingsApplyTypedPayload,
+    CorrelationId, DiagnosticsPayloadError, Event, EventKind, RuntimeCommandReceiptTypedPayload,
+    RuntimeCommandSourceKind, SettingsApplySourceKind, SettingsApplyTypedPayload,
     ShellLaunchPayload, ShellLaunchTypedPayload, ShellResolutionTypedPayload, now_timestamp_ms,
 };
 
@@ -85,6 +89,26 @@ impl DiagnosticsSink {
         )
     }
 
+    pub fn emit_settings_apply_outcome(
+        &self,
+        correlation_id: Option<CorrelationId>,
+        source: SettingsApplySourceKind,
+        outcome: &SettingsApplyOutcome,
+    ) -> Result<Event, DiagnosticsPayloadError> {
+        let payload = SettingsApplyTypedPayload::from_settings_outcome(source, outcome);
+        self.emit_settings_apply_typed(correlation_id, &payload)
+    }
+
+    pub fn emit_settings_palette_outcome(
+        &self,
+        correlation_id: Option<CorrelationId>,
+        step: u32,
+        outcome: &SettingsPaletteApplyOutcome,
+    ) -> Result<Event, DiagnosticsPayloadError> {
+        let payload = SettingsApplyTypedPayload::from_palette_outcome(step, outcome);
+        self.emit_settings_apply_typed(correlation_id, &payload)
+    }
+
     pub fn emit_shell_resolution_typed(
         &self,
         correlation_id: Option<CorrelationId>,
@@ -97,6 +121,57 @@ impl DiagnosticsSink {
             correlation_id,
             payload,
         )
+    }
+
+    pub fn emit_shell_event_typed(
+        &self,
+        correlation_id: Option<CorrelationId>,
+        event: &ShellDiagnosticsEvent,
+    ) -> Result<Event, DiagnosticsPayloadError> {
+        match event {
+            ShellDiagnosticsEvent::ShellFallbackApplied(resolution) => {
+                let payload = ShellResolutionTypedPayload::from_resolution(*resolution);
+                payload.validate()?;
+                self.emit_serialized_payload(
+                    EventKind::ShellFallbackApplied,
+                    "shell.resolve",
+                    correlation_id,
+                    &payload,
+                )
+            }
+            ShellDiagnosticsEvent::ShellResolved(resolution) => {
+                let payload = ShellResolutionTypedPayload::from_resolution(*resolution);
+                payload.validate()?;
+                self.emit_serialized_payload(
+                    EventKind::ShellResolved,
+                    "shell.resolve",
+                    correlation_id,
+                    &payload,
+                )
+            }
+            ShellDiagnosticsEvent::ShellResolutionFailed {
+                requested,
+                error,
+                fallback_cause,
+            } => {
+                let payload = ShellResolutionTypedPayload::from_resolution_failure(
+                    *requested,
+                    *error,
+                    *fallback_cause,
+                );
+                payload.validate()?;
+                self.emit_serialized_payload(
+                    EventKind::ShellResolutionFailed,
+                    "shell.resolve",
+                    correlation_id,
+                    &payload,
+                )
+            }
+            ShellDiagnosticsEvent::ShellLaunchPlanned(plan) => {
+                let payload = ShellLaunchTypedPayload::from_plan(plan);
+                self.emit_shell_launch_typed(correlation_id, &payload)
+            }
+        }
     }
 
     pub fn emit_shell_launch(
@@ -125,6 +200,31 @@ impl DiagnosticsSink {
         )
     }
 
+    pub fn emit_runtime_command_receipt_typed(
+        &self,
+        correlation_id: Option<CorrelationId>,
+        payload: &RuntimeCommandReceiptTypedPayload,
+    ) -> Result<Event, DiagnosticsPayloadError> {
+        payload.validate()?;
+        self.emit_serialized_payload(
+            payload.event_kind(),
+            "runtime.command.receipt",
+            correlation_id,
+            payload,
+        )
+    }
+
+    pub fn emit_runtime_command_receipt(
+        &self,
+        correlation_id: Option<CorrelationId>,
+        source: RuntimeCommandSourceKind,
+        step: Option<u32>,
+        receipt: &UiCommandReceipt,
+    ) -> Result<Event, DiagnosticsPayloadError> {
+        let payload = RuntimeCommandReceiptTypedPayload::from_receipt(source, step, receipt);
+        self.emit_runtime_command_receipt_typed(correlation_id, &payload)
+    }
+
     pub fn with_correlation<'a>(
         &'a self,
         correlation_id: CorrelationId,
@@ -149,6 +249,36 @@ impl FoundationDiagnosticSink for DiagnosticsSink {
 
     fn flush(&self) -> ContractResult<()> {
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ShellDiagnosticsEmitter<'a> {
+    sink: &'a DiagnosticsSink,
+    correlation_id: Option<CorrelationId>,
+}
+
+impl<'a> ShellDiagnosticsEmitter<'a> {
+    pub fn new(sink: &'a DiagnosticsSink, correlation_id: Option<CorrelationId>) -> Self {
+        Self {
+            sink,
+            correlation_id,
+        }
+    }
+}
+
+impl ShellDiagnosticsHook for ShellDiagnosticsEmitter<'_> {
+    fn on_shell_event(&mut self, event: ShellDiagnosticsEvent) {
+        if let Err(error) = self
+            .sink
+            .emit_shell_event_typed(self.correlation_id.clone(), &event)
+        {
+            tracing::warn!(
+                error = ?error,
+                ?event,
+                "failed to emit typed shell diagnostics"
+            );
+        }
     }
 }
 

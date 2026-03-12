@@ -306,6 +306,20 @@ impl GuiRuntimeApp {
                         monitor_transfer,
                         "GUI runtime re-synced cadence after monitor-affecting event"
                     );
+                    if let Err(error) = self.diagnostics.emit_runtime_command_receipt(
+                        None,
+                        RuntimeCommandSourceKind::MonitorEvent,
+                        None,
+                        &receipt,
+                    ) {
+                        warn!(
+                            monitor_event = monitor_affecting_event_token(monitor_event),
+                            sampled_refresh_rate_millihz =
+                                sampled_refresh_rate_millihz.unwrap_or(0),
+                            error = ?error,
+                            "failed to emit typed cadence resync diagnostics"
+                        );
+                    }
                 }
                 UiCommandOutcome::Noop => {}
                 other => {

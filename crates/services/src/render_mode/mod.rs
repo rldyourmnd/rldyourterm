@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub use rldyourterm_core::RenderMode;
@@ -9,7 +10,8 @@ use tracing::{info, warn};
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum GpuFailureKind {
     DeviceLost,
     OutOfMemory,
@@ -25,7 +27,8 @@ impl GpuFailureKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ActiveRenderPath {
     Cpu,
     Gpu,
@@ -40,7 +43,7 @@ impl ActiveRenderPath {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoFallbackPolicy {
     pub retry_budget: u8,
     pub failure_window: Duration,
@@ -55,7 +58,7 @@ impl Default for AutoFallbackPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutoFallbackMetadata {
     pub failure_kind: GpuFailureKind,
     pub observed_at: Duration,
@@ -64,13 +67,14 @@ pub struct AutoFallbackMetadata {
     pub failure_window: Duration,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "payload", rename_all = "kebab-case")]
 pub enum RenderTransitionReason {
     ExplicitModeSet,
     AutoGpuFallback { metadata: AutoFallbackMetadata },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderModeTransition {
     pub sequence: u64,
     pub from_mode: RenderMode,

@@ -2,15 +2,15 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use anyhow::{Context, Result, anyhow};
-use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+use rldyourterm_diagnostics::{DiagnosticsSink, RuntimeCommandSourceKind, SettingsApplySourceKind};
 use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode, RenderTransitionReason};
 use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransitionOutcome};
-use rldyourterm_settings::{SettingsApplyOutcome, SettingsPaletteApplyOutcome, SettingsService};
+use rldyourterm_settings::{SettingsApplyOutcome, SettingsService};
 use rldyourterm_shell_integration::ShellTarget;
 use rldyourterm_ui::{
     SINGLE_WINDOW_BASELINE, UiCommandOutcome, UiCommandReceipt, UiRuntime, UiRuntimeCommand,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::runtime_shared::display::{render_mode_token, session_boundary_token as boundary_token};
 use crate::{
@@ -18,27 +18,13 @@ use crate::{
     release_governance_token, shell_token, single_window_enforced_token, state_token, yes_no_token,
 };
 
-pub(crate) fn emit_settings_outcome(diagnostics: &DiagnosticsSink, outcome: SettingsApplyOutcome) {
-    match outcome {
-        SettingsApplyOutcome::Applied { current, .. } => {
-            diagnostics.emit_kind(
-                EventKind::SettingsApply,
-                format!(
-                    "settings applied mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
-                    render_mode_token(current.mode),
-                    current.shell_target,
-                    current.shell_auto_init,
-                    current.render_cadence_policy
-                ),
-            );
-        }
-        SettingsApplyOutcome::Noop { .. } => {}
-        SettingsApplyOutcome::Rejected { reason, .. } => {
-            diagnostics.emit_kind(
-                EventKind::ResourceWarning,
-                format!("settings command rejected: {reason:?}"),
-            );
-        }
+pub(crate) fn emit_settings_outcome(diagnostics: &DiagnosticsSink, outcome: &SettingsApplyOutcome) {
+    if let Err(error) = diagnostics.emit_settings_apply_outcome(
+        None,
+        SettingsApplySourceKind::RuntimeBootstrap,
+        outcome,
+    ) {
+        warn!(error = ?error, "failed to emit typed settings diagnostics");
     }
 }
 
@@ -49,46 +35,15 @@ pub(crate) fn apply_palette_commands(
 ) {
     for (index, command) in commands.iter().enumerate() {
         let outcome = settings.apply_palette_command(command);
-        match outcome {
-            SettingsPaletteApplyOutcome::Applied { input, current, .. } => {
-                diagnostics.emit_kind(
-                    EventKind::SettingsApply,
-                    format!(
-                        "palette command applied step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
-                        index + 1,
-                        input,
-                        render_mode_token(current.mode),
-                        current.shell_target,
-                        current.shell_auto_init,
-                        current.render_cadence_policy,
-                    ),
-                );
-            }
-            SettingsPaletteApplyOutcome::Noop { input, state, .. } => {
-                diagnostics.emit_kind(
-                    EventKind::SettingsApply,
-                    format!(
-                        "palette command noop step={} input={} mode={} shell_target={:?} shell_auto_init={} cadence_policy={:?}",
-                        index + 1,
-                        input,
-                        render_mode_token(state.mode),
-                        state.shell_target,
-                        state.shell_auto_init,
-                        state.render_cadence_policy,
-                    ),
-                );
-            }
-            SettingsPaletteApplyOutcome::Rejected { input, reason, .. } => {
-                diagnostics.emit_kind(
-                    EventKind::SettingsRejected,
-                    format!(
-                        "palette command rejected step={} input={} reason={:?}",
-                        index + 1,
-                        input,
-                        reason
-                    ),
-                );
-            }
+        if let Err(error) =
+            diagnostics.emit_settings_palette_outcome(None, (index + 1) as u32, &outcome)
+        {
+            warn!(
+                error = ?error,
+                step = index + 1,
+                input = %command,
+                "failed to emit typed palette settings diagnostics"
+            );
         }
     }
 }
@@ -135,55 +90,18 @@ pub(crate) fn emit_command_receipts(diagnostics: &DiagnosticsSink, receipts: &[U
             windows = receipt.window_count,
             "ui command processed"
         );
-        diagnostics.emit_kind(
-            EventKind::SettingsApply,
-            format!(
-                "ui command step={} command={} state={} mode={} cadence={} windows={}",
-                index + 1,
-                command,
-                state_token(receipt.state),
-                render_mode_token(receipt.render_mode),
-                receipt.cadence_millihz,
-                receipt.window_count
-            ),
-        );
-
-        match receipt.outcome {
-            UiCommandOutcome::RenderModeTransition(transition) => {
-                if matches!(
-                    transition.reason,
-                    RenderTransitionReason::AutoGpuFallback { .. }
-                ) {
-                    diagnostics.emit_kind(
-                        EventKind::RenderModeTransition,
-                        format!(
-                            "gpu auto-fallback applied step={} command={} mode={} state={}",
-                            index + 1,
-                            command,
-                            render_mode_token(receipt.render_mode),
-                            state_token(receipt.state),
-                        ),
-                    );
-                }
-            }
-            UiCommandOutcome::GpuRetryScheduled {
-                failure_kind,
-                failure_streak,
-                retry_budget_remaining,
-            } => {
-                diagnostics.emit_kind(
-                    EventKind::ResourceWarning,
-                    format!(
-                        "gpu retry scheduled step={} command={} kind={} streak={} remaining={}",
-                        index + 1,
-                        command,
-                        gpu_failure_kind_token(failure_kind),
-                        failure_streak,
-                        retry_budget_remaining,
-                    ),
-                );
-            }
-            _ => {}
+        if let Err(error) = diagnostics.emit_runtime_command_receipt(
+            None,
+            RuntimeCommandSourceKind::BootstrapHook,
+            Some((index + 1) as u32),
+            receipt,
+        ) {
+            warn!(
+                error = ?error,
+                step = index + 1,
+                command = %command,
+                "failed to emit typed runtime command receipt diagnostics"
+            );
         }
     }
 }

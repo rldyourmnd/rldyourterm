@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use rldyourterm_diagnostics::{CorrelationId, DiagnosticsSink, Event, EventKind};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
-use rldyourterm_ui::{UiCommandOutcome, UiRuntime, UiRuntimeCommand};
+use rldyourterm_ui::{UiCommandOutcome, UiCommandReceipt, UiRuntime, UiRuntimeCommand};
 use winit::event_loop::ControlFlow;
 
 pub(crate) const DEFERRED_GPU_INIT_RETRY_BUDGET: u8 = 3;
@@ -45,7 +45,7 @@ pub(crate) fn dispatch_gpu_failure_command(
     ui_runtime: &mut UiRuntime,
     failure_kind: GpuFailureKind,
     observed_at_millis: u64,
-) -> Result<GpuFailureHandling> {
+) -> Result<(UiCommandReceipt, GpuFailureHandling)> {
     let receipt = ui_runtime
         .handle_command(UiRuntimeCommand::GpuFailure {
             kind: failure_kind,
@@ -58,22 +58,26 @@ pub(crate) fn dispatch_gpu_failure_command(
             failure_streak,
             retry_budget_remaining,
             ..
-        } => Ok(GpuFailureHandling::RetryScheduled {
-            failure_streak,
-            retry_budget_remaining,
-        }),
-        UiCommandOutcome::RenderModeTransition(transition) => {
-            Ok(GpuFailureHandling::FallbackToCpu {
+        } => Ok((
+            receipt,
+            GpuFailureHandling::RetryScheduled {
+                failure_streak,
+                retry_budget_remaining,
+            },
+        )),
+        UiCommandOutcome::RenderModeTransition(transition) => Ok((
+            receipt,
+            GpuFailureHandling::FallbackToCpu {
                 transition_sequence: transition.sequence,
-            })
-        }
+            },
+        )),
         UiCommandOutcome::Noop
             if ui_runtime.render_mode() == RenderMode::Gpu
                 && ui_runtime.active_render_path() == ActiveRenderPath::Gpu =>
         {
-            Ok(GpuFailureHandling::FatalForcedGpu)
+            Ok((receipt, GpuFailureHandling::FatalForcedGpu))
         }
-        UiCommandOutcome::Noop => Ok(GpuFailureHandling::Ignored),
+        UiCommandOutcome::Noop => Ok((receipt, GpuFailureHandling::Ignored)),
         outcome @ (UiCommandOutcome::SessionTransition(_)
         | UiCommandOutcome::CadenceResynced { .. }
         | UiCommandOutcome::SingleWindowConfirmed { .. }) => Err(anyhow!(

@@ -4,5 +4,6 @@
 pub mod error;
 pub mod render_mode;
 pub mod render_pacing;
+pub mod runtime_protocol;
 pub mod session;
 pub mod terminal;
