@@ -38,6 +38,11 @@ class DummyHandler:
         self.responses.append(("end_headers",))
 
 
+class BrokenPipeHeadersHandler(DummyHandler):
+    def end_headers(self) -> None:
+        raise BrokenPipeError
+
+
 class RouterHelpersTest(unittest.TestCase):
     def test_build_job_path_supports_foldered_jobs(self) -> None:
         self.assertEqual(
@@ -71,6 +76,17 @@ class RouterHelpersTest(unittest.TestCase):
 
         self.assertTrue(handler.close_connection)
         self.assertIn(("status", HTTPStatus.ACCEPTED), handler.responses)
+
+    def test_status_only_response_ignores_broken_pipe(self) -> None:
+        handler = BrokenPipeHeadersHandler(BrokenPipeStream())
+
+        router.GithubWebhookRouter._status_only_response(
+            handler,
+            HTTPStatus.OK,
+        )
+
+        self.assertTrue(handler.close_connection)
+        self.assertIn(("status", HTTPStatus.OK), handler.responses)
 
 
 if __name__ == "__main__":

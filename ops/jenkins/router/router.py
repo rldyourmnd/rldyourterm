@@ -209,11 +209,25 @@ class GithubWebhookRouter(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
+    def _status_only_response(self, status: HTTPStatus) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/healthz":
             self._json_response(HTTPStatus.OK, {"status": "ok"})
             return
         self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        if self.path == "/healthz":
+            self._status_only_response(HTTPStatus.OK)
+            return
+        self._status_only_response(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/github/webhook":
