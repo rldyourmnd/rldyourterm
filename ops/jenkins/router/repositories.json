@@ -1,0 +1,27 @@
+{
+  "repositories": {
+    "rldyourmnd/rldyourterm": {
+      "description": "rldyourterm terminal runtime and governance pipeline",
+      "allowed_login": "rldyourmnd",
+      "events": {
+        "pull_request": {
+          "actions": {
+            "opened": "Rldyourterm/PR-Validation",
+            "reopened": "Rldyourterm/PR-Validation",
+            "synchronize": "Rldyourterm/PR-Validation"
+          }
+        },
+        "issue_comment": {
+          "trigger": "@jenkins",
+          "job": "Rldyourterm/PR-Validation"
+        }
+      }
+    }
+  },
+  "jenkins_jobs": {
+    "Rldyourterm/PR-Validation": {
+      "description": "Headless PR validation for rldyourterm",
+      "estimated_duration": "45-90 minutes"
+    }
+  }
+}
