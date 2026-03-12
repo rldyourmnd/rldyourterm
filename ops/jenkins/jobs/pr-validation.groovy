@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+
+def shellEscape(String value) {
+    return (value ?: '').replace("'", "'\"'\"'")
+}
+
+def githubSetCommitStatus(String repoFullName, String sha, String context, String state, String description, String targetUrl) {
+    String escapedContext = shellEscape(context)
+    String escapedState = shellEscape(state)
+    String escapedDescription = shellEscape(description)
+    String escapedTargetUrl = shellEscape(targetUrl)
+
+    sh(
+        script: """#!/usr/bin/env bash
+set -euo pipefail
+payload=\$(jq -cn \\
+  --arg state '${escapedState}' \\
+  --arg context '${escapedContext}' \\
+  --arg description '${escapedDescription}' \\
+  --arg target_url '${escapedTargetUrl}' \\
+  '{state: \$state, context: \$context, description: \$description, target_url: \$target_url}')
+curl -fsSL -X POST \\
+  -H 'Accept: application/vnd.github+json' \\
+  -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H 'X-GitHub-Api-Version: 2022-11-28' \\
+  --data "\$payload" \\
+  'https://api.github.com/repos/${repoFullName}/statuses/${sha}' >/dev/null
+"""
+    )
+}
+
+pipeline {
+    agent { label 'linux-ci' }
+
+    options {
+        disableConcurrentBuilds(abortPrevious: true)
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 120, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
+    }
+
+    parameters {
+        string(name: 'REPO_FULL_NAME', defaultValue: 'rldyourmnd/rldyourterm', trim: true)
+        string(name: 'PR_NUMBER', defaultValue: '', trim: true)
+        string(name: 'TRIGGER_EVENT', defaultValue: 'manual', trim: true)
+        string(name: 'TRIGGER_ACTION', defaultValue: '', trim: true)
+        string(name: 'TRIGGER_ACTOR', defaultValue: '', trim: true)
+        text(name: 'TRIGGER_COMMENT', defaultValue: '')
+    }
+
+    environment {
+        ALLOWED_GITHUB_LOGIN = 'rldyourmnd'
+        REPORT_ROOT = 'target/terminal-benchmark/jenkins'
+        CARGO_TERM_COLOR = 'always'
+        CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse'
+        CARGO_NET_RETRY = '5'
+        CARGO_INCREMENTAL = '0'
+        RUSTFLAGS = '-D warnings'
+    }
+
+    stages {
+        stage('Resolve PR Metadata') {
+            steps {
+                script {
+                    if (!params.PR_NUMBER?.trim()) {
+                        error('PR_NUMBER is required')
+                    }
+                }
+
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    script {
+                        def prFields = sh(
+                            returnStdout: true,
+                            script: """#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL \\
+  -H 'Accept: application/vnd.github+json' \\
+  -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H 'X-GitHub-Api-Version: 2022-11-28' \\
+  'https://api.github.com/repos/${params.REPO_FULL_NAME}/pulls/${params.PR_NUMBER}' \\
+  | jq -r '[.head.sha, .head.ref, .base.ref, .user.login, .html_url, .title] | @tsv'
+"""
+                        ).trim().split('\\t')
+
+                        env.PR_HEAD_SHA = prFields[0]
+                        env.PR_HEAD_REF = prFields[1]
+                        env.PR_BASE_REF = prFields[2]
+                        env.PR_AUTHOR_LOGIN = prFields[3]
+                        env.PR_HTML_URL = prFields[4]
+                        env.PR_TITLE = prFields[5]
+
+                        currentBuild.displayName = "#${env.BUILD_NUMBER} PR-${params.PR_NUMBER} ${env.PR_HEAD_SHA.take(7)}"
+                        currentBuild.description = "${params.TRIGGER_EVENT}:${params.TRIGGER_ACTION} by ${params.TRIGGER_ACTOR} -> ${env.PR_HTML_URL}"
+
+                        if (env.PR_AUTHOR_LOGIN != env.ALLOWED_GITHUB_LOGIN) {
+                            error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic Jenkins execution")
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Checkout PR Head') {
+            steps {
+                deleteDir()
+                sh """#!/usr/bin/env bash
+set -euo pipefail
+git init .
+git remote add origin https://github.com/${params.REPO_FULL_NAME}.git
+git fetch --depth=1 origin +refs/pull/${params.PR_NUMBER}/head:refs/remotes/origin/pr/${params.PR_NUMBER}
+git checkout --force refs/remotes/origin/pr/${params.PR_NUMBER}
+"""
+            }
+        }
+
+        stage('Run Headless Validation') {
+            steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    script {
+                        String runner = fileExists('scripts/ci/run_jenkins_pr_ci.sh') ? 'bash scripts/ci/run_jenkins_pr_ci.sh' : 'bash /opt/jenkins/support/run_pr_ci.sh'
+                        def validations = [
+                            [
+                                context: 'CI',
+                                mode: 'ci',
+                                reportRoot: "${env.REPORT_ROOT}/ci",
+                                pendingDescription: 'Jenkins CI validation is running',
+                                successDescription: 'Jenkins CI validation passed',
+                                failureDescription: 'Jenkins CI validation failed',
+                            ],
+                            [
+                                context: 'CodeQL',
+                                mode: 'codeql',
+                                reportRoot: "${env.REPORT_ROOT}/codeql",
+                                pendingDescription: 'Jenkins CodeQL analysis is running',
+                                successDescription: 'Jenkins CodeQL analysis passed',
+                                failureDescription: 'Jenkins CodeQL analysis failed',
+                            ],
+                            [
+                                context: 'Scorecard',
+                                mode: 'scorecard',
+                                reportRoot: "${env.REPORT_ROOT}/scorecard",
+                                pendingDescription: 'Jenkins Scorecard validation is running',
+                                successDescription: 'Jenkins Scorecard validation passed',
+                                failureDescription: 'Jenkins Scorecard validation failed',
+                            ],
+                        ]
+                        def failures = []
+
+                        validations.each { validation ->
+                            githubSetCommitStatus(
+                                params.REPO_FULL_NAME,
+                                env.PR_HEAD_SHA,
+                                validation.context,
+                                'pending',
+                                validation.pendingDescription,
+                                env.BUILD_URL
+                            )
+
+                            String state = 'success'
+                            String description = validation.successDescription
+
+                            try {
+                                withEnv([
+                                    "JENKINS_PR_TITLE=${env.PR_TITLE}",
+                                    "JENKINS_REPO_FULL_NAME=${params.REPO_FULL_NAME}",
+                                    "JENKINS_PR_HEAD_SHA=${env.PR_HEAD_SHA}",
+                                    "JENKINS_PR_NUMBER=${params.PR_NUMBER}",
+                                    "JENKINS_TRIGGER_EVENT=${params.TRIGGER_EVENT}",
+                                    "JENKINS_TRIGGER_ACTION=${params.TRIGGER_ACTION}",
+                                    "JENKINS_TRIGGER_ACTOR=${params.TRIGGER_ACTOR}",
+                                ]) {
+                                    sh "${runner} ${validation.mode} '${validation.reportRoot}'"
+                                }
+                            } catch (err) {
+                                state = 'failure'
+                                description = validation.failureDescription
+                                failures << validation.context
+                                echo "Validation stage ${validation.context} failed: ${err}"
+                            } finally {
+                                githubSetCommitStatus(
+                                    params.REPO_FULL_NAME,
+                                    env.PR_HEAD_SHA,
+                                    validation.context,
+                                    state,
+                                    description,
+                                    env.BUILD_URL
+                                )
+                            }
+                        }
+
+                        if (!failures.isEmpty()) {
+                            error("Validation failures: ${failures.join(', ')}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'target/terminal-benchmark/**/*.json, target/terminal-benchmark/**/*.sarif, target/terminal-benchmark/**/*.csv, target/terminal-benchmark/**/*.md, target/terminal-benchmark/**/*.env, scripts/mvp/output/**/*',
+                allowEmptyArchive: true
+            )
+        }
+    }
+}
