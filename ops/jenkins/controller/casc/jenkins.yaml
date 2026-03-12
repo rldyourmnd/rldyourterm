@@ -1,0 +1,88 @@
+jenkins:
+  systemMessage: |
+    rldyourterm CI/CD Jenkins
+    Configured via Jenkins Configuration as Code
+  remotingSecurity:
+    enabled: true
+  slaveAgentPort: 50000
+  numExecutors: 0
+  mode: EXCLUSIVE
+  scmCheckoutRetryCount: 2
+  crumbIssuer:
+    standard:
+      excludeClientIPFromCrumb: false
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: RLDYOURTERM_REPO_URL
+            value: "${RLDYOURTERM_REPO_URL}"
+          - key: RLDYOURTERM_ALLOWED_LOGIN
+            value: "${RLDYOURTERM_ALLOWED_LOGIN}"
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_USER}"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  nodes:
+    - permanent:
+        name: "${JENKINS_CI_AGENT_NAME}"
+        labelString: "linux-ci rust cargo"
+        remoteFS: "/home/jenkins/agent"
+        numExecutors: 1
+        mode: EXCLUSIVE
+        launcher:
+          inbound:
+            workDirSettings:
+              disabled: false
+              failIfWorkDirIsMissing: false
+              internalDir: "remoting"
+              workDirPath: "/home/jenkins/agent"
+
+unclassified:
+  location:
+    url: "https://${JENKINS_HOST}/"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: "github-token"
+              secret: "${GITHUB_TOKEN}"
+              description: "GitHub token for PR metadata and commit status updates"
+
+jobs:
+  - script: |
+      def repoUrl = System.getenv('RLDYOURTERM_REPO_URL') ?: 'https://github.com/rldyourmnd/rldyourterm'
+
+      folder('Rldyourterm') {
+        displayName('rldyourterm CI/CD')
+        description('Centralized Jenkins pipelines for rldyourterm.')
+      }
+
+      pipelineJob('Rldyourterm/PR-Validation') {
+        displayName('PR Validation')
+        description('Runs the headless Jenkins PR contour for rldyourterm and publishes the CI, CodeQL, and Scorecard required statuses.')
+        properties {
+          githubProjectUrl(repoUrl)
+        }
+        parameters {
+          stringParam('REPO_FULL_NAME', 'rldyourmnd/rldyourterm', 'GitHub repository in owner/name form.')
+          stringParam('PR_NUMBER', '', 'GitHub pull request number.')
+          stringParam('TRIGGER_EVENT', 'manual', 'GitHub event name that triggered the build.')
+          stringParam('TRIGGER_ACTION', '', 'GitHub event action that triggered the build.')
+          stringParam('TRIGGER_ACTOR', '', 'GitHub login that triggered the build.')
+          textParam('TRIGGER_COMMENT', '', 'Comment body for issue_comment triggers.')
+        }
+        definition {
+          cps {
+            script(new File('/opt/jenkins/jobs/pr-validation.groovy').text)
+            sandbox(true)
+          }
+        }
+      }

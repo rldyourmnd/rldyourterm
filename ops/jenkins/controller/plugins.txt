@@ -1,0 +1,14 @@
+configuration-as-code
+job-dsl
+cloudbees-folder
+git
+git-client
+github
+github-api
+workflow-aggregator
+credentials
+credentials-binding
+matrix-auth
+timestamper
+ansicolor
+pipeline-stage-view
