@@ -39,7 +39,7 @@ jobs:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
       - name: Governance policy gates (CI mode)
         run: bash scripts/ci/run_e2e_governance.sh --mode ci
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -64,7 +64,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           # Linux cache is authored by `check`; only macOS test persists its own cache.
@@ -93,7 +93,7 @@ jobs:
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-coverage-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -133,7 +133,7 @@ jobs:
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: clippy
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           # Avoid parallel cache write races; this job only restores cache.
@@ -155,7 +155,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: "false"
@@ -194,7 +194,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: ${{ env.MSRV_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-${{ runner.os }}-${{ env.MSRV_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -219,7 +219,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           # Avoid parallel cache write races; this job only restores cache.

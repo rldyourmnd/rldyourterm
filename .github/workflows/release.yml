@@ -66,7 +66,7 @@ jobs:
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
       - name: Install system dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update
@@ -141,7 +141,7 @@ jobs:
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           key: target-${{ matrix.target }}
       - name: Install system dependencies (Linux)

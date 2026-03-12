@@ -36,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5
+      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
         with:
           shared-key: soak-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
