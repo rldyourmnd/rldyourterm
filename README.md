@@ -14,12 +14,6 @@ Crash-intolerant AI terminal runtime with v1.0 priorities locked as:
 2. AI CLI compatibility (`Claude Code`, `Codex`, `Gemini CLI`),
 3. speed.
 
-## Source of truth
-
-- `AGENTS.md`
-- `CLAUDE.md`
-- `.serena/memories/`
-
 ## MVP runtime status
 
 This repository now includes a Rust workspace with an MVP bootstrap path:
