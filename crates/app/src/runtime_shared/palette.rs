@@ -374,8 +374,7 @@ mod tests {
         let mut settings = SettingsService::default();
         let initial = settings.state().clone();
 
-        let result =
-            dispatch_runtime_palette_command(&mut settings, "theme set aurora", None);
+        let result = dispatch_runtime_palette_command(&mut settings, "theme set aurora", None);
 
         assert_eq!(settings.state(), &initial);
         assert!(result.command.is_none());

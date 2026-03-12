@@ -536,7 +536,11 @@ mod tests {
         assert_eq!(settings.state().mode, RenderMode::Gpu);
         assert!(settings.state().debug_mode);
         assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| event.kind == EventKind::SettingsApply));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind == EventKind::SettingsApply)
+        );
         assert!(events[0].message.contains("mode=gpu"));
         assert!(events[1].message.contains("diagnostics=yes"));
     }
@@ -564,16 +568,15 @@ mod tests {
         let outcome = settings.apply(SettingsCommand::SetDebugMode(true));
 
         let event = match &outcome {
-            rldyourterm_settings::SettingsApplyOutcome::Applied { current, .. } => {
-                diagnostics.emit_kind(
+            rldyourterm_settings::SettingsApplyOutcome::Applied { current, .. } => diagnostics
+                .emit_kind(
                     EventKind::SettingsApply,
                     format!(
                         "settings applied mode={} diagnostics={}",
                         crate::runtime_shared::display::render_mode_token(current.mode),
                         crate::yes_no_token(current.debug_mode),
                     ),
-                )
-            }
+                ),
             _ => panic!("expected applied outcome"),
         };
 
