@@ -4,40 +4,13 @@ import json
 import pathlib
 import sys
 
+try:
+    from scripts.ci.terminal_benchmark_manifest import require_suite_manifest
+except ModuleNotFoundError:
+    from terminal_benchmark_manifest import require_suite_manifest
+
 EXPECTED_TOOL = "terminal-benchmark"
 EXPECTED_SUITE = "canonical-headless"
-CANONICAL_SCENARIOS = {
-    "core-ingest-burst": {"layer": "core", "kind": "throughput"},
-    "core-scrollback-flood": {"layer": "core", "kind": "throughput"},
-    "core-parser-throughput": {"layer": "core", "kind": "throughput"},
-    "core-grid-scroll": {"layer": "core", "kind": "throughput"},
-    "service-session-runtime-cycle": {"layer": "services/session", "kind": "control-plane"},
-    "ui-command-cycle": {"layer": "ui", "kind": "control-plane"},
-    "settings-apply-cycle": {"layer": "features/settings", "kind": "control-plane"},
-    "shell-resolution-plan": {"layer": "features/shell-integration", "kind": "control-plane"},
-    "font-cache-mixed-raster": {"layer": "features/font", "kind": "raster-prep"},
-    "gpu-surface-policy": {"layer": "features/render-gpu", "kind": "policy"},
-    "cpu-render-full": {"layer": "features/render-cpu", "kind": "raster"},
-    "cpu-render-delta": {"layer": "features/render-cpu", "kind": "raster"},
-    "cpu-cycle-ingest-render-delta": {"layer": "features/render-cpu", "kind": "raster"},
-    "cpu-pixel-raster-delta": {"layer": "features/render-cpu", "kind": "raster"},
-}
-EXPECTED_BENCHMARKED_LAYERS = {
-    "core",
-    "services/session",
-    "ui",
-    "features/settings",
-    "features/shell-integration",
-    "features/font",
-    "features/render-gpu",
-    "features/render-cpu",
-}
-EXPECTED_VERIFIED_ONLY_LAYERS = {
-    "app",
-    "foundation",
-    "foundation-platform",
-    "features/diagnostics",
-}
 
 
 def fail(message: str) -> None:
@@ -51,7 +24,7 @@ def require_list(payload: dict, key: str) -> list:
     return value
 
 
-def validate_coverage_layers(entries: list, expected_layers: set[str], label: str) -> None:
+def validate_coverage_layers(entries: list, manifest_names: set[str], label: str) -> None:
     actual_layers = set()
     for entry in entries:
         if not isinstance(entry, dict):
@@ -65,14 +38,17 @@ def validate_coverage_layers(entries: list, expected_layers: set[str], label: st
         notes = entry.get("notes")
         if not isinstance(benchmark_scenarios, list):
             fail(f"coverage entry {layer} benchmark_scenarios must be a list")
+        for scenario in benchmark_scenarios:
+            if not isinstance(scenario, str) or not scenario:
+                fail(f"coverage entry {layer} benchmark_scenarios must contain non-empty strings")
+            if scenario not in manifest_names:
+                fail(f"coverage entry {layer} references unknown scenario {scenario!r}")
         if not isinstance(validation_commands, list) or not validation_commands:
             fail(f"coverage entry {layer} validation_commands must be a non-empty list")
         if not isinstance(notes, str) or not notes:
             fail(f"coverage entry {layer} notes must be a non-empty string")
-    if actual_layers != expected_layers:
-        fail(
-            f"coverage.{label} mismatch: expected {sorted(expected_layers)}, got {sorted(actual_layers)}"
-        )
+    if len(actual_layers) != len(entries):
+        fail(f"coverage.{label} must not contain duplicate layers")
 
 
 def main() -> int:
@@ -89,6 +65,10 @@ def main() -> int:
         fail(f"benchmark_tool must be {EXPECTED_TOOL!r}")
     if payload.get("suite") != EXPECTED_SUITE:
         fail(f"suite must be {EXPECTED_SUITE!r}")
+    try:
+        manifest_map = require_suite_manifest(payload)
+    except ValueError as exc:
+        fail(str(exc))
 
     selected_scenarios = require_list(payload, "selected_scenarios")
     if not selected_scenarios:
@@ -109,12 +89,12 @@ def main() -> int:
         scenario = entry.get("scenario")
         if not isinstance(scenario, str) or not scenario:
             fail("result scenario must be a non-empty string")
-        expected = CANONICAL_SCENARIOS.get(scenario)
+        expected = manifest_map.get(scenario)
         if expected is None:
             fail(f"unexpected scenario {scenario!r}")
         if entry.get("layer") != expected["layer"]:
             fail(f"scenario {scenario!r} has unexpected layer {entry.get('layer')!r}")
-        if entry.get("benchmark_kind") != expected["kind"]:
+        if entry.get("benchmark_kind") != expected["benchmark_kind"]:
             fail(
                 f"scenario {scenario!r} has unexpected benchmark_kind {entry.get('benchmark_kind')!r}"
             )
@@ -140,7 +120,7 @@ def main() -> int:
             fail(f"missing required scenario {scenario!r}")
 
     if args.require_full_suite:
-        canonical_names = set(CANONICAL_SCENARIOS)
+        canonical_names = set(manifest_map)
         if set(selected_scenarios) != canonical_names:
             fail(
                 f"full suite mismatch: expected {sorted(canonical_names)}, got {sorted(selected_scenarios)}"
@@ -149,14 +129,15 @@ def main() -> int:
     coverage = payload.get("coverage")
     if not isinstance(coverage, dict):
         fail("coverage must be an object")
+    manifest_names = set(manifest_map)
     validate_coverage_layers(
         require_list(coverage, "benchmarked_layers"),
-        EXPECTED_BENCHMARKED_LAYERS,
+        manifest_names,
         "benchmarked_layers",
     )
     validate_coverage_layers(
         require_list(coverage, "verified_only_layers"),
-        EXPECTED_VERIFIED_ONLY_LAYERS,
+        manifest_names,
         "verified_only_layers",
     )
 

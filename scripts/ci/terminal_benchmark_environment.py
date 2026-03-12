@@ -4,11 +4,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
+try:
+    from scripts.ci.terminal_benchmark_manifest import controlled_display_cpu_scenarios
+except ModuleNotFoundError:
+    from terminal_benchmark_manifest import controlled_display_cpu_scenarios
+
 
 PORTABLE_HEADLESS_SCOPE = "portable-headless"
 LOCAL_DISPLAY_SCOPE = "local-display-session"
 CONTROLLED_DISPLAY_SCOPE = "controlled-display-session"
-CONTROLLED_DISPLAY_CPU_SCENARIOS = frozenset({"steady-redraw-cpu", "resize-cycle-cpu"})
 
 
 def _is_positive_number(value: Any) -> bool:
@@ -25,13 +29,14 @@ def infer_report_environment_scope(report: dict[str, Any]) -> str:
     results = report.get("results")
     if not isinstance(results, list) or not results:
         raise ValueError("report.results must be a non-empty list")
+    controlled_cpu_scenarios = controlled_display_cpu_scenarios(report)
 
     cpu_results = {
         entry.get("scenario"): entry
         for entry in results
         if isinstance(entry, dict)
         and entry.get("backend") == "cpu"
-        and entry.get("scenario") in CONTROLLED_DISPLAY_CPU_SCENARIOS
+        and entry.get("scenario") in controlled_cpu_scenarios
     }
     if not cpu_results:
         return LOCAL_DISPLAY_SCOPE
@@ -74,6 +79,7 @@ def extract_environment_requirements_for_baseline(report: dict[str, Any]) -> dic
     results = report.get("results")
     if not isinstance(results, list) or not results:
         raise ValueError("report.results must be a non-empty list")
+    controlled_cpu_scenarios = controlled_display_cpu_scenarios(report)
 
     cpu_scenarios: dict[str, Any] = requirements["cpu_scenarios"]
     for entry in results:
@@ -82,7 +88,7 @@ def extract_environment_requirements_for_baseline(report: dict[str, Any]) -> dic
         scenario = entry.get("scenario")
         if not isinstance(scenario, str) or not scenario:
             raise ValueError("cpu benchmark result scenario must be a non-empty string")
-        if scenario not in CONTROLLED_DISPLAY_CPU_SCENARIOS:
+        if scenario not in controlled_cpu_scenarios:
             continue
 
         pacing_mode = entry.get("pacing_mode")

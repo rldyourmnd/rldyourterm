@@ -90,19 +90,29 @@ def main() -> int:
         "cargo +1.92.0 check --workspace --all-targets --locked",
         "cargo check --manifest-path fuzz/Cargo.toml --locked",
         "bash scripts/ci/run_terminal_benchmark_smoke.sh",
-        f"bash scripts/ci/run_terminal_benchmark_full.sh {args.benchmark_report}",
-        f"bash scripts/ci/run_e2e_governance.sh --mode {args.governance_mode}",
     ]
+    if args.benchmark_baseline is not None:
+        expected_gates.append(
+            f"TERMINAL_BENCHMARK_BASELINE={args.benchmark_baseline} bash scripts/ci/run_terminal_benchmark_full.sh {args.benchmark_report}"
+        )
+    else:
+        expected_gates.append(
+            f"bash scripts/ci/run_terminal_benchmark_full.sh {args.benchmark_report}"
+        )
+    expected_gates.append(
+        f"bash scripts/ci/run_e2e_governance.sh --mode {args.governance_mode}"
+    )
     if args.live_display_mode is not None:
         if args.live_display_report is None:
             fail("live display report path argument is required when live display mode is requested")
-        expected_gates.append(
-            f"bash scripts/ci/run_terminal_display_benchmark_{args.live_display_mode}.sh {args.live_display_report}"
-        )
-    if args.benchmark_baseline is not None:
-        expected_gates.append(f"benchmark-thresholds headless {args.benchmark_baseline}")
-    if args.live_display_baseline is not None:
-        expected_gates.append(f"benchmark-thresholds live-display {args.live_display_baseline}")
+        if args.live_display_baseline is not None:
+            expected_gates.append(
+                f"TERMINAL_DISPLAY_BENCHMARK_BASELINE={args.live_display_baseline} bash scripts/ci/run_terminal_display_benchmark_{args.live_display_mode}.sh {args.live_display_report}"
+            )
+        else:
+            expected_gates.append(
+                f"bash scripts/ci/run_terminal_display_benchmark_{args.live_display_mode}.sh {args.live_display_report}"
+            )
     if quality_gates != expected_gates:
         fail(f"quality_gates mismatch: expected {expected_gates!r}, got {quality_gates!r}")
 

@@ -11,7 +11,7 @@ use crate::metrics::IterationStats;
 use crate::report::{BenchmarkSuiteReport, ScenarioReport};
 use crate::scenario_registry::{
     BENCHMARK_SUITE_NAME, descriptor, selected_scenario_names,
-    selected_scenarios as registry_selected_scenarios,
+    selected_scenarios as registry_selected_scenarios, suite_manifest,
 };
 use anyhow::Result;
 use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
@@ -56,6 +56,7 @@ pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
     Ok(BenchmarkSuiteReport {
         benchmark_tool: "terminal-benchmark",
         suite: BENCHMARK_SUITE_NAME,
+        suite_manifest: suite_manifest(),
         scenario_selection: cli.scenario.as_str().to_owned(),
         selected_scenarios: selected_scenario_names(cli.scenario),
         scale: scale_name(cli.scale),

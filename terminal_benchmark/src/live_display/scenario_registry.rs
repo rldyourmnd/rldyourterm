@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::cli::ScenarioArg;
+use crate::report::{SUITE_MANIFEST_SCHEMA_VERSION, SuiteManifest, SuiteScenarioManifest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScenarioDescriptor {
@@ -96,6 +97,32 @@ pub fn selected_scenario_names(selection: ScenarioArg) -> Vec<&'static str> {
         .into_iter()
         .map(|scenario| descriptor(scenario).name)
         .collect()
+}
+
+pub fn suite_manifest() -> SuiteManifest {
+    let scenarios = selected_scenarios(ScenarioArg::All)
+        .into_iter()
+        .map(|scenario| {
+            let descriptor = descriptor(scenario);
+            SuiteScenarioManifest {
+                scenario: descriptor.name,
+                layer: descriptor.layer,
+                benchmark_kind: descriptor.benchmark_kind,
+                description: descriptor.description,
+                primary_unit_label: descriptor.primary_unit_label,
+                backend: Some(descriptor.backend),
+                controlled_monitor_cadence: matches!(
+                    scenario,
+                    ScenarioArg::SteadyRedrawCpu | ScenarioArg::ResizeCycleCpu
+                ),
+            }
+        })
+        .collect();
+
+    SuiteManifest {
+        schema_version: SUITE_MANIFEST_SCHEMA_VERSION,
+        scenarios,
+    }
 }
 
 pub fn scenario_belongs_to_suite(scenario: ScenarioArg) -> bool {
