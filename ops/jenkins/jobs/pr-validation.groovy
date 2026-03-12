@@ -75,12 +75,22 @@ pipeline {
                             returnStdout: true,
                             script: """#!/usr/bin/env bash
 set -euo pipefail
-curl -fsSL \\
-  -H 'Accept: application/vnd.github+json' \\
-  -H "Authorization: Bearer \$GITHUB_TOKEN" \\
-  -H 'X-GitHub-Api-Version: 2022-11-28' \\
-  'https://api.github.com/repos/${params.REPO_FULL_NAME}/pulls/${params.PR_NUMBER}' \\
-  | jq -r '[.head.sha, .head.ref, .base.ref, .user.login, .html_url, .title] | @tsv'
+for attempt in \$(seq 1 15); do
+  response=\$(curl -fsSL \\
+    -H 'Accept: application/vnd.github+json' \\
+    -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+    -H 'X-GitHub-Api-Version: 2022-11-28' \\
+    'https://api.github.com/repos/${params.REPO_FULL_NAME}/pulls/${params.PR_NUMBER}')
+  mergeable=\$(jq -r '.mergeable' <<<"\$response")
+  if [[ "\$mergeable" != "null" ]]; then
+    jq -r '[.head.sha, .head.ref, .base.ref, .user.login, .html_url, .title, (.mergeable | tostring), .mergeable_state] | @tsv' <<<"\$response"
+    exit 0
+  fi
+  sleep 2
+done
+
+echo 'timed out waiting for GitHub to compute pull request mergeability' >&2
+exit 1
 """
                         ).trim().split('\\t')
 
@@ -90,6 +100,8 @@ curl -fsSL \\
                         env.PR_AUTHOR_LOGIN = prFields[3]
                         env.PR_HTML_URL = prFields[4]
                         env.PR_TITLE = prFields[5]
+                        env.PR_MERGEABLE = prFields[6]
+                        env.PR_MERGEABLE_STATE = prFields[7]
 
                         currentBuild.displayName = "#${env.BUILD_NUMBER} PR-${params.PR_NUMBER} ${env.PR_HEAD_SHA.take(7)}"
                         currentBuild.description = "${params.TRIGGER_EVENT}:${params.TRIGGER_ACTION} by ${params.TRIGGER_ACTOR} -> ${env.PR_HTML_URL}"
@@ -97,21 +109,34 @@ curl -fsSL \\
                         if (env.PR_AUTHOR_LOGIN != env.ALLOWED_GITHUB_LOGIN) {
                             error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic Jenkins execution")
                         }
+
+                        if (env.PR_MERGEABLE != 'true') {
+                            error("PR #${params.PR_NUMBER} is not mergeable (state=${env.PR_MERGEABLE_STATE})")
+                        }
                     }
                 }
             }
         }
 
-        stage('Checkout PR Head') {
+        stage('Checkout PR Merge Ref') {
             steps {
                 deleteDir()
-                sh """#!/usr/bin/env bash
+                script {
+                    sh """#!/usr/bin/env bash
 set -euo pipefail
 git init .
 git remote add origin https://github.com/${params.REPO_FULL_NAME}.git
-git fetch --depth=1 origin +refs/pull/${params.PR_NUMBER}/head:refs/remotes/origin/pr/${params.PR_NUMBER}
-git checkout --force refs/remotes/origin/pr/${params.PR_NUMBER}
+git fetch --depth=1 origin +refs/pull/${params.PR_NUMBER}/merge:refs/remotes/origin/pr/${params.PR_NUMBER}/merge
+git checkout --force refs/remotes/origin/pr/${params.PR_NUMBER}/merge
 """
+                    env.PR_CHECKOUT_SHA = sh(
+                        returnStdout: true,
+                        script: """#!/usr/bin/env bash
+set -euo pipefail
+git rev-parse HEAD
+"""
+                    ).trim()
+                }
             }
         }
 
@@ -166,6 +191,7 @@ git checkout --force refs/remotes/origin/pr/${params.PR_NUMBER}
                                     "JENKINS_PR_TITLE=${env.PR_TITLE}",
                                     "JENKINS_REPO_FULL_NAME=${params.REPO_FULL_NAME}",
                                     "JENKINS_PR_HEAD_SHA=${env.PR_HEAD_SHA}",
+                                    "JENKINS_PR_CHECKOUT_SHA=${env.PR_CHECKOUT_SHA}",
                                     "JENKINS_PR_NUMBER=${params.PR_NUMBER}",
                                     "JENKINS_TRIGGER_EVENT=${params.TRIGGER_EVENT}",
                                     "JENKINS_TRIGGER_ACTION=${params.TRIGGER_ACTION}",
