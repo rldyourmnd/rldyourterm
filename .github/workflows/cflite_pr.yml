@@ -1,16 +1,6 @@
 name: ClusterFuzzLite PR fuzzing
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "crates/**"
-      - "fuzz/**"
-      - ".clusterfuzzlite/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/cflite_pr.yml"
-      - ".github/workflows/cflite_batch.yml"
   workflow_dispatch:
 
 permissions: read-all
