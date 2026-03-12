@@ -554,11 +554,24 @@ impl LiveDisplayApp {
 
     fn configure_pacing(&mut self, window: &Window) {
         let monitor = window.current_monitor();
-        self.monitor_refresh_rate_millihz = monitor
-            .as_ref()
-            .and_then(|monitor| monitor.refresh_rate_millihertz());
-        self.monitor_name = monitor.as_ref().and_then(|monitor| monitor.name());
-        self.monitor_scale_factor = monitor.as_ref().map(|monitor| monitor.scale_factor());
+        self.apply_monitor_pacing(
+            monitor
+                .as_ref()
+                .and_then(|monitor| monitor.refresh_rate_millihertz()),
+            monitor.as_ref().and_then(|monitor| monitor.name()),
+            monitor.as_ref().map(|monitor| monitor.scale_factor()),
+        );
+    }
+
+    fn apply_monitor_pacing(
+        &mut self,
+        refresh_rate_millihz: Option<u32>,
+        monitor_name: Option<String>,
+        monitor_scale_factor: Option<f64>,
+    ) {
+        self.monitor_refresh_rate_millihz = refresh_rate_millihz;
+        self.monitor_name = monitor_name;
+        self.monitor_scale_factor = monitor_scale_factor;
         self.pacing_mode = match (
             self.backend,
             self.scenario_kind,
@@ -579,6 +592,25 @@ impl LiveDisplayApp {
 
     fn queue_redraw(&mut self) {
         self.redraw_pending = true;
+    }
+
+    fn refresh_monitor_pacing_if_needed(&mut self) {
+        let needs_monitor_retry = matches!(
+            (self.backend, self.scenario_kind, &self.pacing_mode),
+            (
+                DisplayBackend::Cpu,
+                ScenarioKind::SteadyRedraw | ScenarioKind::ResizeCycle,
+                PacingMode::EventDriven
+            )
+        ) && self.monitor_refresh_rate_millihz.is_none();
+
+        if !needs_monitor_retry {
+            return;
+        }
+
+        if let Some(window) = self.window.clone() {
+            self.configure_pacing(&window);
+        }
     }
 
     fn request_redraw_if_needed(&mut self, now: Instant) {
@@ -777,6 +809,7 @@ impl ApplicationHandler for LiveDisplayApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+        self.refresh_monitor_pacing_if_needed();
         self.request_redraw_if_needed(now);
         event_loop.set_control_flow(self.control_flow(now));
     }
@@ -800,6 +833,9 @@ impl ApplicationHandler for LiveDisplayApp {
             }
             WindowEvent::Resized(size) => {
                 self.handle_resize(size);
+                if let Some(window) = self.window.clone() {
+                    self.configure_pacing(&window);
+                }
                 if self.pending_resize_started_at.take().is_some() {
                     self.resize_cycles_observed = self.resize_cycles_observed.saturating_add(1);
                 }
@@ -948,5 +984,40 @@ mod tests {
         assert_eq!(app.resize_cycles_observed, 1);
         assert!(app.redraw_pending);
         assert!(app.pending_resize_started_at.is_none());
+    }
+
+    #[test]
+    fn apply_monitor_pacing_promotes_cpu_steady_redraw_to_monitor_cadence() {
+        let cli = Cli {
+            scenario: ScenarioArg::SteadyRedrawCpu,
+            ..sample_cli()
+        };
+        let workload = LiveDisplayWorkload::from_cli(&cli);
+        let mut app = LiveDisplayApp::new(ScenarioArg::SteadyRedrawCpu, &cli, &workload);
+
+        app.apply_monitor_pacing(Some(59_982), Some("HDMI-1".to_string()), Some(2.0));
+
+        assert_eq!(app.monitor_refresh_rate_millihz, Some(59_982));
+        assert_eq!(app.monitor_name.as_deref(), Some("HDMI-1"));
+        assert_eq!(app.monitor_scale_factor, Some(2.0));
+        assert_eq!(app.pacing_mode.token(), "monitor-cadence");
+    }
+
+    #[test]
+    fn refresh_monitor_pacing_if_needed_is_noop_once_monitor_cadence_is_known() {
+        let cli = Cli {
+            scenario: ScenarioArg::SteadyRedrawCpu,
+            ..sample_cli()
+        };
+        let workload = LiveDisplayWorkload::from_cli(&cli);
+        let mut app = LiveDisplayApp::new(ScenarioArg::SteadyRedrawCpu, &cli, &workload);
+        app.apply_monitor_pacing(Some(59_982), Some("HDMI-1".to_string()), Some(2.0));
+
+        app.refresh_monitor_pacing_if_needed();
+
+        assert_eq!(app.monitor_refresh_rate_millihz, Some(59_982));
+        assert_eq!(app.monitor_name.as_deref(), Some("HDMI-1"));
+        assert_eq!(app.monitor_scale_factor, Some(2.0));
+        assert_eq!(app.pacing_mode.token(), "monitor-cadence");
     }
 }

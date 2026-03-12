@@ -4,8 +4,7 @@ import json
 import pathlib
 import sys
 
-
-CPU_MONITOR_CADENCE_SCENARIOS = {"steady-redraw-cpu", "resize-cycle-cpu"}
+from terminal_benchmark_environment import CONTROLLED_DISPLAY_CPU_SCENARIOS
 
 
 def fail(message: str) -> None:
@@ -67,7 +66,7 @@ def main() -> int:
         scenario_map[scenario] = entry
 
     if args.require_monitor_cadence:
-        available = sorted(CPU_MONITOR_CADENCE_SCENARIOS & set(scenario_map))
+        available = sorted(CONTROLLED_DISPLAY_CPU_SCENARIOS & set(scenario_map))
         if not available:
             fail("report does not contain any CPU monitor-cadence scenarios")
         for scenario in available:
@@ -83,7 +82,7 @@ def main() -> int:
                 )
 
     if args.require_monitor_scale_factor:
-        available = sorted(CPU_MONITOR_CADENCE_SCENARIOS & set(scenario_map))
+        available = sorted(CONTROLLED_DISPLAY_CPU_SCENARIOS & set(scenario_map))
         if not available:
             fail("report does not contain any CPU monitor scenarios")
         for scenario in available:
