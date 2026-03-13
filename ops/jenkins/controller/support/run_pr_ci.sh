@@ -26,6 +26,16 @@ require_command() {
   fi
 }
 
+prepare_clean_codeql_workspace() {
+  # CodeQL must analyze the checked-out source tree, not leftover cargo and fuzz
+  # outputs from the earlier CI contour in the same Jenkins workspace.
+  if [[ -d target ]]; then
+    find target -mindepth 1 -maxdepth 1 ! -name terminal-benchmark -exec rm -rf {} +
+  fi
+
+  rm -rf fuzz/target
+}
+
 pr_title="${JENKINS_PR_TITLE:-}"
 repo_full_name="${JENKINS_REPO_FULL_NAME:-rldyourmnd/rldyourterm}"
 pr_head_sha="${JENKINS_PR_HEAD_SHA:-}"
@@ -127,6 +137,8 @@ run_codeql_suite() {
 
   require_command codeql
   require_command cargo
+
+  prepare_clean_codeql_workspace
 
   mkdir -p "$codeql_root"
   rm -rf "$database_root" "$diagnostics_root" "$sarif_path"
