@@ -2,11 +2,10 @@
 import argparse
 import json
 import pathlib
+import subprocess
 import sys
 
-from terminal_benchmark_environment import infer_report_environment_scope
-from terminal_benchmark_environment import validate_report_against_environment_requirements
-
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 DEFAULT_METRICS = {
     "max_mean_nanos_ratio": "mean_nanos",
@@ -80,28 +79,33 @@ def main() -> int:
     if report.get("scale") != baseline.get("scale"):
         fail("scale mismatch between report and baseline")
 
-    baseline_environment_scope = baseline.get("environment_scope")
-    if not isinstance(baseline_environment_scope, str) or not baseline_environment_scope:
-        fail("baseline.environment_scope must be a non-empty string")
     try:
-        report_environment_scope = infer_report_environment_scope(report)
-    except ValueError as exc:
-        fail(str(exc))
-    if report_environment_scope != baseline_environment_scope:
-        fail(
-            "environment_scope mismatch between report and baseline: "
-            f"report={report_environment_scope!r} baseline={baseline_environment_scope!r}"
+        subprocess.run(
+            [
+                "cargo",
+                "run",
+                "-q",
+                "--locked",
+                "-p",
+                "rldyourterm-terminal-benchmark",
+                "--",
+                "environment",
+                "validate-baseline",
+                "--report",
+                str(args.report),
+                "--baseline",
+                str(args.baseline),
+            ],
+            check=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
         )
-    environment_requirements = baseline.get("environment_requirements")
-    if baseline_environment_scope == "controlled-display-session" and environment_requirements is None:
-        fail("controlled-display-session baselines must declare environment_requirements")
-    if environment_requirements is not None:
-        if not isinstance(environment_requirements, dict):
-            fail("baseline.environment_requirements must be an object when present")
-        try:
-            validate_report_against_environment_requirements(report, environment_requirements)
-        except ValueError as exc:
-            fail(str(exc))
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        if detail:
+            fail(detail)
+        fail(f"environment contract validation failed with exit code {exc.returncode}")
 
     comparison_mode = baseline.get("comparison_mode")
     if comparison_mode not in {"enforced", "advisory"}:

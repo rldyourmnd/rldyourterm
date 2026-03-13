@@ -9,7 +9,7 @@ members = [
   "crates/features/font",
   "crates/features/settings",
   "crates/features/shell_integration",
-  "crates/features/diagnostics",
+  "crates/observability/diagnostics",
   "crates/ui",
   "crates/app",
   "crates/integration-tests",
@@ -60,5 +60,5 @@ rldyourterm-render-gpu = { version = "0.1.0", path = "crates/features/render_gpu
 rldyourterm-font = { version = "0.1.0", path = "crates/features/font" }
 rldyourterm-settings = { version = "0.1.0", path = "crates/features/settings" }
 rldyourterm-shell-integration = { version = "0.1.0", path = "crates/features/shell_integration" }
-rldyourterm-diagnostics = { version = "0.1.0", path = "crates/features/diagnostics" }
+rldyourterm-diagnostics = { version = "0.1.0", path = "crates/observability/diagnostics" }
 rldyourterm-ui = { version = "0.1.0", path = "crates/ui" }

@@ -36,35 +36,40 @@ fi
 
 "${threshold_args[@]}"
 
-python3 - "$calibration_report_path" "$report_path" "$baseline_path" "$comparison_mode" "$required_session_type" "$required_display_server_hint" "$runner_readiness_report_path" <<'PY'
-import json
-import pathlib
-import sys
-from datetime import datetime, timezone
-
-report_path = pathlib.Path(sys.argv[2])
-baseline_path = pathlib.Path(sys.argv[3])
-payload = {
-    "system_tool": "terminal-display-calibration",
-    "status": "pass",
-    "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-    "benchmark_report": str(report_path),
-    "baseline": str(baseline_path),
-    "comparison_mode": sys.argv[4],
-    "required_session_type": sys.argv[5] or None,
-    "required_display_server_hint": sys.argv[6] or None,
-    "runner_readiness_report": sys.argv[7] or None,
-}
-pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-PY
-
-validation_args=(
-  python3 scripts/ci/validate_terminal_display_calibration_report.py
-  "$calibration_report_path"
+emit_args=(
+  cargo run -q --locked -p rldyourterm-terminal-benchmark --
+  governance calibration emit
+  --report "$calibration_report_path"
   --benchmark-report "$report_path"
   --baseline "$baseline_path"
   --comparison-mode "$comparison_mode"
 )
+if [[ -n "$required_session_type" ]]; then
+  emit_args+=(--required-session-type "$required_session_type")
+fi
+if [[ -n "$required_display_server_hint" ]]; then
+  emit_args+=(--required-display-server-hint "$required_display_server_hint")
+fi
+if [[ -n "$runner_readiness_report_path" ]]; then
+  emit_args+=(--runner-readiness-report "$runner_readiness_report_path")
+fi
+
+"${emit_args[@]}"
+
+validation_args=(
+  cargo run -q --locked -p rldyourterm-terminal-benchmark --
+  governance calibration validate
+  --report "$calibration_report_path"
+  --benchmark-report "$report_path"
+  --baseline "$baseline_path"
+  --comparison-mode "$comparison_mode"
+)
+if [[ -n "$required_session_type" ]]; then
+  validation_args+=(--required-session-type "$required_session_type")
+fi
+if [[ -n "$required_display_server_hint" ]]; then
+  validation_args+=(--required-display-server-hint "$required_display_server_hint")
+fi
 if [[ -n "$runner_readiness_report_path" ]]; then
   validation_args+=(--runner-readiness-report "$runner_readiness_report_path")
 fi

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -80,12 +80,57 @@ pub enum OutputFormatArg {
     Json,
 }
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "terminal-benchmark",
-    version,
-    about = "Self-authored benchmark suite for canonical rldyourterm terminal paths"
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ComparisonModeArg {
+    Advisory,
+    Enforced,
+}
+
+impl ComparisonModeArg {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Advisory => "advisory",
+            Self::Enforced => "enforced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum GovernanceModeArg {
+    Ci,
+    Release,
+}
+
+impl GovernanceModeArg {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ci => "ci",
+            Self::Release => "release",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum LiveDisplayModeArg {
+    Smoke,
+    Full,
+    Controlled,
+}
+
+impl LiveDisplayModeArg {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+            Self::Full => "full",
+            Self::Controlled => "controlled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct Cli {
     #[arg(long, value_enum, default_value = "canonical-headless")]
     pub suite: SuiteArg,
@@ -109,4 +154,221 @@ pub struct Cli {
     pub format: OutputFormatArg,
     #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ValidateCli {
+    #[arg(long, value_enum)]
+    pub suite: SuiteArg,
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long = "require-scenario")]
+    pub require_scenario: Vec<String>,
+    #[arg(long)]
+    pub require_full_suite: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct EnvironmentCli {
+    #[command(subcommand)]
+    pub command: EnvironmentCommands,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct GovernanceCli {
+    #[command(subcommand)]
+    pub command: GovernanceCommands,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct EnvironmentSnapshotCli {
+    #[arg(long)]
+    pub report: PathBuf,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct EnvironmentValidateCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub require_session_type: Option<String>,
+    #[arg(long)]
+    pub require_display_server_hint: Option<String>,
+    #[arg(long)]
+    pub require_monitor_cadence: bool,
+    #[arg(long)]
+    pub require_monitor_scale_factor: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct EnvironmentValidateBaselineCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub baseline: PathBuf,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RunnerReadinessCli {
+    #[command(subcommand)]
+    pub command: RunnerReadinessCommands,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RunnerReadinessCheckCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub require_pass: bool,
+    #[arg(long)]
+    pub require_session_type: Option<String>,
+    #[arg(long)]
+    pub require_display_server_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RunnerReadinessValidateCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub require_pass: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CalibrationCli {
+    #[command(subcommand)]
+    pub command: CalibrationCommands,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SystemSuiteCli {
+    #[command(subcommand)]
+    pub command: SystemSuiteCommands,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CalibrationEmitCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub benchmark_report: PathBuf,
+    #[arg(long)]
+    pub baseline: PathBuf,
+    #[arg(long, value_enum)]
+    pub comparison_mode: ComparisonModeArg,
+    #[arg(long)]
+    pub required_session_type: Option<String>,
+    #[arg(long)]
+    pub required_display_server_hint: Option<String>,
+    #[arg(long)]
+    pub runner_readiness_report: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CalibrationValidateCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub benchmark_report: PathBuf,
+    #[arg(long)]
+    pub baseline: PathBuf,
+    #[arg(long, value_enum)]
+    pub comparison_mode: ComparisonModeArg,
+    #[arg(long)]
+    pub required_session_type: Option<String>,
+    #[arg(long)]
+    pub required_display_server_hint: Option<String>,
+    #[arg(long)]
+    pub runner_readiness_report: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SystemSuiteEmitCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub benchmark_report: PathBuf,
+    #[arg(long, value_enum)]
+    pub governance_mode: GovernanceModeArg,
+    #[arg(long)]
+    pub benchmark_baseline: Option<PathBuf>,
+    #[arg(long, value_enum)]
+    pub live_display_mode: Option<LiveDisplayModeArg>,
+    #[arg(long)]
+    pub live_display_report: Option<PathBuf>,
+    #[arg(long)]
+    pub live_display_baseline: Option<PathBuf>,
+    #[arg(long = "quality-gate")]
+    pub quality_gate: Vec<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SystemSuiteValidateCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub benchmark_report: PathBuf,
+    #[arg(long, value_enum)]
+    pub governance_mode: GovernanceModeArg,
+    #[arg(long)]
+    pub benchmark_baseline: Option<PathBuf>,
+    #[arg(long, value_enum)]
+    pub live_display_mode: Option<LiveDisplayModeArg>,
+    #[arg(long)]
+    pub live_display_report: Option<PathBuf>,
+    #[arg(long)]
+    pub live_display_baseline: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum EnvironmentCommands {
+    Snapshot(EnvironmentSnapshotCli),
+    Validate(EnvironmentValidateCli),
+    ValidateBaseline(EnvironmentValidateBaselineCli),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum RunnerReadinessCommands {
+    Check(RunnerReadinessCheckCli),
+    Validate(RunnerReadinessValidateCli),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum CalibrationCommands {
+    Emit(CalibrationEmitCli),
+    Validate(CalibrationValidateCli),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum SystemSuiteCommands {
+    Emit(SystemSuiteEmitCli),
+    Validate(SystemSuiteValidateCli),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum GovernanceCommands {
+    RunnerReadiness(RunnerReadinessCli),
+    Calibration(CalibrationCli),
+    SystemSuite(SystemSuiteCli),
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum Commands {
+    Validate(ValidateCli),
+    Environment(EnvironmentCli),
+    Governance(GovernanceCli),
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "terminal-benchmark",
+    version,
+    about = "Self-authored benchmark suite for canonical rldyourterm terminal paths",
+    propagate_version = true
+)]
+pub struct TopLevelCli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+    #[command(flatten)]
+    pub run: Cli,
 }

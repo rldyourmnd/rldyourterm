@@ -92,10 +92,10 @@ pub const fn descriptor(scenario: ScenarioArg) -> ScenarioDescriptor {
     }
 }
 
-pub fn selected_scenario_names(selection: ScenarioArg) -> Vec<&'static str> {
+pub fn selected_scenario_names(selection: ScenarioArg) -> Vec<String> {
     selected_scenarios(selection)
         .into_iter()
-        .map(|scenario| descriptor(scenario).name)
+        .map(|scenario| descriptor(scenario).name.to_owned())
         .collect()
 }
 
@@ -105,12 +105,12 @@ pub fn suite_manifest() -> SuiteManifest {
         .map(|scenario| {
             let descriptor = descriptor(scenario);
             SuiteScenarioManifest {
-                scenario: descriptor.name,
-                layer: descriptor.layer,
-                benchmark_kind: descriptor.benchmark_kind,
-                description: descriptor.description,
-                primary_unit_label: descriptor.primary_unit_label,
-                backend: Some(descriptor.backend),
+                scenario: descriptor.name.to_owned(),
+                layer: descriptor.layer.to_owned(),
+                benchmark_kind: descriptor.benchmark_kind.to_owned(),
+                description: descriptor.description.to_owned(),
+                primary_unit_label: descriptor.primary_unit_label.to_owned(),
+                backend: Some(descriptor.backend.to_owned()),
                 controlled_monitor_cadence: matches!(
                     scenario,
                     ScenarioArg::SteadyRedrawCpu | ScenarioArg::ResizeCycleCpu
@@ -122,6 +122,7 @@ pub fn suite_manifest() -> SuiteManifest {
     SuiteManifest {
         schema_version: SUITE_MANIFEST_SCHEMA_VERSION,
         scenarios,
+        coverage: None,
     }
 }
 
@@ -140,7 +141,10 @@ pub fn scenario_belongs_to_suite(scenario: ScenarioArg) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenarios};
+    use super::{
+        BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenarios,
+        suite_manifest,
+    };
     use crate::cli::ScenarioArg;
 
     #[test]
@@ -163,5 +167,13 @@ mod tests {
     fn suite_membership_rejects_headless_scenarios() {
         assert!(scenario_belongs_to_suite(ScenarioArg::StartupFirstFrameGpu));
         assert!(!scenario_belongs_to_suite(ScenarioArg::CoreIngestBurst));
+    }
+
+    #[test]
+    fn live_display_manifest_omits_headless_coverage_contract() {
+        let manifest = suite_manifest();
+
+        assert_eq!(manifest.schema_version, 2);
+        assert!(manifest.coverage.is_none());
     }
 }

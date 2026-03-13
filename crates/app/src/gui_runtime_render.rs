@@ -24,27 +24,27 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn try_deferred_gpu_init(&mut self, event_loop: &ActiveEventLoop) {
-        if self.ui_runtime.active_render_path() == ActiveRenderPath::Cpu {
-            self.render_backend.clear_deferred_gpu_init();
+        if self.control.ui_runtime.active_render_path() == ActiveRenderPath::Cpu {
+            self.control.render_backend.clear_deferred_gpu_init();
             return;
         }
-        if let Some(retry_at) = self.render_backend.deferred_retry_deadline()
+        if let Some(retry_at) = self.control.render_backend.deferred_retry_deadline()
             && Instant::now() < retry_at
         {
             return;
         }
 
-        let Some(window) = self.window.clone() else {
+        let Some(window) = self.window.window.clone() else {
             return;
         };
         let size = cap_framebuffer_extent(window.inner_size());
 
         debug!("deferred GPU init: dropping softbuffer for Wayland surface exclusivity");
-        self.surface = None;
-        self.last_softbuffer_size = None;
-        self._context = None;
+        self.window.surface = None;
+        self.window.last_softbuffer_size = None;
+        self.window.context = None;
 
-        let attempt = self.render_backend.begin_deferred_attempt();
+        let attempt = self.control.render_backend.begin_deferred_attempt();
         debug!("deferred GPU init: attempting GPU initialization");
         match self.gpu_renderer.initialize(
             window,
@@ -53,34 +53,37 @@ impl GuiRuntimeApp {
             self.gpu_cache_dir.as_deref(),
         ) {
             Ok(()) => {
-                self.render_backend.mark_deferred_ready();
+                self.control.render_backend.mark_deferred_ready();
                 info!("GPU backend initialized successfully");
                 self.terminal.grid.mark_all_dirty();
                 self.queue_redraw();
             }
             Err(error) => {
-                self.render_backend.record_deferred_failure_attempt(attempt);
-                let gpu_failure_sequence = self.render_backend.next_gpu_failure_sequence();
+                self.control
+                    .render_backend
+                    .record_deferred_failure_attempt(attempt);
+                let gpu_failure_sequence = self.control.render_backend.next_gpu_failure_sequence();
                 let remaining = DEFERRED_GPU_INIT_RETRY_BUDGET.saturating_sub(attempt);
                 warn!(
                     error = ?error,
                     attempt,
                     retry_budget = DEFERRED_GPU_INIT_RETRY_BUDGET,
                     retries_remaining = remaining,
-                    mode = ?self.ui_runtime.render_mode(),
-                    active_path = ?self.ui_runtime.active_render_path(),
+                    mode = ?self.control.ui_runtime.render_mode(),
+                    active_path = ?self.control.ui_runtime.active_render_path(),
                     "deferred GPU init failed"
                 );
 
                 if attempt < DEFERRED_GPU_INIT_RETRY_BUDGET {
                     let backoff = deferred_gpu_init_backoff(attempt);
-                    self.render_backend
+                    self.control
+                        .render_backend
                         .schedule_deferred_retry(attempt, backoff);
                     self.queue_redraw();
                     return;
                 }
 
-                self.render_backend.mark_deferred_exhausted(attempt);
+                self.control.render_backend.mark_deferred_exhausted(attempt);
                 let observed_at_millis = self
                     .started_at
                     .elapsed()
@@ -92,7 +95,7 @@ impl GuiRuntimeApp {
                     attempt, error
                 );
                 let handling = dispatch_gpu_failure_command(
-                    &mut self.ui_runtime,
+                    &mut self.control.ui_runtime,
                     failure_kind,
                     observed_at_millis,
                 );
@@ -121,8 +124,9 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn sync_deferred_gpu_init_state(&mut self) {
-        let target_path = self.ui_runtime.active_render_path();
+        let target_path = self.control.ui_runtime.active_render_path();
         match self
+            .control
             .render_backend
             .sync_with_target_path(target_path, self.gpu_renderer.is_initialized())
         {
@@ -134,8 +138,8 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn is_gpu_lane_ready(&self) -> bool {
-        self.render_backend.is_gpu_lane_ready(
-            self.ui_runtime.active_render_path(),
+        self.control.render_backend.is_gpu_lane_ready(
+            self.control.ui_runtime.active_render_path(),
             self.gpu_renderer.is_initialized(),
         )
     }
@@ -154,30 +158,26 @@ impl GuiRuntimeApp {
         // so the CPU softbuffer has no valid persisted content.
         self.terminal.grid.mark_all_dirty();
         let (diagnostics_event, fallback_notice) = emit_gpu_auto_fallback_observability(
-            &self.diagnostics,
+            &self.control.diagnostics,
             transition_sequence,
             gpu_failure_sequence,
-            self.render_backend.current_render_attempt_sequence(),
+            self.control
+                .render_backend
+                .current_render_attempt_sequence(),
             failure_kind,
             observed_at_millis,
         );
         warn!(
             transition_sequence,
             gpu_failure_sequence,
-            render_attempt_sequence = self.render_backend.current_render_attempt_sequence(),
+            render_attempt_sequence = self.control.render_backend.current_render_attempt_sequence(),
             diagnostics_event_id = %diagnostics_event.event_id,
             diagnostics_correlation = ?diagnostics_event.correlation_id,
-            mode = ?self.ui_runtime.render_mode(),
-            active_path = ?self.ui_runtime.active_render_path(),
+            mode = ?self.control.ui_runtime.render_mode(),
+            active_path = ?self.control.ui_runtime.active_render_path(),
             "{log_message}"
         );
         self.emit_runtime_notice(&fallback_notice);
-
-        if self.session_policy.state() == SessionState::Degraded
-            && let Err(error) = self.session_policy.mark_running()
-        {
-            warn!(%error, "session mark_running after CPU fallback failed");
-        }
     }
 
     fn route_gpu_failure_handling(
@@ -198,8 +198,8 @@ impl GuiRuntimeApp {
                             failure_kind = ?context.failure_kind,
                             failure_streak,
                             retry_budget_remaining,
-                            mode = ?self.ui_runtime.render_mode(),
-                            active_path = ?self.ui_runtime.active_render_path(),
+                            mode = ?self.control.ui_runtime.render_mode(),
+                            active_path = ?self.control.ui_runtime.active_render_path(),
                             "{message}"
                         );
                     } else {
@@ -208,8 +208,8 @@ impl GuiRuntimeApp {
                             failure_kind = ?context.failure_kind,
                             failure_streak,
                             retry_budget_remaining,
-                            mode = ?self.ui_runtime.render_mode(),
-                            active_path = ?self.ui_runtime.active_render_path(),
+                            mode = ?self.control.ui_runtime.render_mode(),
+                            active_path = ?self.control.ui_runtime.active_render_path(),
                             "{message}"
                         );
                     }
@@ -231,7 +231,8 @@ impl GuiRuntimeApp {
             }
             GpuFailureHandling::FatalForcedGpu => {
                 if context.emit_fatal_diagnostics {
-                    self.diagnostics
+                    self.control
+                        .diagnostics
                         .emit_kind(EventKind::SessionError, context.fatal_message.clone());
                 }
                 Err(anyhow!(context.fatal_message))
@@ -241,8 +242,8 @@ impl GuiRuntimeApp {
                     trace!(
                         gpu_failure_sequence = context.gpu_failure_sequence,
                         failure_kind = ?context.failure_kind,
-                        mode = ?self.ui_runtime.render_mode(),
-                        active_path = ?self.ui_runtime.active_render_path(),
+                        mode = ?self.control.ui_runtime.render_mode(),
+                        active_path = ?self.control.ui_runtime.active_render_path(),
                         "{message}"
                     );
                 }
@@ -252,10 +253,10 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn draw_frame(&mut self) -> Result<()> {
-        let render_attempt_sequence = self.render_backend.begin_render_attempt();
+        let render_attempt_sequence = self.control.render_backend.begin_render_attempt();
 
         trace!(
-            render_path = ?self.ui_runtime.active_render_path(),
+            render_path = ?self.control.ui_runtime.active_render_path(),
             gpu_initialized = self.gpu_renderer.is_initialized(),
             render_attempt_sequence,
             "draw_frame: begin"
@@ -269,14 +270,15 @@ impl GuiRuntimeApp {
                 &self.terminal,
                 dirty_rows,
                 scroll_count,
-                self.blink_visible,
-                self.viewport_offset,
+                self.frame.blink_visible,
+                self.interaction.viewport_offset,
                 sel_start,
                 sel_end,
             ) {
                 Ok(()) => {
                     self.terminal.grid.clear_dirty_rows();
                     let _ = self
+                        .control
                         .ui_runtime
                         .handle_command(UiRuntimeCommand::GpuFramePresented)
                         .context("failed to dispatch UiRuntimeCommand::GpuFramePresented")?;
@@ -284,7 +286,8 @@ impl GuiRuntimeApp {
                     return Ok(());
                 }
                 Err(error) => {
-                    let gpu_failure_sequence = self.render_backend.next_gpu_failure_sequence();
+                    let gpu_failure_sequence =
+                        self.control.render_backend.next_gpu_failure_sequence();
                     let observed_at_millis =
                         self.started_at
                             .elapsed()
@@ -298,17 +301,17 @@ impl GuiRuntimeApp {
                         failure_kind = ?failure_kind,
                         gpu_error = ?error,
                         observed_at_millis,
-                        mode = ?self.ui_runtime.render_mode(),
-                        active_path = ?self.ui_runtime.active_render_path(),
+                        mode = ?self.control.ui_runtime.render_mode(),
+                        active_path = ?self.control.ui_runtime.active_render_path(),
                         "gpu render failed; routing through ui runtime command path"
                     );
 
                     let (receipt, handling) = dispatch_gpu_failure_command(
-                        &mut self.ui_runtime,
+                        &mut self.control.ui_runtime,
                         failure_kind,
                         observed_at_millis,
                     )?;
-                    if let Err(error) = self.diagnostics.emit_runtime_command_receipt(
+                    if let Err(error) = self.control.diagnostics.emit_runtime_command_receipt(
                         None,
                         RuntimeCommandSourceKind::GpuFailureHandler,
                         None,
@@ -350,8 +353,8 @@ impl GuiRuntimeApp {
     }
 
     fn draw_cpu_frame(&mut self) -> Result<()> {
-        let width = self.window_size.width;
-        let height = self.window_size.height;
+        let width = self.window.window_size.width;
+        let height = self.window.window_size.height;
         if width == 0 || height == 0 {
             debug!(width, height, "draw_frame: skipped, zero window dimensions");
             return Ok(());
@@ -365,6 +368,7 @@ impl GuiRuntimeApp {
             .context("failed to initialize softbuffer for CPU render")?;
 
         let surface = self
+            .window
             .surface
             .as_mut()
             .ok_or_else(|| anyhow!("softbuffer surface is not initialized"))?;
@@ -372,11 +376,11 @@ impl GuiRuntimeApp {
         let nz_width = NonZeroU32::new(width).ok_or_else(|| anyhow!("zero width is invalid"))?;
         let nz_height = NonZeroU32::new(height).ok_or_else(|| anyhow!("zero height is invalid"))?;
         let target_size = PhysicalSize::new(width, height);
-        if self.last_softbuffer_size != Some(target_size) {
+        if self.window.last_softbuffer_size != Some(target_size) {
             surface
                 .resize(nz_width, nz_height)
                 .map_err(|error| anyhow!("failed to resize softbuffer surface: {error}"))?;
-            self.last_softbuffer_size = Some(target_size);
+            self.window.last_softbuffer_size = Some(target_size);
         }
 
         let mut buffer = surface
@@ -390,21 +394,21 @@ impl GuiRuntimeApp {
             &mut self.terminal,
             &mut self.glyph_cache,
             framebuffer_age,
-            &self.previous_cpu_damage_rows,
-            self.last_rendered_cursor_row,
-            &mut self.current_cpu_damage_rows_scratch,
-            &mut self.repaint_rows_scratch,
-            &mut self.persisted_cpu_damage_rows_scratch,
-            self.blink_visible,
-            self.viewport_offset,
+            &self.frame.previous_cpu_damage_rows,
+            self.frame.last_rendered_cursor_row,
+            &mut self.frame.current_cpu_damage_rows_scratch,
+            &mut self.frame.repaint_rows_scratch,
+            &mut self.frame.persisted_cpu_damage_rows_scratch,
+            self.frame.blink_visible,
+            self.interaction.viewport_offset,
             sel_start,
             sel_end,
         );
         std::mem::swap(
-            &mut self.previous_cpu_damage_rows,
-            &mut self.persisted_cpu_damage_rows_scratch,
+            &mut self.frame.previous_cpu_damage_rows,
+            &mut self.frame.persisted_cpu_damage_rows_scratch,
         );
-        self.last_rendered_cursor_row = Some(self.terminal.cursor.row);
+        self.frame.last_rendered_cursor_row = Some(self.terminal.cursor.row);
         buffer
             .present()
             .map_err(|error| anyhow!("failed to present GUI frame: {error}"))?;

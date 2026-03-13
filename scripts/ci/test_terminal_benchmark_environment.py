@@ -1,118 +1,59 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+import pathlib
+import tempfile
 import unittest
+from unittest import mock
 
 try:
-    from scripts.ci.terminal_benchmark_environment import (
-        CONTROLLED_DISPLAY_SCOPE,
-        LOCAL_DISPLAY_SCOPE,
-        extract_environment_requirements_for_baseline,
-        infer_report_environment_scope,
-        validate_report_against_environment_requirements,
-    )
+    from scripts.ci import validate_terminal_display_environment
 except ModuleNotFoundError:
-    from terminal_benchmark_environment import (
-        CONTROLLED_DISPLAY_SCOPE,
-        LOCAL_DISPLAY_SCOPE,
-        extract_environment_requirements_for_baseline,
-        infer_report_environment_scope,
-        validate_report_against_environment_requirements,
-    )
+    import validate_terminal_display_environment
 
 
-def make_live_display_report() -> dict:
-    return {
-        "suite": "live-display",
-        "suite_manifest": {
-            "schema_version": 1,
-            "scenarios": [
-                {
-                    "scenario": "startup-first-frame-cpu",
-                    "layer": "features/render-cpu",
-                    "benchmark_kind": "display-startup",
-                    "description": "startup",
-                    "primary_unit_label": "windows",
-                    "backend": "cpu",
-                    "controlled_monitor_cadence": False,
-                },
-                {
-                    "scenario": "steady-redraw-cpu",
-                    "layer": "features/render-cpu",
-                    "benchmark_kind": "display-frame",
-                    "description": "steady",
-                    "primary_unit_label": "frames",
-                    "backend": "cpu",
-                    "controlled_monitor_cadence": True,
-                },
-                {
-                    "scenario": "resize-cycle-cpu",
-                    "layer": "features/render-cpu",
-                    "benchmark_kind": "display-resize",
-                    "description": "resize",
-                    "primary_unit_label": "resizes",
-                    "backend": "cpu",
-                    "controlled_monitor_cadence": True,
-                },
-            ],
-        },
-        "environment": {
-            "display_server_hint": "wayland",
-            "session_type": "wayland",
-        },
-        "results": [
-            {
-                "scenario": "startup-first-frame-cpu",
-                "backend": "cpu",
-                "pacing_mode": "event-driven",
-                "monitor_refresh_rate_millihz": None,
-                "monitor_scale_factor": None,
-            },
-            {
-                "scenario": "steady-redraw-cpu",
-                "backend": "cpu",
-                "pacing_mode": "monitor-cadence",
-                "monitor_refresh_rate_millihz": 143998,
-                "monitor_scale_factor": 1.0,
-            },
-            {
-                "scenario": "resize-cycle-cpu",
-                "backend": "cpu",
-                "pacing_mode": "monitor-cadence",
-                "monitor_refresh_rate_millihz": 59982,
-                "monitor_scale_factor": 2.0,
-            },
-        ],
-    }
+class ValidateTerminalDisplayEnvironmentWrapperTests(unittest.TestCase):
+    def test_wrapper_forwards_required_environment_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = pathlib.Path(temp_dir) / "report.json"
+            report_path.write_text("{}", encoding="utf-8")
+            argv = [
+                "validate_terminal_display_environment.py",
+                str(report_path),
+                "--require-session-type",
+                "wayland",
+                "--require-display-server-hint",
+                "wayland",
+                "--require-monitor-cadence",
+                "--require-monitor-scale-factor",
+            ]
+            with mock.patch("subprocess.run") as run:
+                with mock.patch("sys.argv", argv):
+                    self.assertEqual(validate_terminal_display_environment.main(), 0)
 
-
-class TerminalBenchmarkEnvironmentTests(unittest.TestCase):
-    def test_infer_controlled_scope_ignores_first_frame_cpu_scenario(self) -> None:
-        report = make_live_display_report()
-        self.assertEqual(infer_report_environment_scope(report), CONTROLLED_DISPLAY_SCOPE)
-
-    def test_infer_local_scope_when_controlled_cpu_scenarios_are_absent(self) -> None:
-        report = make_live_display_report()
-        report["results"] = [report["results"][0]]
-
-        self.assertEqual(infer_report_environment_scope(report), LOCAL_DISPLAY_SCOPE)
-
-    def test_extract_requirements_tracks_only_controlled_cpu_scenarios(self) -> None:
-        report = make_live_display_report()
-        requirements = extract_environment_requirements_for_baseline(report)
-
-        self.assertIsNotNone(requirements)
-        self.assertEqual(requirements["display_server_hint"], "wayland")
-        self.assertEqual(requirements["session_type"], "wayland")
-        self.assertEqual(
-            sorted(requirements["cpu_scenarios"].keys()),
-            ["resize-cycle-cpu", "steady-redraw-cpu"],
-        )
-
-    def test_validate_report_against_extracted_requirements(self) -> None:
-        report = make_live_display_report()
-        requirements = extract_environment_requirements_for_baseline(report)
-
-        assert requirements is not None
-        validate_report_against_environment_requirements(report, requirements)
+            run.assert_called_once_with(
+                [
+                    "cargo",
+                    "run",
+                    "-q",
+                    "--locked",
+                    "-p",
+                    "rldyourterm-terminal-benchmark",
+                    "--",
+                    "environment",
+                    "validate",
+                    "--report",
+                    str(report_path),
+                    "--require-session-type",
+                    "wayland",
+                    "--require-display-server-hint",
+                    "wayland",
+                    "--require-monitor-cadence",
+                    "--require-monitor-scale-factor",
+                ],
+                check=True,
+                cwd=validate_terminal_display_environment.REPO_ROOT,
+            )
 
 
 if __name__ == "__main__":

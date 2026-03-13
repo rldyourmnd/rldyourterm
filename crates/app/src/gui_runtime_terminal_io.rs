@@ -5,41 +5,41 @@ use super::*;
 
 impl GuiRuntimeApp {
     pub(super) fn toggle_palette(&mut self) {
-        let decision = toggle_runtime_palette(self.palette_open);
-        self.palette_open = decision.next_open;
+        let decision = toggle_runtime_palette(self.interaction.palette_open);
+        self.interaction.palette_open = decision.next_open;
         if let Some(notice) = decision.notice {
             self.emit_runtime_notice(&notice);
         }
     }
 
     pub(super) fn handle_palette_action(&mut self, event: &WinitKeyEvent) -> Result<bool> {
-        let diagnostics_enabled = self.settings.state().debug_mode;
+        let diagnostics_enabled = self.control.settings.state().debug_mode;
         let decision = handle_runtime_palette_key_input(
-            self.palette_open,
+            self.interaction.palette_open,
             runtime_key_from_winit_borrowed(event.logical_key.as_ref()),
-            &mut self.settings,
+            &mut self.control.settings,
             RuntimePaletteView {
-                mode: self.ui_runtime.render_mode(),
+                mode: self.control.ui_runtime.render_mode(),
                 diagnostics_enabled,
-                active_render_path: Some(self.ui_runtime.active_render_path()),
+                active_render_path: Some(self.control.ui_runtime.active_render_path()),
             },
         );
         if !decision.consumed {
             return Ok(false);
         }
-        self.palette_open = decision.next_open;
+        self.interaction.palette_open = decision.next_open;
 
         if let Some(dispatch) = decision.dispatch {
             let result_line = if let Some(command) = dispatch.command {
-                if let Some(receipt) =
-                    apply_palette_settings_command_to_ui_runtime(&mut self.ui_runtime, command)?
-                    && let Err(error) = self.diagnostics.emit_runtime_command_receipt(
-                        None,
-                        RuntimeCommandSourceKind::PaletteCommand,
-                        None,
-                        &receipt,
-                    )
-                {
+                if let Some(receipt) = apply_palette_settings_command_to_ui_runtime(
+                    &mut self.control.ui_runtime,
+                    command,
+                )? && let Err(error) = self.control.diagnostics.emit_runtime_command_receipt(
+                    None,
+                    RuntimeCommandSourceKind::PaletteCommand,
+                    None,
+                    &receipt,
+                ) {
                     warn!(
                         error = ?error,
                         command = ?receipt.command,
@@ -49,9 +49,9 @@ impl GuiRuntimeApp {
                 self.sync_deferred_gpu_init_state();
                 shared_runtime_palette_status_line(
                     command,
-                    self.settings.state().mode,
-                    self.settings.state().debug_mode,
-                    Some(self.ui_runtime.active_render_path()),
+                    self.control.settings.state().mode,
+                    self.control.settings.state().debug_mode,
+                    Some(self.control.ui_runtime.active_render_path()),
                 )
             } else {
                 dispatch.message
@@ -73,14 +73,15 @@ impl GuiRuntimeApp {
             return;
         }
 
-        if is_local_shutdown_key_winit(event, self.modifiers) {
+        if is_local_shutdown_key_winit(event, self.interaction.modifiers) {
             self.emit_close_intent();
             self.exit_code.get_or_insert(0);
             event_loop.exit();
             return;
         }
 
-        if is_runtime_palette_shortcut_winit(event.logical_key.as_ref(), self.modifiers) {
+        if is_runtime_palette_shortcut_winit(event.logical_key.as_ref(), self.interaction.modifiers)
+        {
             self.toggle_palette();
             return;
         }
@@ -96,19 +97,21 @@ impl GuiRuntimeApp {
         }
 
         // Scrollback navigation: Shift+PageUp/Down adjusts viewport_offset
-        if self.modifiers.shift_key() {
+        if self.interaction.modifiers.shift_key() {
             match &event.logical_key {
                 Key::Named(NamedKey::PageUp) => {
                     let page_size = self.terminal.grid.height() as usize / 2;
                     let max_offset = self.terminal.scrollback.len();
-                    self.viewport_offset = (self.viewport_offset + page_size).min(max_offset);
+                    self.interaction.viewport_offset =
+                        (self.interaction.viewport_offset + page_size).min(max_offset);
                     self.terminal.grid.mark_all_dirty();
                     self.queue_redraw();
                     return;
                 }
                 Key::Named(NamedKey::PageDown) => {
                     let page_size = self.terminal.grid.height() as usize / 2;
-                    self.viewport_offset = self.viewport_offset.saturating_sub(page_size);
+                    self.interaction.viewport_offset =
+                        self.interaction.viewport_offset.saturating_sub(page_size);
                     self.terminal.grid.mark_all_dirty();
                     self.queue_redraw();
                     return;
@@ -117,7 +120,7 @@ impl GuiRuntimeApp {
             }
         }
 
-        if is_paste_shortcut(&event.logical_key, self.modifiers) {
+        if is_paste_shortcut(&event.logical_key, self.interaction.modifiers) {
             self.handle_clipboard_paste(event_loop);
             return;
         }
@@ -125,7 +128,7 @@ impl GuiRuntimeApp {
         // Clear text selection on any key press that produces PTY input.
         self.clear_selection();
 
-        let bytes = shared_encode_winit_key_event(event, self.modifiers);
+        let bytes = shared_encode_winit_key_event(event, self.interaction.modifiers);
 
         if let Some(ref bytes) = bytes {
             trace!(key = ?event.logical_key, len = bytes.len(), "keyboard input to PTY");
@@ -174,55 +177,170 @@ impl GuiRuntimeApp {
         self.handle_pty_boundary_failure(boundary, &detail)
     }
 
+    fn emit_pty_boundary_receipt(&self, receipt: &UiCommandReceipt) {
+        if let Err(error) = self.control.diagnostics.emit_runtime_command_receipt(
+            None,
+            RuntimeCommandSourceKind::PtyBoundary,
+            None,
+            receipt,
+        ) {
+            warn!(
+                error = ?error,
+                command = ?receipt.command,
+                "failed to emit typed PTY boundary runtime command diagnostics"
+            );
+        }
+    }
+
+    fn dispatch_pty_boundary_command(
+        &mut self,
+        command: UiRuntimeCommand,
+        error_context: &'static str,
+    ) -> Result<UiCommandReceipt> {
+        let receipt = self
+            .control
+            .ui_runtime
+            .handle_command(command)
+            .context(error_context)?;
+        self.emit_pty_boundary_receipt(&receipt);
+        Ok(receipt)
+    }
+
+    pub(super) fn force_fatal_pty_boundary_failure(
+        &mut self,
+        boundary: SessionBoundary,
+        detail: &str,
+    ) -> anyhow::Error {
+        match self.dispatch_pty_boundary_command(
+            UiRuntimeCommand::FatalBoundary(boundary),
+            "failed to dispatch UiRuntimeCommand::FatalBoundary for GUI PTY failure",
+        ) {
+            Ok(receipt) => match receipt.outcome {
+                UiCommandOutcome::SessionTransition(transition) => match transition.outcome {
+                    SessionTransitionOutcome::FatalBoundary { reason, .. } => anyhow!(
+                        "fatal PTY boundary failure boundary={} reason={} detail={detail}",
+                        session_boundary_token(boundary),
+                        fatal_boundary_reason_token(reason),
+                    ),
+                    other => anyhow!(
+                        "unexpected UI session transition while forcing fatal PTY boundary failure boundary={}: {other:?}",
+                        session_boundary_token(boundary),
+                    ),
+                },
+                other => anyhow!(
+                    "unexpected UI outcome while forcing fatal PTY boundary failure boundary={}: {other:?}",
+                    session_boundary_token(boundary),
+                ),
+            },
+            Err(error) => anyhow!(
+                "failed to force fatal PTY boundary failure boundary={}: {error}",
+                session_boundary_token(boundary),
+            ),
+        }
+    }
+
+    pub(super) fn resolve_live_pty_read_failure(
+        &mut self,
+        detail: &str,
+        poll_context: &'static str,
+    ) -> Result<PtyReadFailureResolution> {
+        match self.pty.try_wait() {
+            Ok(Some(code)) => Ok(PtyReadFailureResolution::ChildExited(code)),
+            Ok(None) => {
+                Err(self.force_fatal_pty_boundary_failure(SessionBoundary::PtyRead, detail))
+            }
+            Err(error) => {
+                let detail = format!("{poll_context}: {error}");
+                Err(self.force_fatal_pty_boundary_failure(SessionBoundary::PtyWait, &detail))
+            }
+        }
+    }
+
     pub(super) fn handle_pty_boundary_failure(
         &mut self,
         boundary: SessionBoundary,
         detail: &str,
     ) -> Result<PtyBoundaryLoopAction> {
-        match apply_pty_boundary_failure(&mut self.session_policy, boundary, detail)? {
-            BoundaryFailureOutcome::Continue {
-                attempt,
-                remaining_budget,
-            } => {
-                warn!(
-                    boundary = session_boundary_token(boundary),
+        let receipt = self.dispatch_pty_boundary_command(
+            UiRuntimeCommand::RecoverableBoundary(boundary),
+            "failed to dispatch UiRuntimeCommand::RecoverableBoundary for GUI PTY failure",
+        )?;
+
+        match receipt.outcome {
+            UiCommandOutcome::SessionTransition(transition) => match transition.outcome {
+                SessionTransitionOutcome::RecoverableBoundary {
                     attempt,
                     remaining_budget,
-                    state = self.session_policy.state().as_str(),
-                    detail,
-                    "recoverable PTY boundary failure in GUI runtime; continuing in degraded mode"
-                );
-                self.emit_runtime_notice(&runtime_boundary_notice(
-                    boundary,
-                    attempt,
-                    remaining_budget,
-                    detail,
-                ));
-                Ok(PtyBoundaryLoopAction::Continue)
-            }
-            BoundaryFailureOutcome::Fatal { reason } => Err(anyhow!(
-                "fatal PTY boundary failure boundary={} reason={} detail={detail}",
+                    ..
+                } => {
+                    warn!(
+                        boundary = session_boundary_token(boundary),
+                        attempt,
+                        remaining_budget,
+                        state = receipt.state.as_str(),
+                        detail,
+                        "recoverable PTY boundary failure in GUI runtime; continuing in degraded mode"
+                    );
+                    self.emit_runtime_notice(&runtime_boundary_notice(
+                        boundary,
+                        attempt,
+                        remaining_budget,
+                        detail,
+                    ));
+                    Ok(PtyBoundaryLoopAction::Continue)
+                }
+                SessionTransitionOutcome::FatalBoundary { reason, .. } => Err(anyhow!(
+                    "fatal PTY boundary failure boundary={} reason={} detail={detail}",
+                    session_boundary_token(boundary),
+                    fatal_boundary_reason_token(reason),
+                )),
+                other => Err(anyhow!(
+                    "unexpected UI session transition while handling PTY boundary failure boundary={}: {other:?}",
+                    session_boundary_token(boundary),
+                )),
+            },
+            other => Err(anyhow!(
+                "unexpected UI outcome while handling PTY boundary failure boundary={}: {other:?}",
                 session_boundary_token(boundary),
-                fatal_boundary_reason_token(reason),
             )),
         }
     }
 
     pub(super) fn mark_pty_boundary_recovered(&mut self, boundary: SessionBoundary) -> Result<()> {
-        let Some(recovery) =
-            shared_mark_pty_boundary_recovered(&mut self.session_policy, boundary)?
-        else {
+        if self.control.ui_runtime.state() != SessionState::Degraded {
             return Ok(());
-        };
+        }
 
-        info!(
-            boundary = session_boundary_token(boundary),
-            from = recovery.from.as_str(),
-            to = recovery.to.as_str(),
-            "PTY boundary recovered; GUI runtime returned to running state"
-        );
-        self.emit_runtime_notice(&recovery.notice);
-        Ok(())
+        let receipt = self.dispatch_pty_boundary_command(
+            UiRuntimeCommand::Tick,
+            "failed to dispatch UiRuntimeCommand::Tick for GUI PTY boundary recovery",
+        )?;
+
+        match receipt.outcome {
+            UiCommandOutcome::SessionTransition(transition) => match transition.outcome {
+                SessionTransitionOutcome::Started { .. } => {
+                    info!(
+                        boundary = session_boundary_token(boundary),
+                        from = transition.from.as_str(),
+                        to = transition.to.as_str(),
+                        "PTY boundary recovered; GUI runtime returned to running state"
+                    );
+                    self.emit_runtime_notice(&format!(
+                        "[runtime] recovered pty-boundary={}",
+                        session_boundary_token(boundary)
+                    ));
+                    Ok(())
+                }
+                other => Err(anyhow!(
+                    "unexpected UI session transition while recovering PTY boundary failure boundary={}: {other:?}",
+                    session_boundary_token(boundary),
+                )),
+            },
+            other => Err(anyhow!(
+                "unexpected UI outcome while recovering PTY boundary failure boundary={}: {other:?}",
+                session_boundary_token(boundary),
+            )),
+        }
     }
 
     pub(super) fn write_pty_chunk(

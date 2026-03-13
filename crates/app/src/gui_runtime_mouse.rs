@@ -17,10 +17,10 @@ impl GuiRuntimeApp {
         let col = col.min(grid_cols.saturating_sub(1));
         let row = row.min(grid_rows.saturating_sub(1));
 
-        let prev_col = self.mouse_cell_col;
-        let prev_row = self.mouse_cell_row;
-        self.mouse_cell_col = col;
-        self.mouse_cell_row = row;
+        let prev_col = self.interaction.mouse_cell_col;
+        let prev_row = self.interaction.mouse_cell_row;
+        self.interaction.mouse_cell_col = col;
+        self.interaction.mouse_cell_row = row;
 
         if col == prev_col && row == prev_row {
             return;
@@ -29,11 +29,11 @@ impl GuiRuntimeApp {
         // Selection drag: update selection_end while left button held and mouse mode is off.
         // Guard on MouseMode::Off prevents selection state corruption when a TUI app
         // activates mouse reporting after a selection was started.
-        if self.selection_anchor.is_some()
-            && self.mouse_buttons & 1 != 0
+        if self.interaction.selection_anchor.is_some()
+            && self.interaction.mouse_buttons & 1 != 0
             && self.terminal.mouse_mode() == MouseMode::Off
         {
-            self.selection_end = Some((row, col));
+            self.interaction.selection_end = Some((row, col));
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();
         }
@@ -41,18 +41,18 @@ impl GuiRuntimeApp {
         let mouse_mode = self.terminal.mouse_mode();
         match mouse_mode {
             MouseMode::AnyEvent => {
-                let button_code = if self.mouse_buttons == 0 {
+                let button_code = if self.interaction.mouse_buttons == 0 {
                     35 // no button, motion only
                 } else {
-                    mouse_button_code(self.mouse_buttons) + 32
+                    mouse_button_code(self.interaction.mouse_buttons) + 32
                 };
                 let encoded =
                     encode_mouse_event(self.terminal.mouse_format(), button_code, col, row, true);
                 let _ =
                     self.write_pty_payload(&encoded, event_loop, "failed to write mouse motion");
             }
-            MouseMode::ButtonTrack if self.mouse_buttons != 0 => {
-                let button_code = mouse_button_code(self.mouse_buttons) + 32;
+            MouseMode::ButtonTrack if self.interaction.mouse_buttons != 0 => {
+                let button_code = mouse_button_code(self.interaction.mouse_buttons) + 32;
                 let encoded =
                     encode_mouse_event(self.terminal.mouse_format(), button_code, col, row, true);
                 let _ = self.write_pty_payload(
@@ -80,9 +80,9 @@ impl GuiRuntimeApp {
 
         let is_press = state == ElementState::Pressed;
         if is_press {
-            self.mouse_buttons |= 1 << button_code;
+            self.interaction.mouse_buttons |= 1 << button_code;
         } else {
-            self.mouse_buttons &= !(1 << button_code);
+            self.interaction.mouse_buttons &= !(1 << button_code);
         }
 
         let mouse_mode = self.terminal.mouse_mode();
@@ -90,15 +90,16 @@ impl GuiRuntimeApp {
         // Selection: left click when mouse mode is off and live view (not scrollback).
         // Scrollback view (viewport_offset > 0) uses screen-relative coordinates that
         // don't map to grid flat-indices, so selection is disabled in that mode.
-        if button_code == 0 && mouse_mode == MouseMode::Off && self.viewport_offset == 0 {
+        if button_code == 0 && mouse_mode == MouseMode::Off && self.interaction.viewport_offset == 0
+        {
             if is_press {
-                let row = self.mouse_cell_row;
-                let col = self.mouse_cell_col;
-                self.selection_anchor = Some((row, col));
-                self.selection_end = Some((row, col));
+                let row = self.interaction.mouse_cell_row;
+                let col = self.interaction.mouse_cell_col;
+                self.interaction.selection_anchor = Some((row, col));
+                self.interaction.selection_end = Some((row, col));
                 self.terminal.grid.mark_all_dirty();
                 self.queue_redraw();
-            } else if self.selection_anchor.is_some() {
+            } else if self.interaction.selection_anchor.is_some() {
                 self.copy_selection_to_clipboard();
                 self.clear_selection();
             }
@@ -112,18 +113,18 @@ impl GuiRuntimeApp {
         let encoded = encode_mouse_event(
             self.terminal.mouse_format(),
             button_code,
-            self.mouse_cell_col,
-            self.mouse_cell_row,
+            self.interaction.mouse_cell_col,
+            self.interaction.mouse_cell_row,
             is_press,
         );
         let _ = self.write_pty_payload(&encoded, event_loop, "failed to write mouse button event");
     }
 
     fn copy_selection_to_clipboard(&mut self) {
-        let Some((ar, ac)) = self.selection_anchor else {
+        let Some((ar, ac)) = self.interaction.selection_anchor else {
             return;
         };
-        let Some((er, ec)) = self.selection_end else {
+        let Some((er, ec)) = self.interaction.selection_end else {
             return;
         };
 
@@ -210,10 +211,12 @@ impl GuiRuntimeApp {
             if lines < 0 {
                 let page_size = (-lines) as usize;
                 let max_offset = self.terminal.scrollback.len();
-                self.viewport_offset = (self.viewport_offset + page_size).min(max_offset);
+                self.interaction.viewport_offset =
+                    (self.interaction.viewport_offset + page_size).min(max_offset);
             } else {
                 let page_size = lines as usize;
-                self.viewport_offset = self.viewport_offset.saturating_sub(page_size);
+                self.interaction.viewport_offset =
+                    self.interaction.viewport_offset.saturating_sub(page_size);
             }
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();
@@ -227,8 +230,8 @@ impl GuiRuntimeApp {
             let encoded = encode_mouse_event(
                 self.terminal.mouse_format(),
                 button_code,
-                self.mouse_cell_col,
-                self.mouse_cell_row,
+                self.interaction.mouse_cell_col,
+                self.interaction.mouse_cell_row,
                 true,
             );
             let _ =

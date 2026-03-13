@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::cli::ScenarioArg;
+use crate::coverage::benchmark_coverage_summary;
 use crate::report::{SUITE_MANIFEST_SCHEMA_VERSION, SuiteManifest, SuiteScenarioManifest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,10 +170,10 @@ pub const fn descriptor(scenario: ScenarioArg) -> ScenarioDescriptor {
     }
 }
 
-pub fn selected_scenario_names(selection: ScenarioArg) -> Vec<&'static str> {
+pub fn selected_scenario_names(selection: ScenarioArg) -> Vec<String> {
     selected_scenarios(selection)
         .into_iter()
-        .map(|scenario| descriptor(scenario).name)
+        .map(|scenario| descriptor(scenario).name.to_owned())
         .collect()
 }
 
@@ -182,11 +183,11 @@ pub fn suite_manifest() -> SuiteManifest {
         .map(|scenario| {
             let descriptor = descriptor(scenario);
             SuiteScenarioManifest {
-                scenario: descriptor.name,
-                layer: descriptor.layer,
-                benchmark_kind: descriptor.benchmark_kind,
-                description: descriptor.description,
-                primary_unit_label: descriptor.primary_unit_label,
+                scenario: descriptor.name.to_owned(),
+                layer: descriptor.layer.to_owned(),
+                benchmark_kind: descriptor.benchmark_kind.to_owned(),
+                description: descriptor.description.to_owned(),
+                primary_unit_label: descriptor.primary_unit_label.to_owned(),
                 backend: None,
                 controlled_monitor_cadence: false,
             }
@@ -196,12 +197,16 @@ pub fn suite_manifest() -> SuiteManifest {
     SuiteManifest {
         schema_version: SUITE_MANIFEST_SCHEMA_VERSION,
         scenarios,
+        coverage: Some(benchmark_coverage_summary()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenarios};
+    use super::{
+        BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenarios,
+        suite_manifest,
+    };
     use crate::cli::ScenarioArg;
 
     #[test]
@@ -231,5 +236,21 @@ mod tests {
         assert!(!scenario_belongs_to_suite(
             ScenarioArg::StartupFirstFrameGpu
         ));
+    }
+
+    #[test]
+    fn suite_manifest_embeds_authoritative_coverage_contract() {
+        let manifest = suite_manifest();
+        let coverage = manifest
+            .coverage
+            .expect("canonical-headless manifest must define coverage");
+
+        assert_eq!(manifest.schema_version, 2);
+        assert!(
+            coverage
+                .verified_only_layers
+                .iter()
+                .any(|layer| layer.layer == "observability/diagnostics")
+        );
     }
 }

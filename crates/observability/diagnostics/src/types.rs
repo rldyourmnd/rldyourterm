@@ -184,6 +184,7 @@ pub enum RuntimeCommandSourceKind {
     BootstrapHook,
     MonitorEvent,
     PaletteCommand,
+    PtyBoundary,
     GpuFailureHandler,
 }
 
@@ -509,6 +510,7 @@ impl RuntimeCommandReceiptTypedPayload {
             }
             RuntimeCommandSourceKind::MonitorEvent
             | RuntimeCommandSourceKind::PaletteCommand
+            | RuntimeCommandSourceKind::PtyBoundary
             | RuntimeCommandSourceKind::GpuFailureHandler
                 if self.step.is_some() =>
             {

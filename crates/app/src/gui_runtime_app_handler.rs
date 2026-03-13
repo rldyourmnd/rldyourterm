@@ -6,7 +6,7 @@ use super::*;
 impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         debug!(
-            window_exists = self.window.is_some(),
+            window_exists = self.window.window.is_some(),
             "ApplicationHandler::resumed fired"
         );
         if let Err(error) = self.bootstrap_window(event_loop) {
@@ -49,11 +49,8 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             } => {
                 warn!(?boundary, %message, "pty boundary failure event");
                 if *boundary == SessionBoundary::PtyWait {
-                    self.fatal_error = Some(fatal_pty_boundary_failure(
-                        &mut self.session_policy,
-                        *boundary,
-                        message,
-                    ));
+                    self.fatal_error =
+                        Some(self.force_fatal_pty_boundary_failure(*boundary, message));
                     event_loop.exit();
                     return;
                 }
@@ -62,9 +59,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                         self.begin_child_exit_drain(event_loop);
                         return;
                     }
-                    match resolve_live_pty_read_failure(
-                        &*self.pty,
-                        &mut self.session_policy,
+                    match self.resolve_live_pty_read_failure(
                         message,
                         "failed to poll PTY after reader boundary failure",
                     ) {
@@ -104,14 +99,14 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if Some(window_id) != self.window_id {
+        if Some(window_id) != self.window.window_id {
             return;
         }
 
         match event {
             WindowEvent::CloseRequested => self.handle_close_requested(event_loop),
             WindowEvent::RedrawRequested => {
-                self.redraw_in_flight = false;
+                self.frame.redraw_in_flight = false;
                 if let Err(error) = self.draw_frame() {
                     self.fatal_error = Some(error);
                     event_loop.exit();
@@ -130,7 +125,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 );
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                if let Some(window) = self.window.as_ref() {
+                if let Some(window) = self.window.window.as_ref() {
                     self.apply_window_extent_change(
                         event_loop,
                         window.inner_size(),
@@ -147,7 +142,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             } if !is_synthetic => self.handle_keyboard_input(&event, event_loop),
             WindowEvent::Ime(Ime::Commit(text)) => self.handle_text_commit(&text, event_loop),
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers.state();
+                self.interaction.modifiers = modifiers.state();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position, event_loop);
@@ -182,7 +177,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.render_backend.deferred_gpu_init_pending() {
+        if self.control.render_backend.deferred_gpu_init_pending() {
             self.try_deferred_gpu_init(event_loop);
         }
         if self.fatal_error.is_some() {
@@ -219,31 +214,31 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             }
             return;
         }
-        if self.render_backend.deferred_gpu_init_pending()
-            && let Some(retry_at) = self.render_backend.deferred_retry_deadline()
+        if self.control.render_backend.deferred_gpu_init_pending()
+            && let Some(retry_at) = self.control.render_backend.deferred_retry_deadline()
             && Instant::now() < retry_at
         {
             event_loop.set_control_flow(ControlFlow::WaitUntil(retry_at));
             return;
         }
 
-        if self.last_blink_toggle.elapsed() >= BLINK_TOGGLE_INTERVAL {
-            self.blink_visible = !self.blink_visible;
-            self.last_blink_toggle = Instant::now();
+        if self.frame.last_blink_toggle.elapsed() >= BLINK_TOGGLE_INTERVAL {
+            self.frame.blink_visible = !self.frame.blink_visible;
+            self.frame.last_blink_toggle = Instant::now();
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();
         }
 
         self.request_redraw_if_needed();
-        let wait_policy = self.render_backend.wait_policy(
-            self.ui_runtime.active_render_path(),
+        let wait_policy = self.control.render_backend.wait_policy(
+            self.control.ui_runtime.active_render_path(),
             self.gpu_renderer.is_initialized(),
-            self.redraw_pending,
-            self.ui_runtime.cadence().frame_interval(),
+            self.frame.redraw_pending,
+            self.control.ui_runtime.cadence().frame_interval(),
         );
 
         trace!(
-            render_path = ?self.ui_runtime.active_render_path(),
+            render_path = ?self.control.ui_runtime.active_render_path(),
             gpu_initialized = self.gpu_renderer.is_initialized(),
             wait_policy = ?wait_policy,
             "about_to_wait: selecting control flow"
