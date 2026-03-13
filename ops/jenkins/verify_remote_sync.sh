@@ -18,27 +18,91 @@ fi
 ssh_target="$1"
 remote_root="${2:-/srv/rldyourterm-jenkins}"
 
-if ! ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "
-  [ -d '$remote_root' ] && ( [ -f '$remote_root/compose.yaml' ] || [ -f '$remote_root/docker-compose.yaml' ] || [ -f '$remote_root/docker-compose.yml' ] )
-"; then
-  echo "remote Jenkins root '$remote_root' is missing compose file or directory on $ssh_target" >&2
+required_container_names=(
+  rldyourterm-jenkins-controller
+  rldyourterm-jenkins-agent-rust-linux-ci
+  rldyourterm-jenkins-webhook-router
+)
+
+run_remote() {
+  ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "$1"
+}
+
+pick_remote_compose_file() {
+  local candidate=""
+  for candidate in compose.yaml docker-compose.yaml docker-compose.yml; do
+    if run_remote "[ -f \"${remote_root}/${candidate}\" ]"; then
+      printf '%s\n' "${remote_root}/${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! run_remote "[ -d \"${remote_root}\" ]"; then
+  echo "remote Jenkins root '$remote_root' does not exist on $ssh_target" >&2
   exit 1
 fi
 
-declare -A files_to_check=(
-  [casc]="ops/jenkins/controller/casc/jenkins.yaml /opt/jenkins/casc/jenkins.yaml"
-  [pipeline_job]="ops/jenkins/jobs/pr-validation.groovy /opt/jenkins/jobs/pr-validation.groovy"
-  [run_pr_ci]="ops/jenkins/controller/support/run_pr_ci.sh /opt/jenkins/support/run_pr_ci.sh"
+remote_compose_file="$(pick_remote_compose_file || true)"
+if [[ -z "$remote_compose_file" ]]; then
+  echo "missing compose file in remote root '$remote_root' on $ssh_target" >&2
+  exit 1
+fi
+
+remote_container_names="$(run_remote "awk '/^[[:space:]]*container_name:/ {print \$2}' \"${remote_compose_file}\"")"
+for required_container in "${required_container_names[@]}"; do
+  if ! grep -Fxq "$required_container" <<<"$remote_container_names"; then
+    echo "remote root '$remote_root' is not the rldyourterm Jenkins stack (expected container '$required_container' in ${remote_compose_file})" >&2
+    exit 1
+  fi
+done
+
+declare -A local_file_for_key=(
+  [casc]="ops/jenkins/controller/casc/jenkins.yaml"
+  [pipeline_job]="ops/jenkins/jobs/pr-validation.groovy"
+  [run_pr_ci]="ops/jenkins/controller/support/run_pr_ci.sh"
+)
+
+declare -A remote_file_for_key=(
+  [casc]="/opt/jenkins/casc/jenkins.yaml"
+  [pipeline_job]="/opt/jenkins/jobs/pr-validation.groovy"
+  [run_pr_ci]="/opt/jenkins/support/run_pr_ci.sh"
+)
+
+declare -A remote_container_for_key=(
+  [casc]="rldyourterm-jenkins-controller"
+  [pipeline_job]="rldyourterm-jenkins-controller"
+  [run_pr_ci]="rldyourterm-jenkins-controller"
 )
 
 missing=0
+service_statuses=()
 
-for key in "${!files_to_check[@]}"; do
-  read -r local_path remote_path <<<"${files_to_check[$key]}"
+for required_container in "${required_container_names[@]}"; do
+  status="$(run_remote "docker ps --filter \"name=^/${required_container}$\" --filter status=running --format '{{.Status}}'")"
+  if [[ -z "$status" ]]; then
+    echo "service container is not running: $required_container" >&2
+    missing=1
+  else
+    service_statuses+=("$required_container=$status")
+  fi
+done
+
+for key in "${!local_file_for_key[@]}"; do
+  local_path="${local_file_for_key[$key]}"
+  remote_container="${remote_container_for_key[$key]}"
+  remote_path="${remote_file_for_key[$key]}"
+
+  if [[ ! -f "$local_path" ]]; then
+    echo "missing local Jenkins source file: $local_path" >&2
+    missing=1
+    continue
+  fi
+
   local_hash="$(sha256sum "$local_path" | awk '{print $1}')"
 
-  remote_hash=""
-  remote_hash="$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "docker exec rldyourterm-jenkins-controller sha256sum '$remote_path'" </dev/null | awk '{print $1}')"
+  remote_hash="$(run_remote "docker exec '${remote_container}' sha256sum '${remote_path}'" </dev/null | awk '{print $1}')"
 
   if [[ -z "$remote_hash" ]]; then
     echo "missing remote hash for $key ($remote_path)" >&2
@@ -54,20 +118,20 @@ for key in "${!files_to_check[@]}"; do
   fi
 done
 
-controller_status="$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "docker ps --filter name=rldyourterm-jenkins-controller --filter status=running --format '{{.Status}}'" </dev/null)"
-agent_status="$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "docker ps --filter name=rldyourterm-jenkins-agent-rust-linux-ci --filter status=running --format '{{.Status}}'" </dev/null)"
-router_status="$(ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "docker ps --filter name=rldyourterm-jenkins-webhook-router --filter status=running --format '{{.Status}}'" </dev/null)"
-
-if [[ -z "$controller_status" || -z "$agent_status" || -z "$router_status" ]]; then
+if [[ "${#service_statuses[@]}" -ne "${#required_container_names[@]}" ]]; then
   echo "one or more Jenkins services are not running on $ssh_target" >&2
   missing=1
-else
-  echo "services: controller=$controller_status agent=$agent_status router=$router_status"
 fi
 
 if [[ "$missing" -ne 0 ]]; then
+  echo "services status checks: ${service_statuses[*]:-<none>}" >&2
   echo "remote Jenkins sync verification failed" >&2
   exit 1
+fi
+
+if [[ "${#service_statuses[@]}" -gt 0 ]]; then
+  IFS=' ' read -r -a _sorted_services <<<"$(printf '%s\n' "${service_statuses[@]}" | sort | tr '\n' ' ')"
+  echo "services: ${_sorted_services[*]}"
 fi
 
 echo "remote Jenkins sync verification passed"

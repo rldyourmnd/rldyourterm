@@ -32,6 +32,11 @@ This checks:
 - `ops/jenkins/jobs/pr-validation.groovy` -> `/opt/jenkins/jobs/pr-validation.groovy`
 - `ops/jenkins/controller/support/run_pr_ci.sh` -> `/opt/jenkins/support/run_pr_ci.sh`
 
+The command validates that `remote-root` resolves to the rldyourterm stack
+(service names are hard-coded in this repository). It is safe to run for both
+`/srv/rldyourterm-jenkins` and any same-layout stack, but it will fail fast
+if the target compose file does not match this project.
+
 The command also validates that controller, agent, and webhook-router containers
 are running.
 
