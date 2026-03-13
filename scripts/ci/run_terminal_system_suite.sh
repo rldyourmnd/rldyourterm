@@ -121,35 +121,35 @@ fi
 quality_gates=()
 
 run_gate() {
-  local label="$1"
+  local gate_id="$1"
   shift
-  quality_gates+=("$label")
+  quality_gates+=("$gate_id")
   "$@"
 }
 
-run_gate "cargo fmt --all -- --check" cargo fmt --all -- --check
-run_gate "cargo check --workspace --all-targets --locked" cargo check --workspace --all-targets --locked
-run_gate "cargo test --workspace --locked" cargo test --workspace --locked
-run_gate "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings" cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-run_gate "cargo +1.92.0 check --workspace --all-targets --locked" cargo +1.92.0 check --workspace --all-targets --locked
-run_gate "cargo check --manifest-path fuzz/Cargo.toml --locked" cargo check --manifest-path fuzz/Cargo.toml --locked
-run_gate "bash scripts/ci/run_terminal_benchmark_smoke.sh" bash scripts/ci/run_terminal_benchmark_smoke.sh
+run_gate "cargo-fmt" cargo fmt --all -- --check
+run_gate "cargo-check-workspace" cargo check --workspace --all-targets --locked
+run_gate "cargo-test-workspace" cargo test --workspace --locked
+run_gate "cargo-clippy-workspace" cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+run_gate "cargo-msrv-check-workspace" cargo +1.92.0 check --workspace --all-targets --locked
+run_gate "cargo-check-fuzz-manifest" cargo check --manifest-path fuzz/Cargo.toml --locked
+run_gate "terminal-benchmark-smoke" bash scripts/ci/run_terminal_benchmark_smoke.sh
 if [[ -n "$benchmark_baseline_path" ]]; then
-  run_gate "TERMINAL_BENCHMARK_BASELINE=$benchmark_baseline_path bash scripts/ci/run_terminal_benchmark_full.sh $benchmark_report_path" \
+  run_gate "terminal-benchmark-full" \
     env TERMINAL_BENCHMARK_BASELINE="$benchmark_baseline_path" \
     bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report_path"
 else
-  run_gate "bash scripts/ci/run_terminal_benchmark_full.sh $benchmark_report_path" \
+  run_gate "terminal-benchmark-full" \
     bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report_path"
 fi
-run_gate "bash scripts/ci/run_e2e_governance.sh --mode $governance_mode" bash scripts/ci/run_e2e_governance.sh --mode "$governance_mode"
+run_gate "terminal-e2e-governance" bash scripts/ci/run_e2e_governance.sh --mode "$governance_mode"
 if [[ -n "$live_display_mode" ]]; then
   if [[ -n "$live_display_baseline_path" ]]; then
-    run_gate "TERMINAL_DISPLAY_BENCHMARK_BASELINE=$live_display_baseline_path bash scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh $live_display_report_path" \
+    run_gate "terminal-display-benchmark-${live_display_mode}" \
       env TERMINAL_DISPLAY_BENCHMARK_BASELINE="$live_display_baseline_path" \
       bash "scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh" "$live_display_report_path"
   else
-    run_gate "bash scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh $live_display_report_path" \
+    run_gate "terminal-display-benchmark-${live_display_mode}" \
       bash "scripts/ci/run_terminal_display_benchmark_${live_display_mode}.sh" "$live_display_report_path"
   fi
 fi

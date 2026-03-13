@@ -215,6 +215,12 @@ pub struct RunnerReadinessCli {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct ThresholdCli {
+    #[command(subcommand)]
+    pub command: ThresholdCommands,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct RunnerReadinessCheckCli {
     #[arg(long)]
     pub report: PathBuf,
@@ -232,6 +238,16 @@ pub struct RunnerReadinessValidateCli {
     pub report: PathBuf,
     #[arg(long)]
     pub require_pass: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ThresholdValidateCli {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub baseline: PathBuf,
+    #[arg(long)]
+    pub allow_advisory: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -334,6 +350,11 @@ pub enum RunnerReadinessCommands {
 }
 
 #[derive(Debug, Clone, Subcommand)]
+pub enum ThresholdCommands {
+    Validate(ThresholdValidateCli),
+}
+
+#[derive(Debug, Clone, Subcommand)]
 pub enum CalibrationCommands {
     Emit(CalibrationEmitCli),
     Validate(CalibrationValidateCli),
@@ -348,6 +369,7 @@ pub enum SystemSuiteCommands {
 #[derive(Debug, Clone, Subcommand)]
 pub enum GovernanceCommands {
     RunnerReadiness(RunnerReadinessCli),
+    Threshold(ThresholdCli),
     Calibration(CalibrationCli),
     SystemSuite(SystemSuiteCli),
 }

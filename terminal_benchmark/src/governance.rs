@@ -6,7 +6,7 @@ use crate::cli::{
     ComparisonModeArg, GovernanceCli, GovernanceCommands, LiveDisplayModeArg,
     RunnerReadinessCheckCli, RunnerReadinessCli, RunnerReadinessCommands,
     RunnerReadinessValidateCli, SuiteArg, SystemSuiteCli, SystemSuiteCommands, SystemSuiteEmitCli,
-    SystemSuiteValidateCli, ValidateCli,
+    SystemSuiteValidateCli, ThresholdCli, ThresholdCommands, ThresholdValidateCli, ValidateCli,
 };
 use crate::report::BenchmarkReport;
 use crate::{environment, validate};
@@ -33,6 +33,16 @@ const METRIC_MEAN_NANOS: &str = "mean_nanos";
 const METRIC_P95_NANOS: &str = "p95_nanos";
 const METRIC_PRIMARY_UNITS_PER_SECOND: &str = "primary_units_per_second";
 const METRIC_BYTES_PER_SECOND: &str = "bytes_per_second";
+const QUALITY_GATE_CARGO_FMT: &str = "cargo-fmt";
+const QUALITY_GATE_CARGO_CHECK: &str = "cargo-check-workspace";
+const QUALITY_GATE_CARGO_TEST: &str = "cargo-test-workspace";
+const QUALITY_GATE_CARGO_CLIPPY: &str = "cargo-clippy-workspace";
+const QUALITY_GATE_CARGO_MSRV_CHECK: &str = "cargo-msrv-check-workspace";
+const QUALITY_GATE_CARGO_FUZZ_CHECK: &str = "cargo-check-fuzz-manifest";
+const QUALITY_GATE_BENCHMARK_SMOKE: &str = "terminal-benchmark-smoke";
+const QUALITY_GATE_BENCHMARK_FULL: &str = "terminal-benchmark-full";
+const QUALITY_GATE_E2E_GOVERNANCE: &str = "terminal-e2e-governance";
+const QUALITY_GATE_LIVE_DISPLAY_PREFIX: &str = "terminal-display-benchmark";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -132,6 +142,7 @@ struct ScenarioMetrics {
 pub fn run(args: &GovernanceCli) -> Result<()> {
     match &args.command {
         GovernanceCommands::RunnerReadiness(cli) => run_runner_readiness(cli),
+        GovernanceCommands::Threshold(cli) => run_threshold(cli),
         GovernanceCommands::Calibration(cli) => run_calibration(cli),
         GovernanceCommands::SystemSuite(cli) => run_system_suite(cli),
     }
@@ -148,6 +159,12 @@ fn run_calibration(args: &CalibrationCli) -> Result<()> {
     match &args.command {
         CalibrationCommands::Emit(cli) => run_calibration_emit(cli),
         CalibrationCommands::Validate(cli) => run_calibration_validate(cli),
+    }
+}
+
+fn run_threshold(args: &ThresholdCli) -> Result<()> {
+    match &args.command {
+        ThresholdCommands::Validate(cli) => run_threshold_validate(cli),
     }
 }
 
@@ -247,6 +264,21 @@ fn run_calibration_validate(args: &CalibrationValidateCli) -> Result<()> {
     println!(
         "display benchmark calibration validation ok: {}",
         args.report.display()
+    );
+    Ok(())
+}
+
+fn run_threshold_validate(args: &ThresholdValidateCli) -> Result<()> {
+    validate_threshold_baseline(&args.report, &args.baseline, args.allow_advisory)?;
+    let mode_note = if args.allow_advisory {
+        "advisory"
+    } else {
+        "enforced"
+    };
+    println!(
+        "benchmark threshold validation ok ({mode_note}): {} vs {}",
+        args.report.display(),
+        args.baseline.display()
     );
     Ok(())
 }
@@ -805,7 +837,9 @@ fn validate_threshold_baseline(
 
     let comparison_mode = ThresholdComparisonMode::parse(&baseline.comparison_mode)?;
     if comparison_mode == ThresholdComparisonMode::Advisory && !allow_advisory {
-        bail!("baseline comparison_mode is advisory; validation path requires enforced thresholds");
+        bail!(
+            "baseline comparison_mode is advisory; rerun with --allow-advisory to acknowledge environment-specific thresholds"
+        );
     }
 
     let (report_benchmark_tool, report_suite, report_scale, report_metrics) =
@@ -1149,52 +1183,22 @@ fn collect_regression(
 
 fn expected_system_suite_quality_gates(args: &SystemSuiteValidateCli) -> Vec<String> {
     let mut gates = vec![
-        "cargo fmt --all -- --check".to_owned(),
-        "cargo check --workspace --all-targets --locked".to_owned(),
-        "cargo test --workspace --locked".to_owned(),
-        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings".to_owned(),
-        "cargo +1.92.0 check --workspace --all-targets --locked".to_owned(),
-        "cargo check --manifest-path fuzz/Cargo.toml --locked".to_owned(),
-        "bash scripts/ci/run_terminal_benchmark_smoke.sh".to_owned(),
+        QUALITY_GATE_CARGO_FMT.to_owned(),
+        QUALITY_GATE_CARGO_CHECK.to_owned(),
+        QUALITY_GATE_CARGO_TEST.to_owned(),
+        QUALITY_GATE_CARGO_CLIPPY.to_owned(),
+        QUALITY_GATE_CARGO_MSRV_CHECK.to_owned(),
+        QUALITY_GATE_CARGO_FUZZ_CHECK.to_owned(),
+        QUALITY_GATE_BENCHMARK_SMOKE.to_owned(),
+        QUALITY_GATE_BENCHMARK_FULL.to_owned(),
+        QUALITY_GATE_E2E_GOVERNANCE.to_owned(),
     ];
 
-    if let Some(path) = args.benchmark_baseline.as_ref() {
-        gates.push(format!(
-            "TERMINAL_BENCHMARK_BASELINE={} bash scripts/ci/run_terminal_benchmark_full.sh {}",
-            path.display(),
-            args.benchmark_report.display()
-        ));
-    } else {
-        gates.push(format!(
-            "bash scripts/ci/run_terminal_benchmark_full.sh {}",
-            args.benchmark_report.display()
-        ));
-    }
-
-    gates.push(format!(
-        "bash scripts/ci/run_e2e_governance.sh --mode {}",
-        args.governance_mode.as_str()
-    ));
-
     if let Some(mode) = args.live_display_mode {
-        let report = args
-            .live_display_report
-            .as_ref()
-            .expect("live_display_report is required when live_display_mode is set");
-        if let Some(path) = args.live_display_baseline.as_ref() {
-            gates.push(format!(
-                "TERMINAL_DISPLAY_BENCHMARK_BASELINE={} bash scripts/ci/run_terminal_display_benchmark_{}.sh {}",
-                path.display(),
-                mode.as_str(),
-                report.display()
-            ));
-        } else {
-            gates.push(format!(
-                "bash scripts/ci/run_terminal_display_benchmark_{}.sh {}",
-                mode.as_str(),
-                report.display()
-            ));
-        }
+        gates.push(format!(
+            "{QUALITY_GATE_LIVE_DISPLAY_PREFIX}-{}",
+            mode.as_str()
+        ));
     }
 
     gates
@@ -1605,7 +1609,7 @@ mod tests {
         let gates = expected_system_suite_quality_gates(&args);
         assert_eq!(
             gates.last().expect("expected live-display gate"),
-            "TERMINAL_DISPLAY_BENCHMARK_BASELINE=live-display-baseline.json bash scripts/ci/run_terminal_display_benchmark_controlled.sh live-display.json"
+            "terminal-display-benchmark-controlled"
         );
     }
 
@@ -1732,7 +1736,7 @@ mod tests {
             benchmark_report: PathBuf::from("benchmark.json"),
             benchmark_baseline: None,
             live_display: None,
-            quality_gates: vec!["cargo fmt --all -- --check".to_owned()],
+            quality_gates: vec!["cargo-fmt".to_owned()],
         };
 
         let error = validate_system_suite_report(&report, &args, false)
