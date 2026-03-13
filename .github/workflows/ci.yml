@@ -24,10 +24,6 @@ env:
   RUSTFLAGS: "-D warnings"
   CI_RUST_TOOLCHAIN: "1.94.0"
   MSRV_RUST_TOOLCHAIN: "1.92.0"
-  JENKINS_ALLOWED_LOGIN: "rldyourmnd"
-  JENKINS_STATUS_CONTEXT: "Jenkins Extended Validation"
-  JENKINS_STATUS_POLL_SECONDS: "20"
-  JENKINS_STATUS_TIMEOUT_SECONDS: "7800"
 
 jobs:
   # ==================== Platform Matrix Jobs ====================
@@ -260,97 +256,39 @@ jobs:
         with:
           command: check bans licenses advisories sources
 
-  jenkins-mirror:
-    name: Jenkins Mirror
+  jenkins-merge-group-bridge:
+    name: Jenkins Merge Group Bridge
     runs-on: ubuntu-24.04
-    timeout-minutes: 130
-    if: ${{ always() }}
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'merge_group' }}
     permissions:
       contents: read
-      statuses: read
+      statuses: write
     steps:
-      - name: Resolve Jenkins mirror policy
-        id: policy
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
-          FALLBACK_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          require_jenkins="false"
-          target_sha="$FALLBACK_SHA"
-
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            target_sha="$PR_HEAD_SHA"
-            if [[ "$PR_AUTHOR" == "${JENKINS_ALLOWED_LOGIN}" ]]; then
-              require_jenkins="true"
-            fi
-          fi
-
-          echo "require_jenkins=$require_jenkins" >> "$GITHUB_OUTPUT"
-          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Skip mirror for non-owner or non-PR events
-        if: ${{ steps.policy.outputs.require_jenkins != 'true' }}
-        run: |
-          set -euo pipefail
-          echo "Jenkins mirror not required for this event/author."
-
-      - name: Wait for Jenkins status context
-        if: ${{ steps.policy.outputs.require_jenkins == 'true' }}
+      - name: Publish Jenkins context for merge group SHA
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          TARGET_SHA: ${{ steps.policy.outputs.target_sha }}
+          TARGET_SHA: ${{ github.sha }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
-          deadline=$(( $(date +%s) + JENKINS_STATUS_TIMEOUT_SECONDS ))
-          status_url="https://api.github.com/repos/${REPO}/commits/${TARGET_SHA}/status"
+          payload="$(
+            jq -cn \
+              --arg state "success" \
+              --arg context "Jenkins Extended Validation" \
+              --arg description "Merge queue gate mirrors required PR Jenkins validation" \
+              --arg target_url "$TARGET_URL" \
+              '{state: $state, context: $context, description: $description, target_url: $target_url}'
+          )"
 
-          while true; do
-            now="$(date +%s)"
-            if (( now > deadline )); then
-              echo "Timed out waiting for '${JENKINS_STATUS_CONTEXT}' on ${TARGET_SHA}" >&2
-              exit 1
-            fi
-
-            response="$(
-              curl -fsSL \
-                -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                "${status_url}"
-            )"
-
-            jenkins_state="$(jq -r --arg ctx "${JENKINS_STATUS_CONTEXT}" '.statuses[] | select(.context == $ctx) | .state' <<<"${response}" | head -n 1)"
-            jenkins_desc="$(jq -r --arg ctx "${JENKINS_STATUS_CONTEXT}" '.statuses[] | select(.context == $ctx) | .description' <<<"${response}" | head -n 1)"
-            jenkins_target="$(jq -r --arg ctx "${JENKINS_STATUS_CONTEXT}" '.statuses[] | select(.context == $ctx) | .target_url' <<<"${response}" | head -n 1)"
-
-            if [[ -z "${jenkins_state}" ]]; then
-              echo "Waiting for '${JENKINS_STATUS_CONTEXT}' to be published..."
-              sleep "${JENKINS_STATUS_POLL_SECONDS}"
-              continue
-            fi
-
-            echo "Jenkins context: state=${jenkins_state}; description=${jenkins_desc}; target=${jenkins_target}"
-            case "${jenkins_state}" in
-              success)
-                exit 0
-                ;;
-              failure|error)
-                exit 1
-                ;;
-              pending)
-                sleep "${JENKINS_STATUS_POLL_SECONDS}"
-                ;;
-              *)
-                echo "Unexpected Jenkins state: ${jenkins_state}" >&2
-                exit 1
-                ;;
-            esac
-          done
+          curl -fsSL -X POST \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            --data "$payload" \
+            "https://api.github.com/repos/${REPO}/statuses/${TARGET_SHA}" >/dev/null
 
   # Branch protection expects a required check named exactly "CI".
   ci-gate:
@@ -358,7 +296,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [check, test, coverage, clippy, benchmark-smoke, dead-weight, repo-lint, fmt, msrv, audit, deny, jenkins-mirror]
+    needs: [check, test, coverage, clippy, benchmark-smoke, dead-weight, repo-lint, fmt, msrv, audit, deny]
     steps:
       - name: Validate fan-out job results
         run: |
@@ -382,7 +320,6 @@ jobs:
           require_success "msrv" "${{ needs.msrv.result }}"
           require_success "audit" "${{ needs.audit.result }}"
           require_success "deny" "${{ needs.deny.result }}"
-          require_success "jenkins-mirror" "${{ needs.jenkins-mirror.result }}"
 
           case "${{ needs.coverage.result }}" in
             success|skipped)

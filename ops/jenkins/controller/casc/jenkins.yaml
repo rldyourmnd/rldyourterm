@@ -67,7 +67,7 @@ jobs:
 
       pipelineJob('Rldyourterm/PR-Validation') {
         displayName('PR Validation')
-        description('Runs the server-side extended PR contour for rldyourterm and publishes the non-required Jenkins Extended Validation status.')
+        description('Runs the server-side extended PR contour for rldyourterm and publishes the required Jenkins Extended Validation status.')
         properties {
           githubProjectUrl(repoUrl)
         }

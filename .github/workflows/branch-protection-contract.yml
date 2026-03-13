@@ -1,0 +1,49 @@
+name: Branch Protection Contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Execution mode"
+        required: true
+        default: check
+        type: choice
+        options:
+          - check
+          - apply
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-protection-contract-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  enforce:
+    name: Enforce Branch Protection Contract
+    if: ${{ github.repository == 'rldyourmnd/rldyourterm' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Resolve mode
+        id: mode
+        run: |
+          set -euo pipefail
+          mode="check"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+          fi
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+      - name: Sync branch protection required checks
+        run: |
+          set -euo pipefail
+          token="${{ secrets.BRANCH_PROTECTION_TOKEN }}"
+          if [[ -z "$token" ]]; then
+            echo "missing required secret BRANCH_PROTECTION_TOKEN" >&2
+            exit 1
+          fi
+          GH_TOKEN="$token" bash scripts/ci/sync_main_branch_required_checks.sh --mode "${{ steps.mode.outputs.mode }}"
