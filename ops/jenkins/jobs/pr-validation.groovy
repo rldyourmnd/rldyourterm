@@ -167,9 +167,7 @@ git rev-parse HEAD
                             error("unsupported validation mode: ${validationMode}")
                         }
 
-                        String validationContext = (validationMode == 'extended')
-                            ? 'Jenkins Extended Validation'
-                            : "Jenkins ${validationMode.toUpperCase()} Validation"
+                        String validationContext = 'Jenkins Extended Validation'
                         String validationReportRoot = (validationMode == 'extended')
                             ? "${env.REPORT_ROOT}/extended"
                             : "${env.REPORT_ROOT}/ci"

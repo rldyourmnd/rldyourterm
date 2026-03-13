@@ -48,8 +48,9 @@ are running.
   `ci`, `extended`, `codeql`, or `scorecard`.
 
 For adaptive behavior, `ops/jenkins/jobs/pr-validation.groovy` keeps the
-status context `Jenkins ${MODE} Validation` (`Jenkins CI Validation` for `ci`,
-`Jenkins Extended Validation` for `extended`) for each run.
+status context `Jenkins Extended Validation` for all modes. The mode is encoded
+in the status description (`Jenkins ci/extended/codeql/scorecard validation ...`)
+for operational visibility.
 
 ## Notes
 
