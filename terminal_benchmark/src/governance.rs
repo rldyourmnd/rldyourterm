@@ -2,14 +2,17 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::cli::{
-    CalibrationCli, CalibrationCommands, CalibrationEmitCli, CalibrationValidateCli, GovernanceCli,
-    GovernanceCommands, LiveDisplayModeArg, RunnerReadinessCheckCli, RunnerReadinessCli,
-    RunnerReadinessCommands, RunnerReadinessValidateCli, SuiteArg, SystemSuiteCli,
-    SystemSuiteCommands, SystemSuiteEmitCli, SystemSuiteValidateCli, ValidateCli,
+    CalibrationCli, CalibrationCommands, CalibrationEmitCli, CalibrationValidateCli,
+    ComparisonModeArg, GovernanceCli, GovernanceCommands, LiveDisplayModeArg,
+    RunnerReadinessCheckCli, RunnerReadinessCli, RunnerReadinessCommands,
+    RunnerReadinessValidateCli, SuiteArg, SystemSuiteCli, SystemSuiteCommands, SystemSuiteEmitCli,
+    SystemSuiteValidateCli, ValidateCli,
 };
-use crate::validate;
+use crate::report::BenchmarkReport;
+use crate::{environment, validate};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
@@ -19,6 +22,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CALIBRATION_TOOL: &str = "terminal-display-calibration";
 const RUNNER_READINESS_TOOL: &str = "terminal-display-runner-readiness";
 const SYSTEM_SUITE_TOOL: &str = "terminal-system-suite";
+const THRESHOLD_BASELINE_TOOL: &str = "terminal-benchmark-thresholds";
+const THRESHOLD_MODE_ENFORCED: &str = "enforced";
+const THRESHOLD_MODE_ADVISORY: &str = "advisory";
+const THRESHOLD_MAX_MEAN_RATIO: &str = "max_mean_nanos_ratio";
+const THRESHOLD_MAX_P95_RATIO: &str = "max_p95_nanos_ratio";
+const THRESHOLD_MIN_PRIMARY_RATIO: &str = "min_primary_units_per_second_ratio";
+const THRESHOLD_MIN_BYTES_RATIO: &str = "min_bytes_per_second_ratio";
+const METRIC_MEAN_NANOS: &str = "mean_nanos";
+const METRIC_P95_NANOS: &str = "p95_nanos";
+const METRIC_PRIMARY_UNITS_PER_SECOND: &str = "primary_units_per_second";
+const METRIC_BYTES_PER_SECOND: &str = "bytes_per_second";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -79,6 +93,40 @@ struct SystemSuiteReport {
     benchmark_baseline: Option<PathBuf>,
     live_display: Option<SystemSuiteLiveDisplayReport>,
     quality_gates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ThresholdBaseline {
+    baseline_tool: String,
+    benchmark_tool: String,
+    suite: String,
+    scale: String,
+    comparison_mode: String,
+    environment_scope: environment::EnvironmentScope,
+    environment_requirements: Option<environment::EnvironmentRequirements>,
+    defaults: HashMap<String, f64>,
+    scenarios: HashMap<String, ThresholdScenarioPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ThresholdScenarioPolicy {
+    baseline_metrics: HashMap<String, f64>,
+    #[serde(default)]
+    thresholds: HashMap<String, f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThresholdComparisonMode {
+    Enforced,
+    Advisory,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenarioMetrics {
+    mean_nanos: f64,
+    p95_nanos: f64,
+    primary_units_per_second: f64,
+    bytes_per_second: Option<f64>,
 }
 
 pub fn run(args: &GovernanceCli) -> Result<()> {
@@ -453,6 +501,14 @@ fn validate_calibration_report(
         require_full_suite: true,
     })?;
 
+    if require_inputs {
+        validate_threshold_baseline(
+            &args.benchmark_report,
+            &args.baseline,
+            args.comparison_mode == ComparisonModeArg::Advisory,
+        )?;
+    }
+
     if let Some(path) = args.runner_readiness_report.as_ref() {
         if require_inputs && !path.is_file() {
             bail!("runner readiness report does not exist: {}", path.display());
@@ -589,6 +645,10 @@ fn validate_system_suite_report(
         require_full_suite: true,
     })?;
 
+    if require_inputs && let Some(path) = args.benchmark_baseline.as_ref() {
+        validate_threshold_baseline(&args.benchmark_report, path, false)?;
+    }
+
     if let Some(path) = args.live_display_report.as_ref() {
         validate::run(&ValidateCli {
             suite: SuiteArg::LiveDisplay,
@@ -596,8 +656,395 @@ fn validate_system_suite_report(
             require_scenario: Vec::new(),
             require_full_suite: true,
         })?;
+
+        if require_inputs && let Some(baseline_path) = args.live_display_baseline.as_ref() {
+            validate_threshold_baseline(path, baseline_path, true)?;
+        }
     }
 
+    Ok(())
+}
+
+impl ThresholdComparisonMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            THRESHOLD_MODE_ENFORCED => Ok(Self::Enforced),
+            THRESHOLD_MODE_ADVISORY => Ok(Self::Advisory),
+            _ => bail!(
+                "comparison_mode must be {:?} or {:?}",
+                THRESHOLD_MODE_ENFORCED,
+                THRESHOLD_MODE_ADVISORY
+            ),
+        }
+    }
+}
+
+fn validate_threshold_baseline(
+    report_path: &Path,
+    baseline_path: &Path,
+    allow_advisory: bool,
+) -> Result<()> {
+    let report: BenchmarkReport = environment::read_report(report_path)?;
+    let baseline: ThresholdBaseline = read_json(baseline_path).with_context(|| {
+        format!(
+            "failed to read threshold baseline {}",
+            baseline_path.display()
+        )
+    })?;
+
+    validate_non_empty_string(&baseline.baseline_tool, "baseline.baseline_tool")?;
+    if baseline.baseline_tool != THRESHOLD_BASELINE_TOOL {
+        bail!("baseline_tool must be {THRESHOLD_BASELINE_TOOL:?}");
+    }
+    validate_non_empty_string(&baseline.benchmark_tool, "baseline.benchmark_tool")?;
+    validate_non_empty_string(&baseline.suite, "baseline.suite")?;
+    validate_non_empty_string(&baseline.scale, "baseline.scale")?;
+    validate_non_empty_string(&baseline.comparison_mode, "baseline.comparison_mode")?;
+    if baseline.scenarios.is_empty() {
+        bail!("baseline.scenarios must be a non-empty object");
+    }
+
+    let comparison_mode = ThresholdComparisonMode::parse(&baseline.comparison_mode)?;
+    if comparison_mode == ThresholdComparisonMode::Advisory && !allow_advisory {
+        bail!("baseline comparison_mode is advisory; validation path requires enforced thresholds");
+    }
+
+    let (report_benchmark_tool, report_suite, report_scale, report_metrics) =
+        report_metadata_and_metrics(&report)?;
+    if baseline.benchmark_tool != report_benchmark_tool {
+        bail!(
+            "benchmark_tool mismatch between report and baseline: report={:?} baseline={:?}",
+            report_benchmark_tool,
+            baseline.benchmark_tool
+        );
+    }
+    if baseline.suite != report_suite {
+        bail!(
+            "suite mismatch between report and baseline: report={:?} baseline={:?}",
+            report_suite,
+            baseline.suite
+        );
+    }
+    if baseline.scale != report_scale {
+        bail!(
+            "scale mismatch between report and baseline: report={:?} baseline={:?}",
+            report_scale,
+            baseline.scale
+        );
+    }
+
+    let report_scope = environment::infer_report_environment_scope(&report)?;
+    if report_scope != baseline.environment_scope {
+        bail!(
+            "environment_scope mismatch between report and baseline: report={:?} baseline={:?}",
+            report_scope,
+            baseline.environment_scope
+        );
+    }
+    if baseline.environment_scope == environment::EnvironmentScope::ControlledDisplaySession
+        && baseline.environment_requirements.is_none()
+    {
+        bail!("controlled-display-session baselines must declare environment_requirements");
+    }
+    if let Some(requirements) = baseline.environment_requirements.as_ref() {
+        environment::validate_report_against_environment_requirements(&report, requirements)?;
+    }
+
+    let baseline_names = baseline.scenarios.keys().cloned().collect::<BTreeSet<_>>();
+    let report_names = report_metrics.keys().cloned().collect::<BTreeSet<_>>();
+    if baseline_names != report_names {
+        bail!(
+            "scenario set mismatch between report and baseline: baseline={:?} report={:?}",
+            baseline_names,
+            report_names
+        );
+    }
+
+    let mut advisory_violations = Vec::new();
+
+    for (scenario, policy) in &baseline.scenarios {
+        if policy.baseline_metrics.is_empty() {
+            bail!(
+                "baseline scenario {:?} baseline_metrics must be an object",
+                scenario
+            );
+        }
+        let current = report_metrics
+            .get(scenario)
+            .with_context(|| format!("scenario {:?} is missing from report metrics", scenario))?;
+
+        let mean_ratio =
+            threshold_ratio_value(&baseline, policy, scenario, THRESHOLD_MAX_MEAN_RATIO, true)?
+                .expect("required ratio must be present");
+        let p95_ratio =
+            threshold_ratio_value(&baseline, policy, scenario, THRESHOLD_MAX_P95_RATIO, true)?
+                .expect("required ratio must be present");
+        let primary_ratio = threshold_ratio_value(
+            &baseline,
+            policy,
+            scenario,
+            THRESHOLD_MIN_PRIMARY_RATIO,
+            true,
+        )?
+        .expect("required ratio must be present");
+
+        let baseline_mean = baseline_metric_value(policy, scenario, METRIC_MEAN_NANOS)?;
+        let baseline_p95 = baseline_metric_value(policy, scenario, METRIC_P95_NANOS)?;
+        let baseline_primary =
+            baseline_metric_value(policy, scenario, METRIC_PRIMARY_UNITS_PER_SECOND)?;
+
+        collect_regression(
+            compare_max_ratio(
+                scenario,
+                METRIC_MEAN_NANOS,
+                current.mean_nanos,
+                baseline_mean,
+                mean_ratio,
+            )?,
+            comparison_mode,
+            &mut advisory_violations,
+        )?;
+        collect_regression(
+            compare_max_ratio(
+                scenario,
+                METRIC_P95_NANOS,
+                current.p95_nanos,
+                baseline_p95,
+                p95_ratio,
+            )?,
+            comparison_mode,
+            &mut advisory_violations,
+        )?;
+        collect_regression(
+            compare_min_ratio(
+                scenario,
+                METRIC_PRIMARY_UNITS_PER_SECOND,
+                current.primary_units_per_second,
+                baseline_primary,
+                primary_ratio,
+            )?,
+            comparison_mode,
+            &mut advisory_violations,
+        )?;
+
+        if let Some(bytes_ratio) = threshold_ratio_value(
+            &baseline,
+            policy,
+            scenario,
+            THRESHOLD_MIN_BYTES_RATIO,
+            false,
+        )? {
+            let baseline_bytes = policy
+                .baseline_metrics
+                .get(METRIC_BYTES_PER_SECOND)
+                .copied();
+            let current_bytes = current.bytes_per_second;
+            if let (Some(baseline_bytes), Some(current_bytes)) = (baseline_bytes, current_bytes)
+                && baseline_bytes > 0.0
+            {
+                collect_regression(
+                    compare_min_ratio(
+                        scenario,
+                        METRIC_BYTES_PER_SECOND,
+                        current_bytes,
+                        baseline_bytes,
+                        bytes_ratio,
+                    )?,
+                    comparison_mode,
+                    &mut advisory_violations,
+                )?;
+            }
+        }
+    }
+
+    if !advisory_violations.is_empty() {
+        eprintln!(
+            "benchmark threshold validation advisory regressions ({}): {} vs {}",
+            advisory_violations.len(),
+            report_path.display(),
+            baseline_path.display()
+        );
+        for violation in advisory_violations {
+            eprintln!("- {violation}");
+        }
+    }
+
+    Ok(())
+}
+
+fn threshold_ratio_value(
+    baseline: &ThresholdBaseline,
+    policy: &ThresholdScenarioPolicy,
+    scenario: &str,
+    key: &str,
+    required: bool,
+) -> Result<Option<f64>> {
+    let ratio = policy
+        .thresholds
+        .get(key)
+        .copied()
+        .or_else(|| baseline.defaults.get(key).copied());
+
+    if required && ratio.is_none() {
+        bail!("scenario {:?} threshold {} must be defined", scenario, key);
+    }
+
+    if let Some(value) = ratio
+        && (!value.is_finite() || value <= 0.0)
+    {
+        bail!(
+            "scenario {:?} threshold {} must be a positive finite number",
+            scenario,
+            key
+        );
+    }
+
+    Ok(ratio)
+}
+
+fn baseline_metric_value(
+    policy: &ThresholdScenarioPolicy,
+    scenario: &str,
+    key: &str,
+) -> Result<f64> {
+    let value =
+        policy.baseline_metrics.get(key).copied().with_context(|| {
+            format!("baseline scenario {:?} is missing metric {}", scenario, key)
+        })?;
+    if !value.is_finite() {
+        bail!(
+            "baseline scenario {:?} metric {} must be a finite number",
+            scenario,
+            key
+        );
+    }
+    Ok(value)
+}
+
+fn report_metadata_and_metrics(
+    report: &BenchmarkReport,
+) -> Result<(String, String, String, HashMap<String, ScenarioMetrics>)> {
+    let (benchmark_tool, suite, scale, metrics) = match report {
+        BenchmarkReport::Headless(report) => (
+            report.benchmark_tool.clone(),
+            report.suite.clone(),
+            report.scale.clone(),
+            report
+                .results
+                .iter()
+                .map(|result| {
+                    (
+                        result.scenario.clone(),
+                        ScenarioMetrics {
+                            mean_nanos: result.stats.mean_nanos as f64,
+                            p95_nanos: result.stats.p95_nanos as f64,
+                            primary_units_per_second: result.primary_units_per_second,
+                            bytes_per_second: Some(result.bytes_per_second),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
+        BenchmarkReport::LiveDisplay(report) => (
+            report.benchmark_tool.clone(),
+            report.suite.clone(),
+            report.scale.clone(),
+            report
+                .results
+                .iter()
+                .map(|result| {
+                    (
+                        result.scenario.clone(),
+                        ScenarioMetrics {
+                            mean_nanos: result.stats.mean_nanos as f64,
+                            p95_nanos: result.stats.p95_nanos as f64,
+                            primary_units_per_second: result.primary_units_per_second,
+                            bytes_per_second: None,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
+    };
+
+    validate_non_empty_string(&benchmark_tool, "report.benchmark_tool")?;
+    validate_non_empty_string(&suite, "report.suite")?;
+    validate_non_empty_string(&scale, "report.scale")?;
+
+    let mut scenario_metrics = HashMap::new();
+    for (scenario, metrics) in metrics {
+        validate_non_empty_string(&scenario, "report.results[].scenario")?;
+        if scenario_metrics.insert(scenario.clone(), metrics).is_some() {
+            bail!("report.results contains duplicate scenario {:?}", scenario);
+        }
+    }
+    if scenario_metrics.is_empty() {
+        bail!("report.results must be a non-empty list");
+    }
+
+    Ok((benchmark_tool, suite, scale, scenario_metrics))
+}
+
+fn compare_max_ratio(
+    scenario: &str,
+    metric_name: &str,
+    current: f64,
+    baseline: f64,
+    ratio: f64,
+) -> Result<Option<String>> {
+    if baseline <= 0.0 {
+        bail!(
+            "scenario {:?} baseline {} must be > 0",
+            scenario,
+            metric_name
+        );
+    }
+    let limit = baseline * ratio;
+    if current > limit {
+        return Ok(Some(format!(
+            "scenario {:?} {} regression: current={:.6} exceeds baseline={:.6} * ratio={:.3} (limit={:.6})",
+            scenario, metric_name, current, baseline, ratio, limit
+        )));
+    }
+    Ok(None)
+}
+
+fn compare_min_ratio(
+    scenario: &str,
+    metric_name: &str,
+    current: f64,
+    baseline: f64,
+    ratio: f64,
+) -> Result<Option<String>> {
+    if baseline <= 0.0 {
+        bail!(
+            "scenario {:?} baseline {} must be > 0",
+            scenario,
+            metric_name
+        );
+    }
+    let floor = baseline * ratio;
+    if current < floor {
+        return Ok(Some(format!(
+            "scenario {:?} {} regression: current={:.6} is below baseline={:.6} * ratio={:.3} (floor={:.6})",
+            scenario, metric_name, current, baseline, ratio, floor
+        )));
+    }
+    Ok(None)
+}
+
+fn collect_regression(
+    regression: Option<String>,
+    mode: ThresholdComparisonMode,
+    advisory_violations: &mut Vec<String>,
+) -> Result<()> {
+    if let Some(regression) = regression {
+        if mode == ThresholdComparisonMode::Advisory {
+            advisory_violations.push(regression);
+        } else {
+            bail!("{regression}");
+        }
+    }
     Ok(())
 }
 
@@ -712,8 +1159,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CalibrationReport, ObservedDisplayEnvironment, ReportStatus, RunnerReadinessReport,
-        SystemSuiteLiveDisplayReport, SystemSuiteReport, build_runner_readiness_report,
+        CalibrationReport, METRIC_BYTES_PER_SECOND, METRIC_MEAN_NANOS, METRIC_P95_NANOS,
+        METRIC_PRIMARY_UNITS_PER_SECOND, ObservedDisplayEnvironment, ReportStatus,
+        RunnerReadinessReport, SystemSuiteLiveDisplayReport, SystemSuiteReport,
+        THRESHOLD_BASELINE_TOOL, THRESHOLD_MAX_MEAN_RATIO, THRESHOLD_MAX_P95_RATIO,
+        THRESHOLD_MIN_BYTES_RATIO, THRESHOLD_MIN_PRIMARY_RATIO, ThresholdBaseline,
+        ThresholdScenarioPolicy, build_runner_readiness_report,
         expected_system_suite_quality_gates, validate_calibration_report,
         validate_runner_readiness_report, validate_system_suite_report, write_json,
     };
@@ -721,9 +1172,12 @@ mod tests {
         CalibrationValidateCli, ComparisonModeArg, GovernanceModeArg, LiveDisplayModeArg,
         SystemSuiteValidateCli,
     };
+    use crate::environment;
+    use crate::report::BenchmarkReport;
     use crate::validate::tests::{valid_headless_report, valid_live_display_report};
+    use std::collections::HashMap;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -770,10 +1224,15 @@ mod tests {
         let baseline_path = temp_dir.join("baseline.json");
         let readiness_path = temp_dir.join("readiness.json");
 
-        valid_live_display_report()
+        let benchmark_report = valid_live_display_report();
+        benchmark_report
             .write_output(&benchmark_report_path)
             .expect("benchmark report should write");
-        fs::write(&baseline_path, "{}\n").expect("baseline should write");
+        write_threshold_baseline(
+            &BenchmarkReport::LiveDisplay(benchmark_report.clone()),
+            &baseline_path,
+            "advisory",
+        );
 
         let readiness = RunnerReadinessReport {
             system_tool: "terminal-display-runner-readiness".to_owned(),
@@ -820,10 +1279,15 @@ mod tests {
         let benchmark_report_path = temp_dir.join("benchmark.json");
         let baseline_path = temp_dir.join("baseline.json");
 
-        valid_live_display_report()
+        let benchmark_report = valid_live_display_report();
+        benchmark_report
             .write_output(&benchmark_report_path)
             .expect("benchmark report should write");
-        fs::write(&baseline_path, "{}\n").expect("baseline should write");
+        write_threshold_baseline(
+            &BenchmarkReport::LiveDisplay(benchmark_report.clone()),
+            &baseline_path,
+            "advisory",
+        );
 
         let report = CalibrationReport {
             system_tool: "terminal-display-calibration".to_owned(),
@@ -849,6 +1313,56 @@ mod tests {
         let error = validate_calibration_report(&report, &args, false)
             .expect_err("required session type mismatch must fail");
         assert!(error.to_string().contains("required_session_type"));
+    }
+
+    #[test]
+    fn calibration_validation_rejects_threshold_regression() {
+        let temp_dir = temp_dir("calibration_validation_rejects_threshold_regression");
+        let benchmark_report_path = temp_dir.join("benchmark.json");
+        let baseline_path = temp_dir.join("baseline.json");
+
+        let baseline_report = valid_live_display_report();
+        write_threshold_baseline(
+            &BenchmarkReport::LiveDisplay(baseline_report.clone()),
+            &baseline_path,
+            "enforced",
+        );
+
+        let mut regressed_report = baseline_report.clone();
+        let first = regressed_report
+            .results
+            .first_mut()
+            .expect("fixture must include at least one live-display scenario");
+        first.stats.mean_nanos = first.stats.mean_nanos.saturating_mul(10);
+        first.stats.p95_nanos = first.stats.p95_nanos.saturating_mul(10);
+        regressed_report
+            .write_output(&benchmark_report_path)
+            .expect("regressed benchmark report should write");
+
+        let report = CalibrationReport {
+            system_tool: "terminal-display-calibration".to_owned(),
+            status: ReportStatus::Pass,
+            generated_at_utc: "unix-seconds-utc:1".to_owned(),
+            benchmark_report: benchmark_report_path.clone(),
+            baseline: baseline_path.clone(),
+            comparison_mode: "enforced".to_owned(),
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            runner_readiness_report: None,
+        };
+        let args = CalibrationValidateCli {
+            report: temp_dir.join("calibration.json"),
+            benchmark_report: benchmark_report_path,
+            baseline: baseline_path,
+            comparison_mode: ComparisonModeArg::Enforced,
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            runner_readiness_report: None,
+        };
+
+        let error =
+            validate_calibration_report(&report, &args, true).expect_err("regression must fail");
+        assert!(error.to_string().contains("regression"));
     }
 
     #[test]
@@ -878,14 +1392,24 @@ mod tests {
         let live_display_report_path = temp_dir.join("live-display.json");
         let live_display_baseline_path = temp_dir.join("live-display-baseline.json");
 
-        valid_headless_report()
+        let benchmark_report = valid_headless_report();
+        benchmark_report
             .write_output(&benchmark_report_path)
             .expect("headless report should write");
-        valid_live_display_report()
+        let live_display_report = valid_live_display_report();
+        live_display_report
             .write_output(&live_display_report_path)
             .expect("live-display report should write");
-        fs::write(&benchmark_baseline_path, "{}\n").expect("benchmark baseline should write");
-        fs::write(&live_display_baseline_path, "{}\n").expect("live-display baseline should write");
+        write_threshold_baseline(
+            &BenchmarkReport::Headless(benchmark_report.clone()),
+            &benchmark_baseline_path,
+            "enforced",
+        );
+        write_threshold_baseline(
+            &BenchmarkReport::LiveDisplay(live_display_report.clone()),
+            &live_display_baseline_path,
+            "advisory",
+        );
 
         let args = SystemSuiteValidateCli {
             report: temp_dir.join("system-suite.json"),
@@ -913,6 +1437,55 @@ mod tests {
 
         validate_system_suite_report(&report, &args, true)
             .expect("matching system-suite contract should validate");
+    }
+
+    #[test]
+    fn system_suite_validation_rejects_headless_threshold_regression() {
+        let temp_dir = temp_dir("system_suite_validation_rejects_headless_threshold_regression");
+        let benchmark_report_path = temp_dir.join("benchmark.json");
+        let benchmark_baseline_path = temp_dir.join("benchmark-baseline.json");
+
+        let baseline_report = valid_headless_report();
+        write_threshold_baseline(
+            &BenchmarkReport::Headless(baseline_report.clone()),
+            &benchmark_baseline_path,
+            "enforced",
+        );
+
+        let mut regressed_report = baseline_report.clone();
+        let first = regressed_report
+            .results
+            .first_mut()
+            .expect("fixture must include at least one headless scenario");
+        first.stats.mean_nanos = first.stats.mean_nanos.saturating_mul(10);
+        first.stats.p95_nanos = first.stats.p95_nanos.saturating_mul(10);
+        regressed_report
+            .write_output(&benchmark_report_path)
+            .expect("regressed headless report should write");
+
+        let args = SystemSuiteValidateCli {
+            report: temp_dir.join("system-suite.json"),
+            benchmark_report: benchmark_report_path.clone(),
+            governance_mode: GovernanceModeArg::Ci,
+            benchmark_baseline: Some(benchmark_baseline_path.clone()),
+            live_display_mode: None,
+            live_display_report: None,
+            live_display_baseline: None,
+        };
+        let report = SystemSuiteReport {
+            system_tool: "terminal-system-suite".to_owned(),
+            status: ReportStatus::Pass,
+            generated_at_utc: "unix-seconds-utc:1".to_owned(),
+            governance_mode: "ci".to_owned(),
+            benchmark_report: benchmark_report_path,
+            benchmark_baseline: Some(benchmark_baseline_path),
+            live_display: None,
+            quality_gates: expected_system_suite_quality_gates(&args),
+        };
+
+        let error =
+            validate_system_suite_report(&report, &args, true).expect_err("regression must fail");
+        assert!(error.to_string().contains("regression"));
     }
 
     #[test]
@@ -950,5 +1523,102 @@ mod tests {
         let path = std::env::temp_dir().join(format!("rldyourterm-{label}-{unique}"));
         fs::create_dir_all(&path).expect("temp dir should create");
         path
+    }
+
+    fn write_threshold_baseline(report: &BenchmarkReport, path: &Path, comparison_mode: &str) {
+        let mut scenarios = HashMap::new();
+        match report {
+            BenchmarkReport::Headless(report) => {
+                for scenario in &report.results {
+                    let mut baseline_metrics = HashMap::new();
+                    baseline_metrics.insert(
+                        METRIC_MEAN_NANOS.to_owned(),
+                        scenario.stats.mean_nanos as f64,
+                    );
+                    baseline_metrics
+                        .insert(METRIC_P95_NANOS.to_owned(), scenario.stats.p95_nanos as f64);
+                    baseline_metrics.insert(
+                        METRIC_PRIMARY_UNITS_PER_SECOND.to_owned(),
+                        scenario.primary_units_per_second,
+                    );
+                    baseline_metrics.insert(
+                        METRIC_BYTES_PER_SECOND.to_owned(),
+                        scenario.bytes_per_second,
+                    );
+                    scenarios.insert(
+                        scenario.scenario.clone(),
+                        ThresholdScenarioPolicy {
+                            baseline_metrics,
+                            thresholds: HashMap::new(),
+                        },
+                    );
+                }
+            }
+            BenchmarkReport::LiveDisplay(report) => {
+                for scenario in &report.results {
+                    let mut baseline_metrics = HashMap::new();
+                    baseline_metrics.insert(
+                        METRIC_MEAN_NANOS.to_owned(),
+                        scenario.stats.mean_nanos as f64,
+                    );
+                    baseline_metrics
+                        .insert(METRIC_P95_NANOS.to_owned(), scenario.stats.p95_nanos as f64);
+                    baseline_metrics.insert(
+                        METRIC_PRIMARY_UNITS_PER_SECOND.to_owned(),
+                        scenario.primary_units_per_second,
+                    );
+                    scenarios.insert(
+                        scenario.scenario.clone(),
+                        ThresholdScenarioPolicy {
+                            baseline_metrics,
+                            thresholds: HashMap::new(),
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut defaults = HashMap::new();
+        defaults.insert(THRESHOLD_MAX_MEAN_RATIO.to_owned(), 1.0);
+        defaults.insert(THRESHOLD_MAX_P95_RATIO.to_owned(), 1.0);
+        defaults.insert(THRESHOLD_MIN_PRIMARY_RATIO.to_owned(), 1.0);
+        if scenarios.values().any(|policy| {
+            policy
+                .baseline_metrics
+                .contains_key(METRIC_BYTES_PER_SECOND)
+        }) {
+            defaults.insert(THRESHOLD_MIN_BYTES_RATIO.to_owned(), 1.0);
+        }
+
+        let (benchmark_tool, suite, scale) = match report {
+            BenchmarkReport::Headless(report) => (
+                report.benchmark_tool.clone(),
+                report.suite.clone(),
+                report.scale.clone(),
+            ),
+            BenchmarkReport::LiveDisplay(report) => (
+                report.benchmark_tool.clone(),
+                report.suite.clone(),
+                report.scale.clone(),
+            ),
+        };
+
+        let environment_scope = environment::infer_report_environment_scope(report)
+            .expect("environment scope should infer");
+        let environment_requirements = environment::extract_environment_requirements(report)
+            .expect("environment requirements should infer");
+
+        let baseline = ThresholdBaseline {
+            baseline_tool: THRESHOLD_BASELINE_TOOL.to_owned(),
+            benchmark_tool,
+            suite,
+            scale,
+            comparison_mode: comparison_mode.to_owned(),
+            environment_scope,
+            environment_requirements,
+            defaults,
+            scenarios,
+        };
+        write_json(path, &baseline).expect("threshold baseline should write");
     }
 }

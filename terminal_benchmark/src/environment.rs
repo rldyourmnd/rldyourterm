@@ -421,7 +421,7 @@ fn floats_match(left: f64, right: f64) -> bool {
     (left - right).abs() <= 1e-9
 }
 
-fn read_report(path: &Path) -> Result<BenchmarkReport> {
+pub(crate) fn read_report(path: &Path) -> Result<BenchmarkReport> {
     let value: Value = read_json(path)
         .with_context(|| format!("failed to read benchmark report {}", path.display()))?;
     parse_report_value(value)
