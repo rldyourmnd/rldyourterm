@@ -15,6 +15,17 @@ require_command() {
   fi
 }
 
+ensure_rustup_component() {
+  local toolchain="$1"
+  local component="$2"
+
+  if rustup component list --toolchain "$toolchain" --installed | grep -Fqx "$component"; then
+    return 0
+  fi
+
+  rustup component add --toolchain "$toolchain" "$component"
+}
+
 run_cargo_machete() {
   require_command cargo
   require_command cargo-machete
@@ -29,7 +40,9 @@ run_cargo_udeps() {
   require_command rustup
   require_command cargo-udeps
 
-  rustup component add --toolchain "$toolchain" rust-src rustc-dev llvm-tools-preview
+  ensure_rustup_component "$toolchain" rust-src
+  ensure_rustup_component "$toolchain" rustc-dev
+  ensure_rustup_component "$toolchain" llvm-tools-preview
   cargo +"$toolchain" udeps --workspace --all-targets --all-features
 }
 
