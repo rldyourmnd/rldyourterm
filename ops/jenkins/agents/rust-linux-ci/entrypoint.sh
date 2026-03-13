@@ -22,9 +22,15 @@ until curl -fsS "${controller_url}/login" >/dev/null; do
   sleep 5
 done
 
+jnlp_metadata="$(mktemp)"
+trap 'rm -f "${jnlp_metadata}"' EXIT
+
+curl -fsS --user "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" \
+  --output "${jnlp_metadata}" \
+  "${jnlp_url}"
+
 secret="$(
-  curl -fsS --user "${JENKINS_ADMIN_USER}:${JENKINS_ADMIN_PASSWORD}" "${jnlp_url}" \
-    | python3 -c 'import sys, xml.etree.ElementTree as ET; root = ET.parse(sys.stdin).getroot(); args = [node.text for node in root.iter("argument")]; print(args[0])'
+  python3 -c 'import sys, xml.etree.ElementTree as ET; root = ET.parse(sys.argv[1]).getroot(); args = [node.text for node in root.iter("argument")]; print(args[0])' "${jnlp_metadata}"
 )"
 
 exec java -jar "${agent_jar_path}" \
