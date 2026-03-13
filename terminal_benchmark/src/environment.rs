@@ -103,7 +103,9 @@ pub fn validate_report_against_environment_requirements(
             requirements.display_server_hint
         );
     }
-    if live_display.environment.session_type != requirements.session_type {
+    if let Some(required_session_type) = requirements.session_type.as_deref()
+        && live_display.environment.session_type.as_deref() != Some(required_session_type)
+    {
         bail!(
             "session_type mismatch between report and baseline requirements: report={:?} baseline={:?}",
             live_display.environment.session_type,
@@ -545,6 +547,18 @@ mod tests {
         let error = validate_report_against_environment_requirements(&report, &requirements)
             .expect_err("scale mismatch must fail");
         assert!(error.to_string().contains("monitor_scale_factor mismatch"));
+    }
+
+    #[test]
+    fn environment_requirements_validation_allows_unspecified_session_type() {
+        let report = BenchmarkReport::LiveDisplay(valid_live_display_report());
+        let mut requirements = extract_environment_requirements(&report)
+            .expect("requirements extraction should succeed")
+            .expect("controlled report should emit requirements");
+        requirements.session_type = None;
+
+        validate_report_against_environment_requirements(&report, &requirements)
+            .expect("unspecified session_type should not constrain validation");
     }
 
     #[test]
