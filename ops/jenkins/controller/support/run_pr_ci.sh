@@ -37,7 +37,6 @@ prepare_clean_codeql_workspace() {
 }
 
 pr_title="${JENKINS_PR_TITLE:-}"
-repo_full_name="${JENKINS_REPO_FULL_NAME:-rldyourmnd/rldyourterm}"
 pr_head_sha="${JENKINS_PR_HEAD_SHA:-}"
 pr_checkout_sha="${JENKINS_PR_CHECKOUT_SHA:-}"
 fuzz_toolchain="${JENKINS_RUST_FUZZ_TOOLCHAIN:-nightly-2026-03-11}"
