@@ -43,6 +43,7 @@ jobs:
           set -euo pipefail
           token="${{ secrets.BRANCH_PROTECTION_TOKEN }}"
           if [[ -z "$token" ]]; then
-            token="${{ github.token }}"
+            echo "missing required secret BRANCH_PROTECTION_TOKEN" >&2
+            exit 1
           fi
           GH_TOKEN="$token" bash scripts/ci/sync_main_branch_required_checks.sh --mode "${{ steps.mode.outputs.mode }}"
