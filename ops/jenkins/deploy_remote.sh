@@ -15,6 +15,7 @@ controller_uid=1000
 controller_gid=1000
 agent_uid=1001
 agent_gid=1001
+deploy_force="${JENKINS_DEPLOY_FORCE:-0}"
 
 ssh "$ssh_target" "mkdir -p '$remote_root'"
 
@@ -43,6 +44,32 @@ ssh "$ssh_target" "
   fi
   chown -R '$controller_uid:$controller_gid' '$remote_root/data/controller_home'
   chown -R '$agent_uid:$agent_gid' '$remote_root/data/agent_rust_linux_ci'
+  if [[ '$deploy_force' != '1' && -f '$remote_env_file' ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source '$remote_env_file'
+    set +a
+
+    controller_running=\$(docker ps --filter 'name=rldyourterm-jenkins-controller' --filter 'status=running' --format '{{.ID}}' | head -n 1)
+
+    if [[ -n \"\${controller_running}\" && -n \${JENKINS_ADMIN_USER:-} && -n \${JENKINS_ADMIN_PASSWORD:-} && -n \${JENKINS_HOST:-} ]]; then
+      active_builds=\$(curl --globoff -fsSL -u \"\${JENKINS_ADMIN_USER}:\${JENKINS_ADMIN_PASSWORD}\" \
+        \"https://\${JENKINS_HOST}/job/Rldyourterm/job/PR-Validation/api/json?tree=builds[building]\" \
+        | python3 -c 'import json, sys; data = json.load(sys.stdin); print(sum(1 for build in data.get(\"builds\", []) if build.get(\"building\")))')
+
+      case \"\${active_builds}\" in
+        ''|*[!0-9]*)
+          echo \"unable to determine active Jenkins builds from API response: '\${active_builds}'\" >&2
+          exit 1
+          ;;
+      esac
+
+      if [[ \"\${active_builds}\" != '0' ]]; then
+        echo \"refusing to redeploy Jenkins while \${active_builds} PR-Validation build(s) are active; rerun with JENKINS_DEPLOY_FORCE=1 to override\" >&2
+        exit 1
+      fi
+    fi
+  fi
   if [[ '$remote_root' != '$legacy_root' && -f '$legacy_root/compose.yaml' && -f '$legacy_env_file' ]]; then
     cd '$legacy_root' && docker compose --env-file '$legacy_env_file' down || true
   fi
