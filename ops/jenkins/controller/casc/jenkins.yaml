@@ -62,12 +62,12 @@ jobs:
 
       folder('Rldyourterm') {
         displayName('rldyourterm CI/CD')
-        description('Centralized Jenkins pipelines for rldyourterm.')
+        description('Centralized server-side Jenkins pipelines for rldyourterm.')
       }
 
       pipelineJob('Rldyourterm/PR-Validation') {
         displayName('PR Validation')
-        description('Runs the headless Jenkins PR contour for rldyourterm and publishes the CI, CodeQL, and Scorecard required statuses.')
+        description('Runs the server-side extended PR contour for rldyourterm and publishes the non-required Jenkins Extended Validation status.')
         properties {
           githubProjectUrl(repoUrl)
         }
