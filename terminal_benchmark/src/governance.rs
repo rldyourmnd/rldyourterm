@@ -269,12 +269,8 @@ fn run_calibration_validate(args: &CalibrationValidateCli) -> Result<()> {
 }
 
 fn run_threshold_validate(args: &ThresholdValidateCli) -> Result<()> {
-    validate_threshold_baseline(&args.report, &args.baseline, args.allow_advisory)?;
-    let mode_note = if args.allow_advisory {
-        "advisory"
-    } else {
-        "enforced"
-    };
+    let mode = validate_threshold_baseline(&args.report, &args.baseline, args.allow_advisory)?;
+    let mode_note = mode.as_str();
     println!(
         "benchmark threshold validation ok ({mode_note}): {} vs {}",
         args.report.display(),
@@ -808,13 +804,20 @@ impl ThresholdComparisonMode {
             ),
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforced => THRESHOLD_MODE_ENFORCED,
+            Self::Advisory => THRESHOLD_MODE_ADVISORY,
+        }
+    }
 }
 
 fn validate_threshold_baseline(
     report_path: &Path,
     baseline_path: &Path,
     allow_advisory: bool,
-) -> Result<()> {
+) -> Result<ThresholdComparisonMode> {
     let report: BenchmarkReport = environment::read_report(report_path)?;
     let baseline: ThresholdBaseline = read_json(baseline_path).with_context(|| {
         format!(
@@ -1002,7 +1005,7 @@ fn validate_threshold_baseline(
         }
     }
 
-    Ok(())
+    Ok(comparison_mode)
 }
 
 fn threshold_ratio_value(
@@ -1266,10 +1269,12 @@ mod tests {
         METRIC_PRIMARY_UNITS_PER_SECOND, ObservedDisplayEnvironment, ReportStatus,
         RunnerReadinessReport, SystemSuiteLiveDisplayReport, SystemSuiteReport,
         THRESHOLD_BASELINE_TOOL, THRESHOLD_MAX_MEAN_RATIO, THRESHOLD_MAX_P95_RATIO,
-        THRESHOLD_MIN_BYTES_RATIO, THRESHOLD_MIN_PRIMARY_RATIO, ThresholdBaseline,
+        THRESHOLD_MIN_BYTES_RATIO, THRESHOLD_MIN_PRIMARY_RATIO, THRESHOLD_MODE_ADVISORY,
+        THRESHOLD_MODE_ENFORCED, ThresholdBaseline, ThresholdComparisonMode,
         ThresholdScenarioPolicy, build_runner_readiness_report,
         expected_system_suite_quality_gates, validate_calibration_report,
-        validate_runner_readiness_report, validate_system_suite_report, write_json,
+        validate_runner_readiness_report, validate_system_suite_report,
+        validate_threshold_baseline, write_json,
     };
     use crate::cli::{
         CalibrationValidateCli, ComparisonModeArg, GovernanceModeArg, LiveDisplayModeArg,
@@ -1715,6 +1720,50 @@ mod tests {
         let error =
             validate_system_suite_report(&report, &args, true).expect_err("regression must fail");
         assert!(error.to_string().contains("regression"));
+    }
+
+    #[test]
+    fn threshold_validation_returns_enforced_mode_from_baseline() {
+        let temp_dir = temp_dir("threshold_validation_returns_enforced_mode_from_baseline");
+        let benchmark_report_path = temp_dir.join("benchmark.json");
+        let benchmark_baseline_path = temp_dir.join("benchmark-baseline.json");
+
+        let report = valid_headless_report();
+        report
+            .write_output(&benchmark_report_path)
+            .expect("benchmark report should write");
+        write_threshold_baseline(
+            &BenchmarkReport::Headless(report),
+            &benchmark_baseline_path,
+            THRESHOLD_MODE_ENFORCED,
+        );
+
+        let mode =
+            validate_threshold_baseline(&benchmark_report_path, &benchmark_baseline_path, true)
+                .expect("validation should pass with enforced baseline");
+        assert_eq!(mode, ThresholdComparisonMode::Enforced);
+    }
+
+    #[test]
+    fn threshold_validation_returns_advisory_mode_from_baseline() {
+        let temp_dir = temp_dir("threshold_validation_returns_advisory_mode_from_baseline");
+        let benchmark_report_path = temp_dir.join("benchmark.json");
+        let benchmark_baseline_path = temp_dir.join("benchmark-baseline.json");
+
+        let report = valid_headless_report();
+        report
+            .write_output(&benchmark_report_path)
+            .expect("benchmark report should write");
+        write_threshold_baseline(
+            &BenchmarkReport::Headless(report),
+            &benchmark_baseline_path,
+            THRESHOLD_MODE_ADVISORY,
+        );
+
+        let mode =
+            validate_threshold_baseline(&benchmark_report_path, &benchmark_baseline_path, true)
+                .expect("validation should pass with advisory baseline");
+        assert_eq!(mode, ThresholdComparisonMode::Advisory);
     }
 
     #[test]
