@@ -40,6 +40,17 @@ if the target compose file does not match this project.
 The command also validates that controller, agent, and webhook-router containers
 are running.
 
+## PR validation modes
+
+- `pull_request` events from GitHub trigger `ci` mode by default.
+- `issue_comment` events with `@jenkins` trigger keep `extended` mode.
+- You can override with the Jenkins job parameter `VALIDATION_MODE`:
+  `ci`, `extended`, `codeql`, or `scorecard`.
+
+For adaptive behavior, `ops/jenkins/jobs/pr-validation.groovy` keeps the
+status context `Jenkins ${MODE} Validation` (`Jenkins CI Validation` for `ci`,
+`Jenkins Extended Validation` for `extended`) for each run.
+
 ## Notes
 
 - Do not print credentials or token values in logs.

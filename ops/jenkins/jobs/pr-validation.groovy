@@ -47,6 +47,7 @@ pipeline {
         string(name: 'TRIGGER_ACTION', defaultValue: '', trim: true)
         string(name: 'TRIGGER_ACTOR', defaultValue: '', trim: true)
         text(name: 'TRIGGER_COMMENT', defaultValue: '')
+        string(name: 'VALIDATION_MODE', defaultValue: '', trim: true)
     }
 
     environment {
@@ -145,19 +146,45 @@ git rev-parse HEAD
             }
         }
 
-        stage('Run Extended Validation') {
+        stage('Run Jenkins Validation') {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
                         String runner = fileExists('scripts/ci/run_jenkins_pr_ci.sh') ? 'bash scripts/ci/run_jenkins_pr_ci.sh' : 'bash /opt/jenkins/support/run_pr_ci.sh'
+                        String validationMode = params.VALIDATION_MODE?.trim()
+
+                        if (!validationMode) {
+                            if (params.TRIGGER_EVENT == 'pull_request') {
+                                validationMode = 'ci'
+                            } else if (params.TRIGGER_EVENT == 'issue_comment') {
+                                validationMode = 'extended'
+                            } else {
+                                validationMode = 'extended'
+                            }
+                        }
+
+                        if (!(validationMode in ['ci', 'extended', 'codeql', 'scorecard'])) {
+                            error("unsupported validation mode: ${validationMode}")
+                        }
+
+                        String validationContext = (validationMode == 'extended')
+                            ? 'Jenkins Extended Validation'
+                            : "Jenkins ${validationMode.toUpperCase()} Validation"
+                        String validationReportRoot = (validationMode == 'extended')
+                            ? "${env.REPORT_ROOT}/extended"
+                            : "${env.REPORT_ROOT}/ci"
+                        String validationPendingDescription = "Jenkins ${validationMode} validation is running"
+                        String validationSuccessDescription = "Jenkins ${validationMode} validation passed"
+                        String validationFailureDescription = "Jenkins ${validationMode} validation failed"
+
                         def validations = [
                             [
-                                context: 'Jenkins Extended Validation',
-                                mode: 'extended',
-                                reportRoot: "${env.REPORT_ROOT}/extended",
-                                pendingDescription: 'Jenkins extended validation is running',
-                                successDescription: 'Jenkins extended validation passed',
-                                failureDescription: 'Jenkins extended validation failed',
+                                context: validationContext,
+                                mode: validationMode,
+                                reportRoot: validationReportRoot,
+                                pendingDescription: validationPendingDescription,
+                                successDescription: validationSuccessDescription,
+                                failureDescription: validationFailureDescription,
                             ],
                         ]
                         def failures = []
