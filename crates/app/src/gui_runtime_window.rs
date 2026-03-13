@@ -13,7 +13,7 @@ pub(super) struct ViewportGeometry {
 
 impl GuiRuntimeApp {
     pub(super) fn bootstrap_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if self.window.is_some() {
+        if self.window.window.is_some() {
             return Ok(());
         }
 
@@ -74,17 +74,17 @@ impl GuiRuntimeApp {
             .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
         let surface = SoftbufferSurface::new(&context, window.clone())
             .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-        self._context = Some(context);
-        self.surface = Some(surface);
+        self.window.context = Some(context);
+        self.window.surface = Some(surface);
         debug!(
-            gpu_deferred = self.render_backend.deferred_gpu_init_pending(),
+            gpu_deferred = self.control.render_backend.deferred_gpu_init_pending(),
             "bootstrap: softbuffer context created, GPU init deferred to event loop"
         );
 
-        self.window_size = cap_framebuffer_extent(window.inner_size());
-        self.window_id = Some(window.id());
-        self.window_control = Some(window_control);
-        self.window = Some(window);
+        self.window.window_size = cap_framebuffer_extent(window.inner_size());
+        self.window.window_id = Some(window.id());
+        self.window.window_control = Some(window_control);
+        self.window.window = Some(window);
 
         debug!("bootstrap: updating viewport geometry");
         self.update_viewport_geometry(event_loop);
@@ -103,28 +103,29 @@ impl GuiRuntimeApp {
     /// GPU backend before the window itself.
     pub(super) fn release_window_resources(&mut self) {
         debug!(
-            window_exists = self.window.is_some(),
+            window_exists = self.window.window.is_some(),
             gpu_initialized = self.gpu_renderer.is_initialized(),
-            has_surface = self.surface.is_some(),
+            has_surface = self.window.surface.is_some(),
             "releasing window resources"
         );
-        self.surface = None;
-        self.last_softbuffer_size = None;
-        self._context = None;
+        self.window.surface = None;
+        self.window.last_softbuffer_size = None;
+        self.window.context = None;
         self.gpu_renderer = GpuRenderer::default();
-        self.window_control = None;
-        self.window_id = None;
-        self.window = None;
-        self.redraw_in_flight = false;
+        self.window.window_control = None;
+        self.window.window_id = None;
+        self.window.window = None;
+        self.frame.redraw_in_flight = false;
         self.sync_deferred_gpu_init_state();
         debug!("window resources released");
     }
 
     pub(super) fn ensure_softbuffer_surface(&mut self) -> Result<()> {
-        if self.surface.is_some() {
+        if self.window.surface.is_some() {
             return Ok(());
         }
         let window = self
+            .window
             .window
             .as_ref()
             .ok_or_else(|| anyhow!("no window for softbuffer initialization"))?;
@@ -132,14 +133,14 @@ impl GuiRuntimeApp {
             .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
         let surface = SoftbufferSurface::new(&context, window.clone())
             .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-        self._context = Some(context);
-        self.surface = Some(surface);
+        self.window.context = Some(context);
+        self.window.surface = Some(surface);
         info!("lazily initialized softbuffer surface for CPU fallback");
         Ok(())
     }
 
     pub(super) fn apply_post_draw_visibility_handshake(&self) {
-        if let Some(window) = self.window.as_ref() {
+        if let Some(window) = self.window.window.as_ref() {
             window.set_visible(true);
             window.focus_window();
             let _ = self.request_window_redraw();
@@ -178,10 +179,12 @@ impl GuiRuntimeApp {
             );
         }
 
-        self.window_size = capped_size;
+        self.window.window_size = capped_size;
         if self.is_gpu_lane_ready() {
-            self.gpu_renderer
-                .resize(self.window_size.width, self.window_size.height);
+            self.gpu_renderer.resize(
+                self.window.window_size.width,
+                self.window.window_size.height,
+            );
         }
         self.update_viewport_geometry(event_loop);
         self.handle_monitor_affecting_event(monitor_event);
@@ -189,11 +192,11 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn update_viewport_geometry(&mut self, event_loop: &ActiveEventLoop) {
-        let raw_cols = ((self.window_size.width as usize) / CELL_WIDTH).max(1);
-        let raw_rows = ((self.window_size.height as usize) / CELL_HEIGHT).max(1);
+        let raw_cols = ((self.window.window_size.width as usize) / CELL_WIDTH).max(1);
+        let raw_rows = ((self.window.window_size.height as usize) / CELL_HEIGHT).max(1);
         let (cols, rows) = cap_terminal_geometry(raw_cols, raw_rows);
-        let pixel_width = self.window_size.width.min(u16::MAX as u32) as u16;
-        let pixel_height = self.window_size.height.min(u16::MAX as u32) as u16;
+        let pixel_width = self.window.window_size.width.min(u16::MAX as u32) as u16;
+        let pixel_height = self.window.window_size.height.min(u16::MAX as u32) as u16;
         if cols as usize != raw_cols || rows as usize != raw_rows {
             warn!(
                 raw_cols,
@@ -208,12 +211,7 @@ impl GuiRuntimeApp {
         }
 
         if !viewport_geometry_changed(
-            ViewportGeometry {
-                cols: self.last_viewport_cols,
-                rows: self.last_viewport_rows,
-                pixel_width: self.last_viewport_pixel_width,
-                pixel_height: self.last_viewport_pixel_height,
-            },
+            self.window.viewport_geometry,
             ViewportGeometry {
                 cols,
                 rows,
@@ -233,8 +231,8 @@ impl GuiRuntimeApp {
             rows,
             pixel_width,
             pixel_height,
-            width = self.window_size.width,
-            height = self.window_size.height,
+            width = self.window.window_size.width,
+            height = self.window.window_size.height,
             "viewport: resizing"
         );
 
@@ -261,10 +259,12 @@ impl GuiRuntimeApp {
         }
 
         debug!("viewport: pty resize complete");
-        self.last_viewport_cols = cols;
-        self.last_viewport_rows = rows;
-        self.last_viewport_pixel_width = pixel_width;
-        self.last_viewport_pixel_height = pixel_height;
+        self.window.viewport_geometry = ViewportGeometry {
+            cols,
+            rows,
+            pixel_width,
+            pixel_height,
+        };
 
         if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyResize) {
             self.fatal_error = Some(error);
@@ -284,11 +284,11 @@ impl GuiRuntimeApp {
         monitor_event: MonitorAffectingWindowEvent,
     ) {
         let sampled_refresh_rate_millihz =
-            sample_monitor_refresh_rate_millihz(self.window_control.as_deref());
+            sample_monitor_refresh_rate_millihz(self.window.window_control.as_deref());
         let command =
             cadence_resync_command_for_monitor_event(monitor_event, sampled_refresh_rate_millihz);
 
-        match self.ui_runtime.handle_command(command) {
+        match self.control.ui_runtime.handle_command(command) {
             Ok(receipt) => match receipt.outcome {
                 UiCommandOutcome::CadenceResynced {
                     previous_refresh_rate_millihz,
@@ -306,7 +306,7 @@ impl GuiRuntimeApp {
                         monitor_transfer,
                         "GUI runtime re-synced cadence after monitor-affecting event"
                     );
-                    if let Err(error) = self.diagnostics.emit_runtime_command_receipt(
+                    if let Err(error) = self.control.diagnostics.emit_runtime_command_receipt(
                         None,
                         RuntimeCommandSourceKind::MonitorEvent,
                         None,
@@ -348,7 +348,7 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn request_window_redraw(&self) -> bool {
-        if let Some(window_control) = self.window_control.as_ref() {
+        if let Some(window_control) = self.window.window_control.as_ref() {
             if let Err(error) = window_control.request_redraw() {
                 warn!(
                     error = %error,
@@ -363,7 +363,7 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn set_window_title(&self, title: &str) {
-        if let Some(window_control) = self.window_control.as_ref() {
+        if let Some(window_control) = self.window.window_control.as_ref() {
             if let Err(error) = window_control.set_title(title) {
                 warn!(
                     error = %error,
@@ -376,7 +376,7 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn emit_close_intent(&self) {
-        if let Some(window_control) = self.window_control.as_ref()
+        if let Some(window_control) = self.window.window_control.as_ref()
             && let Err(error) = window_control.close()
         {
             warn!(

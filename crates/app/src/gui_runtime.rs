@@ -38,10 +38,10 @@ use self::output::{
 use self::terminal_io::{
     cap_paste_text, dispatch_runtime_palette_command, read_clipboard_text_for_paste,
 };
-use self::windowing::cap_framebuffer_extent;
+use self::windowing::{ViewportGeometry, cap_framebuffer_extent};
 #[cfg(test)]
 use self::windowing::{
-    ViewportGeometry, cadence_resync_command_for_monitor_event, cap_terminal_geometry,
+    cadence_resync_command_for_monitor_event, cap_terminal_geometry,
     sample_monitor_refresh_rate_millihz, viewport_geometry_changed,
 };
 use crate::gui_runtime_backend::{
@@ -59,11 +59,7 @@ use crate::runtime_shared::palette::{
     RuntimePaletteView, handle_runtime_palette_key_input,
     runtime_palette_status_line as shared_runtime_palette_status_line, toggle_runtime_palette,
 };
-use crate::runtime_shared::pty_boundary::{
-    BoundaryFailureOutcome, PtyReadFailureResolution, apply_pty_boundary_failure,
-    fatal_pty_boundary_failure, mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered,
-    resolve_live_pty_read_failure, runtime_boundary_notice,
-};
+use crate::runtime_shared::pty_boundary::{PtyReadFailureResolution, runtime_boundary_notice};
 use crate::runtime_shared::shutdown::{
     JoinThreadOutcome, SHUTDOWN_JOIN_POLL_INTERVAL, SHUTDOWN_JOIN_TIMEOUT,
     child_exit_drain_timed_out as shared_child_exit_drain_timed_out,
@@ -85,7 +81,7 @@ use rldyourterm_foundation_platform::window::PlatformWindowFactory;
 use rldyourterm_render_cpu::render_terminal_buffer;
 use rldyourterm_render_gpu::{GpuRenderer, SELECTION_NONE};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
-use rldyourterm_services::session::{SessionBoundary, SessionController, SessionState};
+use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransitionOutcome};
 use rldyourterm_services::terminal::{
     CELL_HEIGHT, CELL_WIDTH, MouseFormat, MouseMode, TerminalState,
 };
@@ -241,7 +237,7 @@ pub(crate) fn run_interactive_gui_pty(
 
     info!(
         mode = ?initial_mode,
-        active_render_path = ?app.ui_runtime.active_render_path(),
+        active_render_path = ?app.control.ui_runtime.active_render_path(),
         refresh_rate_millihz,
         windows = window_count,
         "starting GUI runtime"
@@ -334,51 +330,20 @@ struct GuiRuntimeApp {
     clipboard: Arc<dyn ClipboardAdapter>,
     reader_pump: Option<JoinHandle<()>>,
     wait_pump: Option<JoinHandle<()>>,
-    session_policy: SessionController,
-    diagnostics: DiagnosticsSink,
-    ui_runtime: UiRuntime,
+    control: GuiRuntimeControlPlane,
     gpu_renderer: GpuRenderer,
     gpu_cache_dir: Option<PathBuf>,
     started_at: Instant,
-    render_backend: RenderBackendCoordinator,
 
-    window: Option<Arc<Window>>,
-    window_control: Option<Box<dyn WindowControl>>,
-    window_id: Option<WindowId>,
-    _context: Option<SoftbufferContext<Arc<Window>>>,
-    surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
-    window_size: PhysicalSize<u32>,
+    window: GuiRuntimeWindowPlane,
     terminal: TerminalState,
     glyph_cache: GlyphCache,
-    settings: SettingsService,
-    modifiers: ModifiersState,
-    palette_open: bool,
-    redraw_pending: bool,
-    redraw_in_flight: bool,
+    frame: GuiRuntimeFramePlane,
+    interaction: GuiRuntimeInteractionPlane,
     child_exit_pending: bool,
     child_exit_drain_started_at: Option<Instant>,
-    last_rendered_cursor_row: Option<u16>,
-    last_softbuffer_size: Option<PhysicalSize<u32>>,
-    last_viewport_cols: u16,
-    last_viewport_rows: u16,
-    last_viewport_pixel_width: u16,
-    last_viewport_pixel_height: u16,
     output_batch: Vec<u8>,
     response_buffer_scratch: TerminalResponseBuffer,
-    current_cpu_damage_rows_scratch: Vec<u16>,
-    repaint_rows_scratch: Vec<u16>,
-    persisted_cpu_damage_rows_scratch: Vec<u16>,
-    previous_cpu_damage_rows: Vec<u16>,
-
-    blink_visible: bool,
-    last_blink_toggle: Instant,
-    last_window_title: String,
-    viewport_offset: usize,
-    mouse_cell_col: u16,
-    mouse_cell_row: u16,
-    mouse_buttons: u8,
-    selection_anchor: Option<(u16, u16)>,
-    selection_end: Option<(u16, u16)>,
 
     exit_code: Option<i32>,
     fatal_error: Option<anyhow::Error>,
@@ -399,6 +364,48 @@ struct GuiRuntimeChannels {
     output_event_pending: Arc<AtomicBool>,
     reader_pump: JoinHandle<()>,
     wait_pump: JoinHandle<()>,
+}
+
+struct GuiRuntimeControlPlane {
+    diagnostics: DiagnosticsSink,
+    ui_runtime: UiRuntime,
+    render_backend: RenderBackendCoordinator,
+    settings: SettingsService,
+}
+
+struct GuiRuntimeWindowPlane {
+    window: Option<Arc<Window>>,
+    window_control: Option<Box<dyn WindowControl>>,
+    window_id: Option<WindowId>,
+    context: Option<SoftbufferContext<Arc<Window>>>,
+    surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
+    window_size: PhysicalSize<u32>,
+    last_softbuffer_size: Option<PhysicalSize<u32>>,
+    viewport_geometry: ViewportGeometry,
+    last_window_title: String,
+}
+
+struct GuiRuntimeFramePlane {
+    redraw_pending: bool,
+    redraw_in_flight: bool,
+    last_rendered_cursor_row: Option<u16>,
+    current_cpu_damage_rows_scratch: Vec<u16>,
+    repaint_rows_scratch: Vec<u16>,
+    persisted_cpu_damage_rows_scratch: Vec<u16>,
+    previous_cpu_damage_rows: Vec<u16>,
+    blink_visible: bool,
+    last_blink_toggle: Instant,
+}
+
+struct GuiRuntimeInteractionPlane {
+    modifiers: ModifiersState,
+    palette_open: bool,
+    viewport_offset: usize,
+    mouse_cell_col: u16,
+    mouse_cell_row: u16,
+    mouse_buttons: u8,
+    selection_anchor: Option<(u16, u16)>,
+    selection_end: Option<(u16, u16)>,
 }
 
 impl GuiRuntimeApp {
@@ -424,17 +431,25 @@ impl GuiRuntimeApp {
             wait_pump,
         } = channels;
 
-        let ui_runtime = UiRuntime::bootstrap(UiBootstrapConfig {
+        let mut ui_runtime = UiRuntime::bootstrap(UiBootstrapConfig {
             render_mode: initial_mode,
             refresh_rate_millihz,
             window_count,
             scrollback_cap: DEFAULT_SCROLLBACK_CAP,
         })
         .context("failed to bootstrap UI runtime for GUI app")?;
-        let mut session_policy = SessionController::new();
-        session_policy
-            .mark_running()
-            .context("failed to initialize GUI session boundary policy")?;
+        let bootstrap_receipt = ui_runtime
+            .handle_command(UiRuntimeCommand::Tick)
+            .context("failed to dispatch UiRuntimeCommand::Tick during GUI runtime bootstrap")?;
+        match bootstrap_receipt.outcome {
+            UiCommandOutcome::SessionTransition(transition)
+                if matches!(transition.outcome, SessionTransitionOutcome::Started { .. }) => {}
+            other => {
+                return Err(anyhow!(
+                    "unexpected UI outcome while initializing GUI session boundary policy: {other:?}"
+                ));
+            }
+        }
 
         Ok(Self {
             event_proxy,
@@ -447,70 +462,82 @@ impl GuiRuntimeApp {
             clipboard,
             reader_pump: Some(reader_pump),
             wait_pump: Some(wait_pump),
-            session_policy,
-            diagnostics: DiagnosticsSink::default(),
-            ui_runtime,
+            control: GuiRuntimeControlPlane {
+                diagnostics: DiagnosticsSink::default(),
+                ui_runtime,
+                render_backend: RenderBackendCoordinator::new(initial_mode),
+                settings: SettingsService::default(),
+            },
             gpu_renderer: GpuRenderer::default(),
             gpu_cache_dir: app_handler::resolve_gpu_cache_dir(),
             started_at: Instant::now(),
-            render_backend: RenderBackendCoordinator::new(initial_mode),
-            window: None,
-            window_control: None,
-            window_id: None,
-            _context: None,
-            surface: None,
-            window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
+            window: GuiRuntimeWindowPlane {
+                window: None,
+                window_control: None,
+                window_id: None,
+                context: None,
+                surface: None,
+                window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
+                last_softbuffer_size: None,
+                viewport_geometry: ViewportGeometry {
+                    cols: DEFAULT_TERMINAL_COLS,
+                    rows: DEFAULT_TERMINAL_ROWS,
+                    pixel_width: DEFAULT_GUI_WIDTH.min(u16::MAX as u32) as u16,
+                    pixel_height: DEFAULT_GUI_HEIGHT.min(u16::MAX as u32) as u16,
+                },
+                last_window_title: String::new(),
+            },
             terminal: TerminalState::new(
                 DEFAULT_TERMINAL_COLS,
                 DEFAULT_TERMINAL_ROWS,
                 DEFAULT_SCROLLBACK_CAP,
             ),
             glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
-            settings: SettingsService::default(),
-            modifiers: ModifiersState::default(),
-            palette_open: false,
-            redraw_pending: true,
-            redraw_in_flight: false,
+            frame: GuiRuntimeFramePlane {
+                redraw_pending: true,
+                redraw_in_flight: false,
+                last_rendered_cursor_row: None,
+                current_cpu_damage_rows_scratch: Vec::with_capacity(
+                    DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY,
+                ),
+                repaint_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
+                persisted_cpu_damage_rows_scratch: Vec::with_capacity(
+                    DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY,
+                ),
+                previous_cpu_damage_rows: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
+                blink_visible: true,
+                last_blink_toggle: Instant::now(),
+            },
+            interaction: GuiRuntimeInteractionPlane {
+                modifiers: ModifiersState::default(),
+                palette_open: false,
+                viewport_offset: 0,
+                mouse_cell_col: 0,
+                mouse_cell_row: 0,
+                mouse_buttons: 0,
+                selection_anchor: None,
+                selection_end: None,
+            },
             child_exit_pending: false,
             child_exit_drain_started_at: None,
-            last_rendered_cursor_row: None,
-            last_softbuffer_size: None,
-            last_viewport_cols: DEFAULT_TERMINAL_COLS,
-            last_viewport_rows: DEFAULT_TERMINAL_ROWS,
-            last_viewport_pixel_width: DEFAULT_GUI_WIDTH.min(u16::MAX as u32) as u16,
-            last_viewport_pixel_height: DEFAULT_GUI_HEIGHT.min(u16::MAX as u32) as u16,
             output_batch: Vec::with_capacity(OUTPUT_BATCH_INITIAL_CAPACITY),
             response_buffer_scratch: TerminalResponseBuffer::with_capacity(
                 FEED_EVENTS_SCRATCH_INITIAL_CAPACITY,
             ),
-            current_cpu_damage_rows_scratch: Vec::with_capacity(
-                DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY,
-            ),
-            repaint_rows_scratch: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
-            persisted_cpu_damage_rows_scratch: Vec::with_capacity(
-                DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY,
-            ),
-            previous_cpu_damage_rows: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
-            blink_visible: true,
-            last_blink_toggle: Instant::now(),
-            last_window_title: String::new(),
-            viewport_offset: 0,
-            mouse_cell_col: 0,
-            mouse_cell_row: 0,
-            mouse_buttons: 0,
-            selection_anchor: None,
-            selection_end: None,
             exit_code: None,
             fatal_error: None,
         })
     }
 
     fn queue_redraw(&mut self) {
-        self.redraw_pending = true;
+        self.frame.redraw_pending = true;
     }
 
     fn selection_flat_range(&self) -> (u32, u32) {
-        match (self.selection_anchor, self.selection_end) {
+        match (
+            self.interaction.selection_anchor,
+            self.interaction.selection_end,
+        ) {
             (Some((ar, ac)), Some((er, ec))) => {
                 let cols = self.terminal.grid.width() as u32;
                 let start = ar as u32 * cols + ac as u32;
@@ -522,9 +549,9 @@ impl GuiRuntimeApp {
     }
 
     fn clear_selection(&mut self) {
-        if self.selection_anchor.is_some() {
-            self.selection_anchor = None;
-            self.selection_end = None;
+        if self.interaction.selection_anchor.is_some() {
+            self.interaction.selection_anchor = None;
+            self.interaction.selection_end = None;
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();
         }

@@ -355,6 +355,27 @@ fn emit_runtime_command_receipt_maps_cadence_resync_to_cadence_event() {
 }
 
 #[test]
+fn emit_runtime_command_receipt_accepts_pty_boundary_source_without_step() {
+    let sink = DiagnosticsSink::default();
+    let emitted = sink
+        .emit_runtime_command_receipt(
+            None,
+            RuntimeCommandSourceKind::PtyBoundary,
+            None,
+            &sample_gpu_retry_receipt(),
+        )
+        .unwrap();
+
+    assert_eq!(emitted.kind, EventKind::ResourceWarning);
+    assert!(
+        emitted
+            .payload_json
+            .expect("payload must exist")
+            .contains("\"source\":\"pty-boundary\"")
+    );
+}
+
+#[test]
 fn emit_runtime_command_receipt_rejects_bootstrap_without_step() {
     let sink = DiagnosticsSink::default();
     let err = sink
