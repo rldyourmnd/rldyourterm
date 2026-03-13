@@ -23,9 +23,10 @@ cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
   --require-full-suite
 
 if [[ -n "$baseline_path" ]]; then
-  python3 scripts/ci/validate_terminal_benchmark_thresholds.py \
-    "$report_path" \
-    "$baseline_path"
+  cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
+    governance threshold validate \
+    --report "$report_path" \
+    --baseline "$baseline_path"
 fi
 
 echo "benchmark full ok: $report_path"

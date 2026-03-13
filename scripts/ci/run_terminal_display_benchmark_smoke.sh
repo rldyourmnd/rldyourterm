@@ -1,20 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-require_display_session() {
-  case "$(uname -s)" in
-    Linux)
-      if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        echo "live display benchmark requires DISPLAY or WAYLAND_DISPLAY on Linux" >&2
-        exit 2
-      fi
-      ;;
-    Darwin)
-      ;;
-    *)
-      ;;
-  esac
-}
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/display_session.sh
+source "${script_dir}/lib/display_session.sh"
 
 report_path="${1:-$(mktemp -t rldyourterm-terminal-display-benchmark.XXXXXX.json)}"
 scenario="${TERMINAL_DISPLAY_BENCHMARK_SCENARIO:-all}"

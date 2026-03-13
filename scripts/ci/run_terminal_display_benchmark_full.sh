@@ -1,20 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-require_display_session() {
-  case "$(uname -s)" in
-    Linux)
-      if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
-        echo "live display benchmark requires DISPLAY or WAYLAND_DISPLAY on Linux" >&2
-        exit 2
-      fi
-      ;;
-    Darwin)
-      ;;
-    *)
-      ;;
-  esac
-}
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/display_session.sh
+source "${script_dir}/lib/display_session.sh"
 
 report_path="${1:-target/terminal-benchmark/live-display-report.json}"
 scenario="${TERMINAL_DISPLAY_BENCHMARK_SCENARIO:-all}"
@@ -49,9 +38,10 @@ cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
   "${validator_args[@]}"
 
 if [[ -n "$baseline_path" ]]; then
-  python3 scripts/ci/validate_terminal_benchmark_thresholds.py \
-    "$report_path" \
-    "$baseline_path" \
+  cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
+    governance threshold validate \
+    --report "$report_path" \
+    --baseline "$baseline_path" \
     --allow-advisory
 fi
 

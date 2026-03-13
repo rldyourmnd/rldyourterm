@@ -26,9 +26,10 @@ python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
   --environment-scope controlled-display-session
 
 threshold_args=(
-  python3 scripts/ci/validate_terminal_benchmark_thresholds.py
-  "$report_path"
-  "$baseline_path"
+  cargo run -q --locked -p rldyourterm-terminal-benchmark --
+  governance threshold validate
+  --report "$report_path"
+  --baseline "$baseline_path"
 )
 if [[ "$comparison_mode" == "advisory" ]]; then
   threshold_args+=(--allow-advisory)
