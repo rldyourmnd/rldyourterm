@@ -18,6 +18,13 @@ fi
 ssh_target="$1"
 remote_root="${2:-/srv/rldyourterm-jenkins}"
 
+if ! ssh -o BatchMode=yes -o ConnectTimeout=12 "$ssh_target" "
+  [ -d '$remote_root' ] && ( [ -f '$remote_root/compose.yaml' ] || [ -f '$remote_root/docker-compose.yaml' ] || [ -f '$remote_root/docker-compose.yml' ] )
+"; then
+  echo "remote Jenkins root '$remote_root' is missing compose file or directory on $ssh_target" >&2
+  exit 1
+fi
+
 declare -A files_to_check=(
   [casc]="ops/jenkins/controller/casc/jenkins.yaml /opt/jenkins/casc/jenkins.yaml"
   [pipeline_job]="ops/jenkins/jobs/pr-validation.groovy /opt/jenkins/jobs/pr-validation.groovy"
