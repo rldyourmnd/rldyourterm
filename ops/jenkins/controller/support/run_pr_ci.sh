@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-usage: run_pr_ci.sh <ci|codeql|scorecard> [report-root]
+usage: run_pr_ci.sh <ci|codeql|scorecard|extended> [report-root]
 USAGE
 }
 
@@ -43,6 +43,9 @@ pr_checkout_sha="${JENKINS_PR_CHECKOUT_SHA:-}"
 fuzz_toolchain="${JENKINS_RUST_FUZZ_TOOLCHAIN:-nightly-2026-03-11}"
 fuzz_seconds="${JENKINS_PR_FUZZ_SECONDS:-300}"
 codeql_max_extracted_with_errors="${JENKINS_CODEQL_MAX_EXTRACTED_WITH_ERRORS:-5}"
+extended_benchmark_scale="${JENKINS_EXTENDED_BENCHMARK_SCALE:-stress}"
+extended_matrix_repeat="${JENKINS_EXTENDED_MATRIX_REPEAT:-5}"
+extended_fuzz_seconds="${JENKINS_EXTENDED_FUZZ_SECONDS:-600}"
 
 validate_semantic_pr_title() {
   local title="$1"
@@ -73,10 +76,6 @@ run_ci_suite() {
   local ci_root="$root/ci"
   local system_suite_report="$ci_root/jenkins-system-suite.json"
   local benchmark_report="$ci_root/jenkins-benchmark-report.json"
-  local -a unittest_modules=(
-    scripts.ci.test_terminal_benchmark_environment
-    scripts.ci.test_validate_terminal_benchmark_report
-  )
 
   mkdir -p "$ci_root"
 
@@ -94,15 +93,7 @@ run_ci_suite() {
 
   bash scripts/ci/validate_cflite_toolchain_pin.sh
 
-  if [[ -f "scripts/ci/test_terminal_display_governance.py" ]]; then
-    unittest_modules+=(scripts.ci.test_terminal_display_governance)
-  fi
-
-  if [[ -f "scripts/ci/test_terminal_system_suite_governance.py" ]]; then
-    unittest_modules+=(scripts.ci.test_terminal_system_suite_governance)
-  fi
-
-  python3 -m unittest "${unittest_modules[@]}"
+  bash scripts/ci/run_python_ci_unittests.sh
 
   cargo fmt --all -- --check
   cargo check --workspace --all-targets --locked
@@ -208,6 +199,21 @@ run_codeql_suite() {
   fi
 }
 
+run_extended_suite() {
+  local root="$1"
+  local extended_root="$root/extended"
+  local benchmark_report="$extended_root/jenkins-extended-benchmark-report.json"
+
+  mkdir -p "$extended_root"
+
+  env TERMINAL_BENCHMARK_SCALE="$extended_benchmark_scale" \
+    bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report"
+
+  bash scripts/ci/run_e2e_governance.sh --mode release
+  bash scripts/mvp/run_matrix.sh "$extended_matrix_repeat"
+  cargo +"$fuzz_toolchain" fuzz run parser_feed -- -max_total_time="$extended_fuzz_seconds"
+}
+
 run_scorecard_suite() {
   local root="$1"
   local scorecard_root="$root/scorecard"
@@ -236,6 +242,9 @@ case "$mode" in
     ;;
   scorecard)
     run_scorecard_suite "$report_root"
+    ;;
+  extended)
+    run_extended_suite "$report_root"
     ;;
   -h|--help|help)
     usage

@@ -34,7 +34,6 @@ pipeline {
     agent { label 'linux-ci' }
 
     options {
-        disableConcurrentBuilds()
         timestamps()
         ansiColor('xterm')
         timeout(time: 120, unit: 'MINUTES')
@@ -140,35 +139,19 @@ git rev-parse HEAD
             }
         }
 
-        stage('Run Headless Validation') {
+        stage('Run Extended Validation') {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
                         String runner = fileExists('scripts/ci/run_jenkins_pr_ci.sh') ? 'bash scripts/ci/run_jenkins_pr_ci.sh' : 'bash /opt/jenkins/support/run_pr_ci.sh'
                         def validations = [
                             [
-                                context: 'CI',
-                                mode: 'ci',
-                                reportRoot: "${env.REPORT_ROOT}/ci",
-                                pendingDescription: 'Jenkins CI validation is running',
-                                successDescription: 'Jenkins CI validation passed',
-                                failureDescription: 'Jenkins CI validation failed',
-                            ],
-                            [
-                                context: 'CodeQL',
-                                mode: 'codeql',
-                                reportRoot: "${env.REPORT_ROOT}/codeql",
-                                pendingDescription: 'Jenkins CodeQL analysis is running',
-                                successDescription: 'Jenkins CodeQL analysis passed',
-                                failureDescription: 'Jenkins CodeQL analysis failed',
-                            ],
-                            [
-                                context: 'Scorecard',
-                                mode: 'scorecard',
-                                reportRoot: "${env.REPORT_ROOT}/scorecard",
-                                pendingDescription: 'Jenkins Scorecard validation is running',
-                                successDescription: 'Jenkins Scorecard validation passed',
-                                failureDescription: 'Jenkins Scorecard validation failed',
+                                context: 'Jenkins Extended Validation',
+                                mode: 'extended',
+                                reportRoot: "${env.REPORT_ROOT}/extended",
+                                pendingDescription: 'Jenkins extended validation is running',
+                                successDescription: 'Jenkins extended validation passed',
+                                failureDescription: 'Jenkins extended validation failed',
                             ],
                         ]
                         def failures = []

@@ -7,6 +7,7 @@
         "pull_request": {
           "actions": {
             "opened": "Rldyourterm/PR-Validation",
+            "ready_for_review": "Rldyourterm/PR-Validation",
             "reopened": "Rldyourterm/PR-Validation",
             "synchronize": "Rldyourterm/PR-Validation"
           }
@@ -20,8 +21,8 @@
   },
   "jenkins_jobs": {
     "Rldyourterm/PR-Validation": {
-      "description": "Headless PR validation for rldyourterm",
-      "estimated_duration": "45-90 minutes"
+      "description": "Extended server-side PR validation for rldyourterm",
+      "estimated_duration": "60-120 minutes"
     }
   }
 }

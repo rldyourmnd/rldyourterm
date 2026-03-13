@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import importlib.util
 import io
+import json
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
@@ -13,6 +14,7 @@ import urllib.error
 
 
 MODULE_PATH = Path(__file__).with_name("router.py")
+CONFIG_PATH = Path(__file__).with_name("repositories.json")
 MODULE_SPEC = importlib.util.spec_from_file_location("jenkins_router", MODULE_PATH)
 assert MODULE_SPEC is not None
 assert MODULE_SPEC.loader is not None
@@ -67,6 +69,14 @@ class RouterHelpersTest(unittest.TestCase):
 
         self.assertTrue(router.verify_signature(secret, body, signature))
         self.assertFalse(router.verify_signature(secret, body, "sha256=deadbeef"))
+
+    def test_repository_config_keeps_ready_for_review_trigger(self) -> None:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        repo_config = config["repositories"]["rldyourmnd/rldyourterm"]
+        actions = repo_config["events"]["pull_request"]["actions"]
+
+        self.assertEqual(actions["ready_for_review"], "Rldyourterm/PR-Validation")
+        self.assertEqual(repo_config["events"]["issue_comment"]["trigger"], "@jenkins")
 
     def test_transient_jenkins_error_detects_retryable_failures(self) -> None:
         bad_gateway = urllib.error.HTTPError(
