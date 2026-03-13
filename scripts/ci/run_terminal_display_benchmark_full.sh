@@ -42,8 +42,10 @@ else
   validator_args+=(--require-scenario "$scenario")
 fi
 
-python3 scripts/ci/validate_terminal_display_benchmark_report.py \
-  "$report_path" \
+cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
+  validate \
+  --suite live-display \
+  --report "$report_path" \
   "${validator_args[@]}"
 
 if [[ -n "$baseline_path" ]]; then

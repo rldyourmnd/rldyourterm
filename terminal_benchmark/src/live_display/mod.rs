@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
-mod scenario_registry;
+pub(crate) mod scenario_registry;
 
 use crate::cli::{Cli, ScaleArg, ScenarioArg};
 use crate::fixtures::scale_name;
@@ -169,21 +169,21 @@ pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
     }
 
     Ok(LiveDisplayBenchmarkSuiteReport {
-        benchmark_tool: "terminal-benchmark",
-        suite: BENCHMARK_SUITE_NAME,
+        benchmark_tool: "terminal-benchmark".to_owned(),
+        suite: BENCHMARK_SUITE_NAME.to_owned(),
         suite_manifest: suite_manifest(),
         scenario_selection: cli.scenario.as_str().to_owned(),
         selected_scenarios: selected_scenario_names(cli.scenario),
-        scale: scale_name(cli.scale),
+        scale: scale_name(cli.scale).to_owned(),
         warmup_iterations: cli.warmup_iterations,
         measured_iterations: cli.iterations,
         cols: cli.cols,
         rows: cli.rows,
         environment: LiveDisplayEnvironmentReport {
-            kind: "live-display",
-            window_runtime: "winit",
-            gpu_runtime: "wgpu",
-            cpu_present_runtime: "softbuffer",
+            kind: "live-display".to_owned(),
+            window_runtime: "winit".to_owned(),
+            gpu_runtime: "wgpu".to_owned(),
+            cpu_present_runtime: "softbuffer".to_owned(),
             platform_dependent: true,
             session_type: std::env::var("XDG_SESSION_TYPE")
                 .ok()
@@ -332,12 +332,12 @@ fn run_measured_scenario(
     };
     let mean_seconds = stats.mean_nanos as f64 / 1_000_000_000.0;
     Ok(LiveDisplayScenarioReport {
-        scenario: metadata.name,
-        layer: metadata.layer,
-        benchmark_kind: metadata.benchmark_kind,
-        backend: metadata.backend,
-        description: metadata.description,
-        primary_unit_label: metadata.primary_unit_label,
+        scenario: metadata.name.to_owned(),
+        layer: metadata.layer.to_owned(),
+        benchmark_kind: metadata.benchmark_kind.to_owned(),
+        backend: metadata.backend.to_owned(),
+        description: metadata.description.to_owned(),
+        primary_unit_label: metadata.primary_unit_label.to_owned(),
         primary_units_per_iteration: primary_units,
         stats,
         primary_units_per_second: if mean_seconds > 0.0 {
@@ -345,7 +345,7 @@ fn run_measured_scenario(
         } else {
             0.0
         },
-        pacing_mode: pacing_mode.unwrap_or("event-driven"),
+        pacing_mode: pacing_mode.unwrap_or("event-driven").to_owned(),
         monitor_refresh_rate_millihz,
         monitor_name,
         monitor_scale_factor,

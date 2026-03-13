@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use crate::cli::{Cli, ScenarioArg};
-use crate::coverage::benchmark_coverage_summary;
 use crate::data::{SurfacePolicyCase, Workload, WorkloadScale};
 use crate::fixtures::{
     canonical_chunk_bytes, chunk_count, feed_bytes_in_chunks, scale_name, seeded_terminal_state,
@@ -46,6 +45,11 @@ pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
     let scale = WorkloadScale::from_arg(cli.scale);
     let workload = Workload::generate(cli.cols, scale);
     let scenarios = registry_selected_scenarios(cli.scenario);
+    let suite_manifest = suite_manifest();
+    let coverage = suite_manifest
+        .coverage
+        .clone()
+        .expect("canonical headless suite manifest must define coverage");
     let mut results = Vec::with_capacity(scenarios.len());
 
     for scenario in scenarios {
@@ -54,12 +58,12 @@ pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
     }
 
     Ok(BenchmarkSuiteReport {
-        benchmark_tool: "terminal-benchmark",
-        suite: BENCHMARK_SUITE_NAME,
-        suite_manifest: suite_manifest(),
+        benchmark_tool: "terminal-benchmark".to_owned(),
+        suite: BENCHMARK_SUITE_NAME.to_owned(),
+        suite_manifest,
         scenario_selection: cli.scenario.as_str().to_owned(),
         selected_scenarios: selected_scenario_names(cli.scenario),
-        scale: scale_name(cli.scale),
+        scale: scale_name(cli.scale).to_owned(),
         warmup_iterations: cli.warmup_iterations,
         measured_iterations: cli.iterations,
         cols: cli.cols,
@@ -67,7 +71,7 @@ pub fn run_suite(cli: &Cli) -> Result<BenchmarkSuiteReport> {
         chunk_bytes: canonical_chunk_bytes(cli.chunk_bytes),
         scrollback_cap: cli.scrollback_cap,
         workload: workload.summary(),
-        coverage: benchmark_coverage_summary(),
+        coverage,
         results,
     })
 }
@@ -103,11 +107,11 @@ fn run_measured_scenario(
     let stats = IterationStats::from_durations(&durations);
     let mean_seconds = stats.mean_nanos as f64 / 1_000_000_000.0;
     Ok(ScenarioReport {
-        scenario: metadata.name,
-        layer: metadata.layer,
-        benchmark_kind: metadata.benchmark_kind,
-        description: metadata.description,
-        primary_unit_label: metadata.primary_unit_label,
+        scenario: metadata.name.to_owned(),
+        layer: metadata.layer.to_owned(),
+        benchmark_kind: metadata.benchmark_kind.to_owned(),
+        description: metadata.description.to_owned(),
+        primary_unit_label: metadata.primary_unit_label.to_owned(),
         primary_units_per_iteration: primary_units,
         byte_units_per_iteration: byte_units,
         stats,

@@ -5,34 +5,37 @@ use crate::cli::OutputFormatArg;
 use crate::coverage::CoverageSummary;
 use crate::data::WorkloadSummary;
 use crate::metrics::IterationStats;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum BenchmarkReport {
     Headless(BenchmarkSuiteReport),
     LiveDisplay(LiveDisplayBenchmarkSuiteReport),
 }
 
-pub const SUITE_MANIFEST_SCHEMA_VERSION: u16 = 1;
+pub const SUITE_MANIFEST_SCHEMA_VERSION: u16 = 2;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuiteManifest {
     pub schema_version: u16,
     pub scenarios: Vec<SuiteScenarioManifest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuiteScenarioManifest {
-    pub scenario: &'static str,
-    pub layer: &'static str,
-    pub benchmark_kind: &'static str,
-    pub description: &'static str,
-    pub primary_unit_label: &'static str,
-    pub backend: Option<&'static str>,
+    pub scenario: String,
+    pub layer: String,
+    pub benchmark_kind: String,
+    pub description: String,
+    pub primary_unit_label: String,
+    pub backend: Option<String>,
     pub controlled_monitor_cadence: bool,
 }
 
@@ -52,14 +55,14 @@ impl BenchmarkReport {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkSuiteReport {
-    pub benchmark_tool: &'static str,
-    pub suite: &'static str,
+    pub benchmark_tool: String,
+    pub suite: String,
     pub suite_manifest: SuiteManifest,
     pub scenario_selection: String,
-    pub selected_scenarios: Vec<&'static str>,
-    pub scale: &'static str,
+    pub selected_scenarios: Vec<String>,
+    pub scale: String,
     pub warmup_iterations: u32,
     pub measured_iterations: u32,
     pub cols: u16,
@@ -71,18 +74,18 @@ pub struct BenchmarkSuiteReport {
     pub results: Vec<ScenarioReport>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayEnvironmentReport {
-    pub kind: &'static str,
-    pub window_runtime: &'static str,
-    pub gpu_runtime: &'static str,
-    pub cpu_present_runtime: &'static str,
+    pub kind: String,
+    pub window_runtime: String,
+    pub gpu_runtime: String,
+    pub cpu_present_runtime: String,
     pub platform_dependent: bool,
     pub session_type: Option<String>,
     pub display_server_hint: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayWorkloadSummary {
     pub startup_runs_per_iteration: u32,
     pub steady_frames_per_iteration: u32,
@@ -92,14 +95,14 @@ pub struct LiveDisplayWorkloadSummary {
     pub resize_targets: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayBenchmarkSuiteReport {
-    pub benchmark_tool: &'static str,
-    pub suite: &'static str,
+    pub benchmark_tool: String,
+    pub suite: String,
     pub suite_manifest: SuiteManifest,
     pub scenario_selection: String,
-    pub selected_scenarios: Vec<&'static str>,
-    pub scale: &'static str,
+    pub selected_scenarios: Vec<String>,
+    pub scale: String,
     pub warmup_iterations: u32,
     pub measured_iterations: u32,
     pub cols: u16,
@@ -109,13 +112,13 @@ pub struct LiveDisplayBenchmarkSuiteReport {
     pub results: Vec<LiveDisplayScenarioReport>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioReport {
-    pub scenario: &'static str,
-    pub layer: &'static str,
-    pub benchmark_kind: &'static str,
-    pub description: &'static str,
-    pub primary_unit_label: &'static str,
+    pub scenario: String,
+    pub layer: String,
+    pub benchmark_kind: String,
+    pub description: String,
+    pub primary_unit_label: String,
     pub primary_units_per_iteration: u64,
     pub byte_units_per_iteration: u64,
     pub stats: IterationStats,
@@ -124,18 +127,18 @@ pub struct ScenarioReport {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayScenarioReport {
-    pub scenario: &'static str,
-    pub layer: &'static str,
-    pub benchmark_kind: &'static str,
-    pub backend: &'static str,
-    pub description: &'static str,
-    pub primary_unit_label: &'static str,
+    pub scenario: String,
+    pub layer: String,
+    pub benchmark_kind: String,
+    pub backend: String,
+    pub description: String,
+    pub primary_unit_label: String,
     pub primary_units_per_iteration: u64,
     pub stats: IterationStats,
     pub primary_units_per_second: f64,
-    pub pacing_mode: &'static str,
+    pub pacing_mode: String,
     pub monitor_refresh_rate_millihz: Option<u32>,
     pub monitor_name: Option<String>,
     pub monitor_scale_factor: Option<f64>,
@@ -147,20 +150,20 @@ pub struct LiveDisplayScenarioReport {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayPhaseStats {
     pub redraw_dispatch: IterationStats,
     pub frame_gap: Option<IterationStats>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayCpuPhaseStats {
     pub buffer_acquire: IterationStats,
     pub raster: IterationStats,
     pub present: IterationStats,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDisplayCpuBufferAgeReport {
     pub age_0: u64,
     pub age_1: u64,

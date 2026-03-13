@@ -44,12 +44,14 @@ else
   validator_args+=(--require-scenario "$scenario")
 fi
 
-python3 scripts/ci/validate_terminal_display_benchmark_report.py \
-  "$report_path" \
+cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
+  validate \
+  --suite live-display \
+  --report "$report_path" \
   "${validator_args[@]}"
 
 environment_args=(
-  "$report_path"
+  --report "$report_path"
   --require-monitor-cadence
   --require-monitor-scale-factor
 )
@@ -60,7 +62,8 @@ if [[ -n "$required_display_server_hint" ]]; then
   environment_args+=(--require-display-server-hint "$required_display_server_hint")
 fi
 
-python3 scripts/ci/validate_terminal_display_environment.py \
+cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
+  environment validate \
   "${environment_args[@]}"
 
 if [[ -n "$baseline_path" ]]; then

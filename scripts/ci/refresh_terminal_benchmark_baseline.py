@@ -2,11 +2,9 @@
 import argparse
 import json
 import pathlib
+import subprocess
 import sys
 from datetime import datetime, timezone
-
-from terminal_benchmark_environment import infer_report_environment_scope
-from terminal_benchmark_environment import extract_environment_requirements_for_baseline
 
 DEFAULTS_BY_SUITE = {
     "canonical-headless": {
@@ -29,6 +27,7 @@ DEFAULTS_BY_SUITE = {
         "environment_scope": "local-display-session",
     },
 }
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def fail(message: str) -> None:
@@ -38,6 +37,38 @@ def fail(message: str) -> None:
 def load_report(path: pathlib.Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def load_environment_snapshot(report_path: pathlib.Path) -> dict:
+    try:
+        completed = subprocess.run(
+            [
+                "cargo",
+                "run",
+                "-q",
+                "--locked",
+                "-p",
+                "rldyourterm-terminal-benchmark",
+                "--",
+                "environment",
+                "snapshot",
+                "--report",
+                str(report_path),
+            ],
+            check=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        if detail:
+            fail(detail)
+        fail(f"environment snapshot generation failed with exit code {exc.returncode}")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        fail(f"environment snapshot is not valid JSON: {exc}")
 
 
 def main() -> int:
@@ -50,14 +81,14 @@ def main() -> int:
     args = parser.parse_args()
 
     report = load_report(args.report)
+    environment_snapshot = load_environment_snapshot(args.report)
     suite = report.get("suite")
     if suite not in DEFAULTS_BY_SUITE:
         fail(f"unsupported suite {suite!r}")
     defaults = DEFAULTS_BY_SUITE[suite]
-    try:
-        report_environment_scope = infer_report_environment_scope(report)
-    except ValueError as exc:
-        fail(str(exc))
+    report_environment_scope = environment_snapshot.get("environment_scope")
+    if not isinstance(report_environment_scope, str) or not report_environment_scope:
+        fail("environment snapshot must include a non-empty environment_scope")
 
     results = report.get("results")
     if not isinstance(results, list) or not results:
@@ -94,10 +125,7 @@ def main() -> int:
         )
     environment_requirements = None
     if selected_environment_scope == "controlled-display-session":
-        try:
-            environment_requirements = extract_environment_requirements_for_baseline(report)
-        except ValueError as exc:
-            fail(str(exc))
+        environment_requirements = environment_snapshot.get("environment_requirements")
         if environment_requirements is None:
             fail("controlled-display-session baseline refresh requires a controlled live-display report")
 

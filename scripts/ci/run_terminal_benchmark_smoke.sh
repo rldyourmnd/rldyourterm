@@ -12,8 +12,10 @@ cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
   --output "$report_path" \
   >/dev/null
 
-python3 scripts/ci/validate_terminal_benchmark_report.py \
-  "$report_path" \
+cargo run -q --locked -p rldyourterm-terminal-benchmark -- \
+  validate \
+  --suite canonical-headless \
+  --report "$report_path" \
   --require-full-suite
 
 echo "benchmark smoke ok: $report_path"

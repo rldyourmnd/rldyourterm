@@ -6,7 +6,7 @@ use rldyourterm_services::render_mode::{GpuFailureKind, RenderMode};
 use rldyourterm_services::session::SessionBoundary;
 use rldyourterm_shell_integration::{ShellAvailability, ShellTarget};
 use rldyourterm_ui::{SINGLE_WINDOW_BASELINE, UiRuntimeCommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkloadScale {
@@ -115,7 +115,7 @@ pub struct Workload {
     pub surface_rounds: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkloadSummary {
     pub ai_burst_bytes: usize,
     pub scrollback_flood_bytes: usize,

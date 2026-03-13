@@ -154,42 +154,35 @@ if [[ -n "$live_display_mode" ]]; then
   fi
 fi
 
-python3 - "$report_path" "$benchmark_report_path" "$governance_mode" "$benchmark_baseline_path" "$live_display_mode" "$live_display_report_path" "$live_display_baseline_path" "${quality_gates[@]}" <<'PY'
-import json
-import pathlib
-import sys
-from datetime import datetime, timezone
+emit_args=(
+  cargo run -q --locked -p rldyourterm-terminal-benchmark --
+  governance system-suite emit
+  --report "$report_path"
+  --benchmark-report "$benchmark_report_path"
+  --governance-mode "$governance_mode"
+)
+if [[ -n "$benchmark_baseline_path" ]]; then
+  emit_args+=(--benchmark-baseline "$benchmark_baseline_path")
+fi
+if [[ -n "$live_display_mode" ]]; then
+  emit_args+=(--live-display-mode "$live_display_mode")
+fi
+if [[ -n "$live_display_report_path" ]]; then
+  emit_args+=(--live-display-report "$live_display_report_path")
+fi
+if [[ -n "$live_display_baseline_path" ]]; then
+  emit_args+=(--live-display-baseline "$live_display_baseline_path")
+fi
+for gate in "${quality_gates[@]}"; do
+  emit_args+=(--quality-gate "$gate")
+done
 
-report_path = pathlib.Path(sys.argv[1])
-benchmark_report_path = pathlib.Path(sys.argv[2])
-governance_mode = sys.argv[3]
-benchmark_baseline_path = sys.argv[4] or None
-live_display_mode = sys.argv[5] or None
-live_display_report_path = sys.argv[6] or None
-live_display_baseline_path = sys.argv[7] or None
-quality_gates = sys.argv[8:]
-
-payload = {
-    "system_tool": "terminal-system-suite",
-    "status": "pass",
-    "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-    "governance_mode": governance_mode,
-    "benchmark_report": str(benchmark_report_path),
-    "benchmark_baseline": benchmark_baseline_path,
-    "live_display": None if live_display_mode is None else {
-        "mode": live_display_mode,
-        "report": live_display_report_path,
-        "baseline": live_display_baseline_path,
-    },
-    "quality_gates": quality_gates,
-}
-
-report_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-PY
+"${emit_args[@]}"
 
 validation_args=(
-  python3 scripts/ci/validate_terminal_system_suite_report.py
-  "$report_path"
+  cargo run -q --locked -p rldyourterm-terminal-benchmark --
+  governance system-suite validate
+  --report "$report_path"
   --benchmark-report "$benchmark_report_path"
   --governance-mode "$governance_mode"
 )
