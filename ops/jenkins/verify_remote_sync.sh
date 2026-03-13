@@ -17,6 +17,15 @@ fi
 
 ssh_target="$1"
 remote_root="${2:-/srv/rldyourterm-jenkins}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+
+if command -v git >/dev/null 2>&1; then
+  detected_repo_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$detected_repo_root" ]]; then
+    repo_root="$detected_repo_root"
+  fi
+fi
 
 required_container_names=(
   rldyourterm-jenkins-controller
@@ -59,9 +68,9 @@ for required_container in "${required_container_names[@]}"; do
 done
 
 declare -A local_file_for_key=(
-  [casc]="ops/jenkins/controller/casc/jenkins.yaml"
-  [pipeline_job]="ops/jenkins/jobs/pr-validation.groovy"
-  [run_pr_ci]="ops/jenkins/controller/support/run_pr_ci.sh"
+  [casc]="$repo_root/ops/jenkins/controller/casc/jenkins.yaml"
+  [pipeline_job]="$repo_root/ops/jenkins/jobs/pr-validation.groovy"
+  [run_pr_ci]="$repo_root/ops/jenkins/controller/support/run_pr_ci.sh"
 )
 
 declare -A remote_file_for_key=(
