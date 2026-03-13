@@ -138,6 +138,32 @@ jobs:
         run: bash scripts/ci/run_python_ci_unittests.sh
       - run: bash scripts/ci/run_terminal_benchmark_smoke.sh
 
+  repo-lint:
+    name: Repo Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Install repo lint toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends curl python3 ripgrep tar xz-utils
+
+          curl -fsSLo /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz
+          echo "900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
+
+          curl -fsSLo /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+      - name: Run repository linters
+        run: bash scripts/ci/run_repo_linters.sh
+
   fmt:
     name: Format
     runs-on: ubuntu-24.04
@@ -215,7 +241,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [check, test, coverage, clippy, benchmark-smoke, fmt, msrv, audit, deny]
+    needs: [check, test, coverage, clippy, benchmark-smoke, repo-lint, fmt, msrv, audit, deny]
     steps:
       - name: Validate fan-out job results
         run: |
@@ -233,6 +259,7 @@ jobs:
           require_success "test" "${{ needs.test.result }}"
           require_success "clippy" "${{ needs.clippy.result }}"
           require_success "benchmark-smoke" "${{ needs.benchmark-smoke.result }}"
+          require_success "repo-lint" "${{ needs.repo-lint.result }}"
           require_success "fmt" "${{ needs.fmt.result }}"
           require_success "msrv" "${{ needs.msrv.result }}"
           require_success "audit" "${{ needs.audit.result }}"
