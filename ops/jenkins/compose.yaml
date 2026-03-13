@@ -1,0 +1,96 @@
+# Jenkins CI/CD for rldyourterm
+# Mirrors the Curestry server layout with a project-scoped root at /srv/rldyourterm-jenkins.
+
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: ./controller/Dockerfile
+    container_name: rldyourterm-jenkins-controller
+    restart: unless-stopped
+    environment:
+      CASC_JENKINS_CONFIG: /opt/jenkins/casc/jenkins.yaml
+      JAVA_OPTS: >-
+        -Djenkins.install.runSetupWizard=false
+        -Dcasc.jenkins.config=/opt/jenkins/casc/jenkins.yaml
+      JENKINS_ADMIN_USER: ${JENKINS_ADMIN_USER}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD}
+      JENKINS_CI_AGENT_NAME: ${JENKINS_CI_AGENT_NAME}
+      JENKINS_HOST: ${JENKINS_HOST}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      RLDYOURTERM_REPO_URL: ${RLDYOURTERM_REPO_URL:-https://github.com/rldyourmnd/rldyourterm}
+      RLDYOURTERM_ALLOWED_LOGIN: ${RLDYOURTERM_ALLOWED_LOGIN:-rldyourmnd}
+      VIRTUAL_HOST: ${JENKINS_HOST}
+      LETSENCRYPT_HOST: ${JENKINS_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      VIRTUAL_PORT: "8080"
+    volumes:
+      - ./data/controller_home:/var/jenkins_home
+    expose:
+      - "8080"
+      - "50000"
+    networks:
+      - rldyourterm_jenkins_internal
+      - curestry_frontend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  jenkins-agent-rust-linux-ci:
+    build:
+      context: .
+      dockerfile: ./agents/rust-linux-ci/Dockerfile
+    container_name: rldyourterm-jenkins-agent-rust-linux-ci
+    restart: unless-stopped
+    environment:
+      JENKINS_URL: http://jenkins:8080/
+      JENKINS_AGENT_NAME: ${JENKINS_CI_AGENT_NAME}
+      JENKINS_AGENT_WORKDIR: /home/jenkins/agent
+      JENKINS_ADMIN_USER: ${JENKINS_ADMIN_USER}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD}
+    volumes:
+      - ./data/agent_rust_linux_ci:/home/jenkins
+    depends_on:
+      jenkins:
+        condition: service_healthy
+    networks:
+      - rldyourterm_jenkins_internal
+
+  webhook-router:
+    build:
+      context: ./router
+    container_name: rldyourterm-jenkins-webhook-router
+    restart: unless-stopped
+    environment:
+      ROUTER_PORT: "8080"
+      ROUTER_CONFIG: /app/repositories.json
+      JENKINS_BASE_URL: https://${JENKINS_HOST}
+      JENKINS_ADMIN_USER: ${JENKINS_ADMIN_USER}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      VIRTUAL_HOST: ${JENKINS_WEBHOOK_HOST}
+      LETSENCRYPT_HOST: ${JENKINS_WEBHOOK_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      VIRTUAL_PORT: "8080"
+    expose:
+      - "8080"
+    depends_on:
+      jenkins:
+        condition: service_healthy
+    networks:
+      - rldyourterm_jenkins_internal
+      - curestry_frontend
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  rldyourterm_jenkins_internal:
+    driver: bridge
+  curestry_frontend:
+    external: true

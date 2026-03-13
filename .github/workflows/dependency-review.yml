@@ -1,0 +1,43 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+concurrency:
+  group: dependency-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Satisfy merge queue required check
+        if: ${{ github.event_name == 'merge_group' }}
+        run: |
+          echo "Dependency Review is enforced on pull_request diffs."
+          echo "merge_group requires the status context but does not provide a pull-request diff for dependency review."
+
+      - name: Support manual workflow dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "Dependency Review workflow dispatch does not validate a pull-request diff."
+
+      - if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48

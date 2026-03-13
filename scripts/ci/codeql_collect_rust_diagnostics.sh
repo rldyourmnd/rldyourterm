@@ -27,7 +27,7 @@ detect_codeql_bin() {
   fi
 
   local candidate
-  candidate="$(ls -1d /opt/hostedtoolcache/CodeQL/*/x64/codeql/codeql 2>/dev/null | sort -V | tail -n 1 || true)"
+  candidate="$(find /opt/hostedtoolcache/CodeQL -path '*/x64/codeql/codeql' -type f 2>/dev/null | sort -V | tail -n 1 || true)"
   if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
     echo "${candidate}"
     return 0
