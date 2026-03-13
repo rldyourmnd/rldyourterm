@@ -82,6 +82,8 @@ assert_unique_contexts() {
 api_get() {
   local path="$1"
   local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  token="${token//$'\r'/}"
+  token="${token//$'\n'/}"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     gh api "$path"
     return 0
@@ -104,6 +106,8 @@ api_patch() {
   local path="$1"
   local payload="$2"
   local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  token="${token//$'\r'/}"
+  token="${token//$'\n'/}"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     gh api --method PATCH "$path" --input - <<<"$payload" >/dev/null
     return 0
