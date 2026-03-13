@@ -16,6 +16,7 @@ controller_gid=1000
 agent_uid=1001
 agent_gid=1001
 deploy_force="${JENKINS_DEPLOY_FORCE:-0}"
+verify_remote_sync="${JENKINS_VERIFY_REMOTE_SYNC:-1}"
 
 ssh "$ssh_target" "mkdir -p '$remote_root'"
 
@@ -75,3 +76,7 @@ ssh "$ssh_target" "
   fi
   cd '$remote_root' && docker compose --env-file '$remote_env_file' up -d --build
 "
+
+if [[ "$verify_remote_sync" != "0" ]]; then
+  "$(cd "$(dirname "$0")" && pwd)/verify_remote_sync.sh" "$ssh_target" "$remote_root"
+fi
