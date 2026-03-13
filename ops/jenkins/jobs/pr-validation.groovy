@@ -105,8 +105,14 @@ exit 1
                         currentBuild.displayName = "#${env.BUILD_NUMBER} PR-${params.PR_NUMBER} ${env.PR_HEAD_SHA.take(7)}"
                         currentBuild.description = "${params.TRIGGER_EVENT}:${params.TRIGGER_ACTION} by ${params.TRIGGER_ACTOR} -> ${env.PR_HTML_URL}"
 
-                        if (env.PR_AUTHOR_LOGIN != env.ALLOWED_GITHUB_LOGIN) {
-                            error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic Jenkins execution")
+                        if ((params.TRIGGER_ACTOR ?: '').trim()) {
+                            if (params.TRIGGER_ACTOR != env.ALLOWED_GITHUB_LOGIN) {
+                                error("trigger actor '${params.TRIGGER_ACTOR}' is not allowed")
+                            }
+                        }
+
+                        if (params.TRIGGER_EVENT == 'pull_request' && env.PR_AUTHOR_LOGIN != env.ALLOWED_GITHUB_LOGIN) {
+                            error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic pull_request Jenkins execution")
                         }
 
                         if (env.PR_MERGEABLE != 'true') {

@@ -47,6 +47,7 @@ extended_matrix_repeat="${JENKINS_EXTENDED_MATRIX_REPEAT:-5}"
 extended_fuzz_seconds="${JENKINS_EXTENDED_FUZZ_SECONDS:-600}"
 cargo_machete_version="${JENKINS_CARGO_MACHETE_VERSION:-0.9.1}"
 cargo_udeps_version="${JENKINS_CARGO_UDEPS_VERSION:-0.1.60}"
+validate_branch_protection_contract="${JENKINS_VALIDATE_BRANCH_PROTECTION_CONTRACT:-1}"
 
 ensure_cargo_tool() {
   local binary="$1"
@@ -59,6 +60,20 @@ ensure_cargo_tool() {
   fi
 
   cargo +"$toolchain" install --locked "$crate_name" --version "$version"
+}
+
+verify_main_branch_protection_contract() {
+  if [[ "$validate_branch_protection_contract" != "1" ]]; then
+    echo "Skipping branch protection contract verification (JENKINS_VALIDATE_BRANCH_PROTECTION_CONTRACT=$validate_branch_protection_contract)"
+    return 0
+  fi
+
+  if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+    echo "GITHUB_TOKEN is required to verify branch protection contract in Jenkins" >&2
+    exit 1
+  fi
+
+  GH_TOKEN="$GITHUB_TOKEN" bash scripts/ci/sync_main_branch_required_checks.sh --mode check
 }
 
 validate_semantic_pr_title() {
@@ -92,6 +107,8 @@ run_ci_suite() {
   local benchmark_report="$ci_root/jenkins-benchmark-report.json"
 
   mkdir -p "$ci_root"
+
+  verify_main_branch_protection_contract
 
   validate_semantic_pr_title "$pr_title" "$ci_root/semantic-pr-title.txt"
 
@@ -219,6 +236,8 @@ run_extended_suite() {
   local benchmark_report="$extended_root/jenkins-extended-benchmark-report.json"
 
   mkdir -p "$extended_root"
+
+  verify_main_branch_protection_contract
 
   ensure_cargo_tool cargo-machete cargo-machete "$cargo_machete_version"
   ensure_cargo_tool cargo-udeps cargo-udeps "$cargo_udeps_version"
