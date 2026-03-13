@@ -406,6 +406,26 @@ fn validate_runner_readiness_report(
     for error in &report.errors {
         validate_non_empty_string(error, "errors entry")?;
     }
+    if report.status == ReportStatus::Pass {
+        if let Some(required) = report.required_session_type.as_deref()
+            && report.session_type.as_deref() != Some(required)
+        {
+            bail!(
+                "pass readiness report required_session_type {:?} does not match session_type {:?}",
+                required,
+                report.session_type
+            );
+        }
+        if let Some(required) = report.required_display_server_hint.as_deref()
+            && report.display_server_hint != required
+        {
+            bail!(
+                "pass readiness report required_display_server_hint {:?} does not match display_server_hint {:?}",
+                required,
+                report.display_server_hint
+            );
+        }
+    }
     if require_pass && report.status != ReportStatus::Pass {
         bail!("status must be 'pass', got {:?}", report.status);
     }
@@ -502,6 +522,19 @@ fn validate_calibration_report(
     })?;
 
     if require_inputs {
+        let benchmark_report =
+            environment::read_report(&args.benchmark_report).with_context(|| {
+                format!(
+                    "failed to parse benchmark report {}",
+                    args.benchmark_report.display()
+                )
+            })?;
+        validate_required_live_display_environment(
+            &benchmark_report,
+            args.required_session_type.as_deref(),
+            args.required_display_server_hint.as_deref(),
+        )?;
+
         validate_threshold_baseline(
             &args.benchmark_report,
             &args.baseline,
@@ -517,6 +550,72 @@ fn validate_calibration_report(
             format!("failed to read runner readiness report {}", path.display())
         })?;
         validate_runner_readiness_report(&readiness, true)?;
+        if readiness.required_session_type != args.required_session_type {
+            bail!(
+                "runner readiness required_session_type must be {:?}, got {:?}",
+                args.required_session_type,
+                readiness.required_session_type
+            );
+        }
+        if readiness.required_display_server_hint != args.required_display_server_hint {
+            bail!(
+                "runner readiness required_display_server_hint must be {:?}, got {:?}",
+                args.required_display_server_hint,
+                readiness.required_display_server_hint
+            );
+        }
+        if let Some(required) = args.required_session_type.as_deref()
+            && readiness.session_type.as_deref() != Some(required)
+        {
+            bail!(
+                "runner readiness session_type {:?} does not satisfy required_session_type {:?}",
+                readiness.session_type,
+                required
+            );
+        }
+        if let Some(required) = args.required_display_server_hint.as_deref()
+            && readiness.display_server_hint != required
+        {
+            bail!(
+                "runner readiness display_server_hint {:?} does not satisfy required_display_server_hint {:?}",
+                readiness.display_server_hint,
+                required
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_required_live_display_environment(
+    report: &BenchmarkReport,
+    required_session_type: Option<&str>,
+    required_display_server_hint: Option<&str>,
+) -> Result<()> {
+    let live_display = match report {
+        BenchmarkReport::LiveDisplay(report) => report,
+        BenchmarkReport::Headless(_) => {
+            bail!("calibration validation requires a live-display benchmark report");
+        }
+    };
+
+    if let Some(required) = required_session_type
+        && live_display.environment.session_type.as_deref() != Some(required)
+    {
+        bail!(
+            "benchmark report session_type {:?} does not satisfy required_session_type {:?}",
+            live_display.environment.session_type,
+            required
+        );
+    }
+    if let Some(required) = required_display_server_hint
+        && live_display.environment.display_server_hint != required
+    {
+        bail!(
+            "benchmark report display_server_hint {:?} does not satisfy required_display_server_hint {:?}",
+            live_display.environment.display_server_hint,
+            required
+        );
     }
 
     Ok(())
@@ -1218,6 +1317,26 @@ mod tests {
     }
 
     #[test]
+    fn readiness_validation_rejects_pass_required_session_mismatch() {
+        let report = RunnerReadinessReport {
+            system_tool: "terminal-display-runner-readiness".to_owned(),
+            status: ReportStatus::Pass,
+            generated_at_utc: "unix-seconds-utc:1".to_owned(),
+            os: "Linux".to_owned(),
+            session_type: Some("x11".to_owned()),
+            display_server_hint: "wayland".to_owned(),
+            display_env_present: true,
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            errors: Vec::new(),
+        };
+
+        let error = validate_runner_readiness_report(&report, true)
+            .expect_err("pass report must align required and observed session_type");
+        assert!(error.to_string().contains("required_session_type"));
+    }
+
+    #[test]
     fn calibration_validation_accepts_matching_reports() {
         let temp_dir = temp_dir("calibration_validation_accepts_matching_reports");
         let benchmark_report_path = temp_dir.join("benchmark.json");
@@ -1313,6 +1432,112 @@ mod tests {
         let error = validate_calibration_report(&report, &args, false)
             .expect_err("required session type mismatch must fail");
         assert!(error.to_string().contains("required_session_type"));
+    }
+
+    #[test]
+    fn calibration_validation_rejects_benchmark_environment_mismatch() {
+        let temp_dir = temp_dir("calibration_validation_rejects_benchmark_environment_mismatch");
+        let benchmark_report_path = temp_dir.join("benchmark.json");
+        let baseline_path = temp_dir.join("baseline.json");
+
+        let mut benchmark_report = valid_live_display_report();
+        benchmark_report.environment.session_type = Some("x11".to_owned());
+        benchmark_report.environment.display_server_hint = "x11".to_owned();
+        benchmark_report
+            .write_output(&benchmark_report_path)
+            .expect("benchmark report should write");
+        write_threshold_baseline(
+            &BenchmarkReport::LiveDisplay(benchmark_report.clone()),
+            &baseline_path,
+            "advisory",
+        );
+
+        let report = CalibrationReport {
+            system_tool: "terminal-display-calibration".to_owned(),
+            status: ReportStatus::Pass,
+            generated_at_utc: "unix-seconds-utc:1".to_owned(),
+            benchmark_report: benchmark_report_path.clone(),
+            baseline: baseline_path.clone(),
+            comparison_mode: "advisory".to_owned(),
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            runner_readiness_report: None,
+        };
+        let args = CalibrationValidateCli {
+            report: temp_dir.join("calibration.json"),
+            benchmark_report: benchmark_report_path,
+            baseline: baseline_path,
+            comparison_mode: ComparisonModeArg::Advisory,
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            runner_readiness_report: None,
+        };
+
+        let error = validate_calibration_report(&report, &args, true)
+            .expect_err("benchmark report environment mismatch must fail");
+        assert!(error.to_string().contains("benchmark report session_type"));
+    }
+
+    #[test]
+    fn calibration_validation_rejects_runner_readiness_requirement_mismatch() {
+        let temp_dir =
+            temp_dir("calibration_validation_rejects_runner_readiness_requirement_mismatch");
+        let benchmark_report_path = temp_dir.join("benchmark.json");
+        let baseline_path = temp_dir.join("baseline.json");
+        let readiness_path = temp_dir.join("readiness.json");
+
+        let benchmark_report = valid_live_display_report();
+        benchmark_report
+            .write_output(&benchmark_report_path)
+            .expect("benchmark report should write");
+        write_threshold_baseline(
+            &BenchmarkReport::LiveDisplay(benchmark_report.clone()),
+            &baseline_path,
+            "advisory",
+        );
+
+        let readiness = RunnerReadinessReport {
+            system_tool: "terminal-display-runner-readiness".to_owned(),
+            status: ReportStatus::Pass,
+            generated_at_utc: "unix-seconds-utc:1".to_owned(),
+            os: "Linux".to_owned(),
+            session_type: Some("wayland".to_owned()),
+            display_server_hint: "wayland".to_owned(),
+            display_env_present: true,
+            required_session_type: None,
+            required_display_server_hint: Some("wayland".to_owned()),
+            errors: Vec::new(),
+        };
+        write_json(&readiness_path, &readiness).expect("readiness report should write");
+
+        let report = CalibrationReport {
+            system_tool: "terminal-display-calibration".to_owned(),
+            status: ReportStatus::Pass,
+            generated_at_utc: "unix-seconds-utc:1".to_owned(),
+            benchmark_report: benchmark_report_path.clone(),
+            baseline: baseline_path.clone(),
+            comparison_mode: "advisory".to_owned(),
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            runner_readiness_report: Some(readiness_path.clone()),
+        };
+        let args = CalibrationValidateCli {
+            report: temp_dir.join("calibration.json"),
+            benchmark_report: benchmark_report_path,
+            baseline: baseline_path,
+            comparison_mode: ComparisonModeArg::Advisory,
+            required_session_type: Some("wayland".to_owned()),
+            required_display_server_hint: Some("wayland".to_owned()),
+            runner_readiness_report: Some(readiness_path),
+        };
+
+        let error = validate_calibration_report(&report, &args, true)
+            .expect_err("runner readiness requirement mismatch must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("runner readiness required_session_type")
+        );
     }
 
     #[test]
