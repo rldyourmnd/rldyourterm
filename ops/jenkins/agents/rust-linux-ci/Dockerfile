@@ -13,7 +13,9 @@ ARG CODEQL_BUNDLE_VERSION=2.24.3
 ARG CODEQL_BUNDLE_SHA256=9bfaf079ed2e132a26d9352a0bc1a70c5de0b63131d39e8350d890fbea254b71
 ARG SCORECARD_VERSION=5.4.0
 ARG SCORECARD_SHA256=e5183aeaa5aa548fbb7318a6deb3e1038be0ef9aca24e655422ae88dfbe67502
+ARG CARGO_MACHETE_VERSION=0.9.1
 ARG CARGO_FUZZ_VERSION=0.13.1
+ARG CARGO_UDEPS_VERSION=0.1.60
 ARG RUST_FUZZ_TOOLCHAIN=nightly-2026-03-11
 ARG JENKINS_UID=1001
 ARG JENKINS_GID=1001
@@ -49,7 +51,9 @@ RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${
     && rustup toolchain install 1.92.0 --profile minimal \
     && rustup toolchain install ${RUST_FUZZ_TOOLCHAIN} --profile minimal \
     && rustup component add clippy rustfmt --toolchain 1.94.0 \
-    && cargo install --locked cargo-audit cargo-deny cargo-fuzz@${CARGO_FUZZ_VERSION} \
+    && rustup component add rust-src rustc-dev llvm-tools-preview --toolchain ${RUST_FUZZ_TOOLCHAIN} \
+    && cargo install --locked cargo-audit cargo-deny cargo-machete@${CARGO_MACHETE_VERSION} cargo-fuzz@${CARGO_FUZZ_VERSION} \
+    && cargo +${RUST_FUZZ_TOOLCHAIN} install --locked cargo-udeps@${CARGO_UDEPS_VERSION} \
     && curl -fsSLo /tmp/codeql-bundle-linux64.tar.gz "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${CODEQL_BUNDLE_VERSION}/codeql-bundle-linux64.tar.gz" \
     && echo "${CODEQL_BUNDLE_SHA256} */tmp/codeql-bundle-linux64.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/codeql-bundle-linux64.tar.gz -C /opt \
