@@ -1,0 +1,29 @@
+{
+  "strict": true,
+  "checks": [
+    {
+      "context": "CI",
+      "app_id": 15368
+    },
+    {
+      "context": "CodeQL",
+      "app_id": 15368
+    },
+    {
+      "context": "Scorecard",
+      "app_id": 15368
+    },
+    {
+      "context": "Semantic PR",
+      "app_id": 15368
+    },
+    {
+      "context": "Dependency Review",
+      "app_id": 15368
+    },
+    {
+      "context": "Jenkins Extended Validation",
+      "app_id": -1
+    }
+  ]
+}
