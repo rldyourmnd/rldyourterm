@@ -138,6 +138,27 @@ jobs:
         run: bash scripts/ci/run_python_ci_unittests.sh
       - run: bash scripts/ci/run_terminal_benchmark_smoke.sh
 
+  dead-weight:
+    name: Dead Weight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
+          save-if: "false"
+          linux-packages: ""
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
+        with:
+          tool: cargo-machete@0.9.1
+      - name: Run dead-weight checks
+        run: bash scripts/ci/run_dead_weight_checks.sh oss
+
   repo-lint:
     name: Repo Lint
     runs-on: ubuntu-24.04
@@ -241,7 +262,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [check, test, coverage, clippy, benchmark-smoke, repo-lint, fmt, msrv, audit, deny]
+    needs: [check, test, coverage, clippy, benchmark-smoke, dead-weight, repo-lint, fmt, msrv, audit, deny]
     steps:
       - name: Validate fan-out job results
         run: |
@@ -259,6 +280,7 @@ jobs:
           require_success "test" "${{ needs.test.result }}"
           require_success "clippy" "${{ needs.clippy.result }}"
           require_success "benchmark-smoke" "${{ needs.benchmark-smoke.result }}"
+          require_success "dead-weight" "${{ needs.dead-weight.result }}"
           require_success "repo-lint" "${{ needs.repo-lint.result }}"
           require_success "fmt" "${{ needs.fmt.result }}"
           require_success "msrv" "${{ needs.msrv.result }}"

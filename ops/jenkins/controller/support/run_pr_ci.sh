@@ -45,6 +45,21 @@ codeql_max_extracted_with_errors="${JENKINS_CODEQL_MAX_EXTRACTED_WITH_ERRORS:-5}
 extended_benchmark_scale="${JENKINS_EXTENDED_BENCHMARK_SCALE:-stress}"
 extended_matrix_repeat="${JENKINS_EXTENDED_MATRIX_REPEAT:-5}"
 extended_fuzz_seconds="${JENKINS_EXTENDED_FUZZ_SECONDS:-600}"
+cargo_machete_version="${JENKINS_CARGO_MACHETE_VERSION:-0.9.1}"
+cargo_udeps_version="${JENKINS_CARGO_UDEPS_VERSION:-0.1.60}"
+
+ensure_cargo_tool() {
+  local binary="$1"
+  local crate_name="$2"
+  local version="$3"
+  local toolchain="${4:-1.94.0}"
+
+  if command -v "$binary" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  cargo +"$toolchain" install --locked "$crate_name" --version "$version"
+}
 
 validate_semantic_pr_title() {
   local title="$1"
@@ -204,6 +219,12 @@ run_extended_suite() {
   local benchmark_report="$extended_root/jenkins-extended-benchmark-report.json"
 
   mkdir -p "$extended_root"
+
+  ensure_cargo_tool cargo-machete cargo-machete "$cargo_machete_version"
+  ensure_cargo_tool cargo-udeps cargo-udeps "$cargo_udeps_version"
+
+  RLDYOURTERM_UDEPS_TOOLCHAIN="$fuzz_toolchain" \
+    bash scripts/ci/run_dead_weight_checks.sh extended
 
   env TERMINAL_BENCHMARK_SCALE="$extended_benchmark_scale" \
     bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report"
