@@ -1,17 +1,20 @@
 name: ClusterFuzzLite PR fuzzing
 
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
 permissions: read-all
 
 concurrency:
-  group: cflite-pr-${{ github.workflow }}-${{ github.ref }}
+  group: cflite-pr-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   pr-fuzzing:
-    name: Fuzz (${{ matrix.sanitizer }})
+    name: PR Fuzz (${{ matrix.sanitizer }})
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
@@ -43,3 +46,21 @@ jobs:
           mode: code-change
           sanitizer: ${{ matrix.sanitizer }}
           output-sarif: true
+
+  fuzz-gate:
+    name: ClusterFuzzLite PR fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [pr-fuzzing]
+    steps:
+      - name: Validate PR fuzzing job result
+        run: |
+          case "${{ needs.pr-fuzzing.result }}" in
+            success)
+              ;;
+            *)
+              echo "ClusterFuzzLite PR fuzzing gate blocked by upstream result: ${{ needs.pr-fuzzing.result }}" >&2
+              exit 1
+              ;;
+          esac

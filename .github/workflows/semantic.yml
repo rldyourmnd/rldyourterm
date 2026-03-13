@@ -4,18 +4,21 @@
 name: Semantic PR
 
 on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
 permissions:
   pull-requests: read
 
 concurrency:
-  group: semantic-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: semantic-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   semantic:
-    name: Validate PR Title
+    name: Semantic PR
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

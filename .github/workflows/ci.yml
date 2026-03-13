@@ -1,11 +1,17 @@
 name: CI
 
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
   cancel-in-progress: true
 
 permissions: read-all
@@ -32,19 +38,13 @@ jobs:
           persist-credentials: false
       - name: Validate ClusterFuzzLite toolchain pin sync
         run: bash scripts/ci/validate_cflite_toolchain_pin.sh
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - name: Governance policy gates (CI mode)
-        run: bash scripts/ci/run_e2e_governance.sh --mode ci
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install system dependencies (Linux)
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+      - name: Governance policy gates (CI mode)
+        run: bash scripts/ci/run_e2e_governance.sh --mode ci
       - run: cargo check --workspace --all-targets --locked
 
   test:
@@ -59,19 +59,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          # Linux cache is authored by `check`; only macOS test persists its own cache.
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.os == 'macos-14' }}
-      - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu-24.04'
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo test --workspace --locked
 
   # ==================== Code Coverage ====================
@@ -87,18 +79,12 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-coverage-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
         with:
@@ -127,19 +113,12 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           components: clippy
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          # Avoid parallel cache write races; this job only restores cache.
           save-if: "false"
-      - name: Install system dependencies
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   benchmark-smoke:
@@ -150,19 +129,13 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: "false"
-      - name: Install system dependencies
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - name: Benchmark helper unit tests
-        run: python3 -m unittest scripts.ci.test_terminal_benchmark_environment scripts.ci.test_validate_terminal_benchmark_report scripts.ci.test_terminal_display_governance scripts.ci.test_terminal_system_suite_governance
+        run: bash scripts/ci/run_python_ci_unittests.sh
       - run: bash scripts/ci/run_terminal_benchmark_smoke.sh
 
   fmt:
@@ -189,17 +162,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.MSRV_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.MSRV_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
       - run: cargo check --workspace --all-targets --locked
 
   # ==================== Security ====================
@@ -214,15 +181,13 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          # Avoid parallel cache write races; this job only restores cache.
           save-if: "false"
           cache-targets: false
+          linux-packages: ""
       - name: Install cargo-audit
         uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
         with:

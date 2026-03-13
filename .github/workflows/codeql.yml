@@ -4,13 +4,19 @@
 name: CodeQL
 
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   schedule:
     - cron: '0 2 * * 1'  # Weekly on Monday at 02:00 UTC
+  workflow_dispatch:
 
 concurrency:
-  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -45,22 +51,11 @@ jobs:
           languages: rust
           queries: security-and-quality
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: ./.github/actions/setup-rust-ci
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-
-      - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@c676846f29d98ff6b0106d3608c7ffd4048af17b
-        with:
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          # Cache is authored by the main CI `check` job to avoid cross-workflow races.
           save-if: "false"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libwayland-dev
 
       - name: Build
         run: cargo build --workspace --locked
@@ -142,3 +137,21 @@ jobs:
             echo "::error::CodeQL extracted-with-errors metric (${extracted_with_errors_metric}) exceeded budget (${extracted_with_errors_budget})."
             exit 1
           fi
+
+  codeql-gate:
+    name: CodeQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [analyze]
+    steps:
+      - name: Validate CodeQL job result
+        run: |
+          case "${{ needs.analyze.result }}" in
+            success)
+              ;;
+            *)
+              echo "CodeQL gate blocked by upstream result: ${{ needs.analyze.result }}" >&2
+              exit 1
+              ;;
+          esac
