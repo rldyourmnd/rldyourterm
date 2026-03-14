@@ -63,8 +63,8 @@ pipeline {
     options {
         timestamps()
         ansiColor('xterm')
+        disableConcurrentBuilds()
         timeout(time: 120, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
     }
 
     parameters {
@@ -83,7 +83,10 @@ pipeline {
         CARGO_TERM_COLOR = 'always'
         CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse'
         CARGO_NET_RETRY = '5'
-        CARGO_INCREMENTAL = '0'
+        CARGO_INCREMENTAL = '1'
+        JENKINS_PR_FUZZ_SECONDS = '180'
+        JENKINS_EXTENDED_FUZZ_SECONDS = '600'
+        JENKINS_RUST_FUZZ_TOOLCHAIN = 'nightly-2026-03-11'
         RUSTFLAGS = '-D warnings'
     }
 
@@ -219,40 +222,43 @@ git rev-parse HEAD
                             String state = 'success'
                             String description = validation.successDescription
 
-                            try {
-                                withEnv([
-                                    "JENKINS_PR_TITLE=${env.PR_TITLE}",
-                                    "JENKINS_REPO_FULL_NAME=${params.REPO_FULL_NAME}",
-                                    "JENKINS_PR_HEAD_SHA=${env.PR_HEAD_SHA}",
-                                    "JENKINS_PR_CHECKOUT_SHA=${env.PR_CHECKOUT_SHA}",
-                                    "JENKINS_PR_NUMBER=${params.PR_NUMBER}",
-                                    "JENKINS_TRIGGER_EVENT=${params.TRIGGER_EVENT}",
-                                    "JENKINS_TRIGGER_ACTION=${params.TRIGGER_ACTION}",
-                                    "JENKINS_TRIGGER_ACTOR=${params.TRIGGER_ACTOR}",
-                                        ]) {
+                            withEnv([
+                                "JENKINS_PR_TITLE=${env.PR_TITLE}",
+                                "JENKINS_REPO_FULL_NAME=${params.REPO_FULL_NAME}",
+                                "JENKINS_PR_HEAD_SHA=${env.PR_HEAD_SHA}",
+                                "JENKINS_PR_CHECKOUT_SHA=${env.PR_CHECKOUT_SHA}",
+                                "JENKINS_PR_NUMBER=${params.PR_NUMBER}",
+                                "JENKINS_TRIGGER_EVENT=${params.TRIGGER_EVENT}",
+                                "JENKINS_TRIGGER_ACTION=${params.TRIGGER_ACTION}",
+                                "JENKINS_TRIGGER_ACTOR=${params.TRIGGER_ACTOR}",
+                                "JENKINS_TRIGGER_COMMENT=${params.TRIGGER_COMMENT}",
+                                "JENKINS_PR_FUZZ_SECONDS=${validation.mode == 'extended' ? env.JENKINS_EXTENDED_FUZZ_SECONDS : env.JENKINS_PR_FUZZ_SECONDS}",
+                                "JENKINS_EXTENDED_FUZZ_SECONDS=${validation.mode == 'extended' ? env.JENKINS_EXTENDED_FUZZ_SECONDS : env.JENKINS_PR_FUZZ_SECONDS}",
+                                "JENKINS_RUST_FUZZ_TOOLCHAIN=${env.JENKINS_RUST_FUZZ_TOOLCHAIN}",
+                            ]) {
+                                try {
                                     sh "${runner} ${validation.mode} '${validation.reportRoot}'"
+                                } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException err) {
+                                    state = 'pending'
+                                    description = supersededDescription
+                                    echo "Validation stage ${validation.context} was interrupted by a newer Jenkins run"
+                                    throw err
+                                } catch (err) {
+                                    state = 'failure'
+                                    description = validation.failureDescription
+                                    failures << validation.context
+                                    echo "Validation stage ${validation.context} failed: ${err}"
+                                } finally {
+                                    githubSetCommitStatus(
+                                        params.REPO_FULL_NAME,
+                                        env.PR_HEAD_SHA,
+                                        validation.context,
+                                        state,
+                                        description,
+                                        env.BUILD_URL
+                                    )
                                 }
-                            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException err) {
-                                state = 'pending'
-                                description = supersededDescription
-                                echo "Validation stage ${validation.context} was interrupted by a newer Jenkins run"
-                                throw err
-                            } catch (err) {
-                                state = 'failure'
-                                description = validation.failureDescription
-                                failures << validation.context
-                                echo "Validation stage ${validation.context} failed: ${err}"
-                            } finally {
-                                githubSetCommitStatus(
-                                    params.REPO_FULL_NAME,
-                                    env.PR_HEAD_SHA,
-                                    validation.context,
-                                    state,
-                                    description,
-                                    env.BUILD_URL
-                                )
                             }
-                        }
 
                         if (!failures.isEmpty()) {
                             error("Validation failures: ${failures.join(', ')}")
