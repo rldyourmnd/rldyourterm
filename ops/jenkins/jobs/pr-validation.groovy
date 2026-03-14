@@ -79,13 +79,30 @@ def assertSupportedTriggerEvent(String triggerEvent) {
     }
 }
 
+def isSupersededInterruption(Throwable interruption) {
+    try {
+        def causes = interruption?.causes ?: []
+        for (cause in causes) {
+            def causeName = String.valueOf(cause?.getClass()?.getName() ?: '').toLowerCase()
+            def causeText = String.valueOf(cause ?: '').toLowerCase()
+            if (causeName.contains('supersed') || causeText.contains('superseded') || causeText.contains('newer')) {
+                return true
+            }
+        }
+    } catch (ignore) {
+        echo "warning: unable to inspect interruption causes: ${ignore}"
+    }
+
+    return false
+}
+
 pipeline {
     agent { label 'linux-ci' }
 
     options {
         timestamps()
         ansiColor('xterm')
-        disableConcurrentBuilds()
+        disableConcurrentBuilds(abortPrevious: true)
         timeout(time: 120, unit: 'MINUTES')
     }
 
@@ -293,9 +310,15 @@ git rev-parse HEAD
                                             sh "${runner} ${validationDef.mode} '${validationDef.reportRoot}'"
                                         }
                                     } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException err) {
-                                        state = 'pending'
-                                        description = validationDef.supersededDescription
-                                        echo "Validation stage ${validationDef.context} was interrupted by a newer Jenkins run"
+                                        if (isSupersededInterruption(err)) {
+                                            state = 'pending'
+                                            description = validationDef.supersededDescription
+                                            echo "Validation stage ${validationDef.context} was superseded by a newer run"
+                                        } else {
+                                            state = 'failure'
+                                            description = validationDef.failureDescription
+                                            echo "Validation stage ${validationDef.context} was interrupted: ${err}"
+                                        }
                                     } catch (err) {
                                         state = 'failure'
                                         description = validationDef.failureDescription
@@ -319,7 +342,7 @@ git rev-parse HEAD
                         }
 
                         if (!branches.isEmpty()) {
-                            parallel branches
+                            parallel branches, failFast: false
                         }
 
                         def failedValidations = []
