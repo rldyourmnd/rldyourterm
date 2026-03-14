@@ -3,9 +3,10 @@ FROM jenkins/inbound-agent:latest-jdk21@sha256:8cdeac9601a3381a629555e8d191f1bc4
 USER root
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CARGO_HOME=/opt/rust/cargo
-ENV RUSTUP_HOME=/opt/rust/rustup
-ENV PATH=/opt/rust/cargo/bin:/opt/codeql:${PATH}
+ENV CARGO_HOME=/home/jenkins/.cache/rust/cargo
+ENV RUSTUP_HOME=/home/jenkins/.cache/rust/rustup
+ENV CARGO_TARGET_DIR=/home/jenkins/.cache/rust/target
+ENV PATH=/home/jenkins/.cache/rust/cargo/bin:/opt/codeql:${PATH}
 
 ARG RUSTUP_VERSION=1.29.0
 ARG RUSTUP_INIT_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
@@ -42,7 +43,7 @@ RUN apt-get update \
 
 RUN groupmod --gid ${JENKINS_GID} jenkins \
     && usermod --uid ${JENKINS_UID} --gid ${JENKINS_GID} jenkins \
-    && mkdir -p /opt/rust /opt/codeql /home/jenkins/agent
+    && mkdir -p /home/jenkins/.cache/rust /opt/codeql /home/jenkins/agent
 
 RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
     && echo "${RUSTUP_INIT_SHA256} */tmp/rustup-init" | sha256sum -c - \
@@ -62,7 +63,7 @@ RUN curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${
     && echo "${SCORECARD_SHA256} */tmp/scorecard_linux_amd64.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/scorecard_linux_amd64.tar.gz -C /usr/local/bin scorecard \
     && rm -f /tmp/rustup-init /tmp/codeql-bundle-linux64.tar.gz /tmp/scorecard_linux_amd64.tar.gz \
-    && chown -R jenkins:jenkins /opt/rust /opt/codeql
+    && chown -R jenkins:jenkins /home/jenkins/.cache/rust /opt/codeql
 
 COPY agents/rust-linux-ci/entrypoint.sh /usr/local/bin/jenkins-agent-entrypoint
 COPY controller/support/ /opt/jenkins/support/
