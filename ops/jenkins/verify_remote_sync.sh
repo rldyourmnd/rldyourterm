@@ -68,22 +68,52 @@ for required_container in "${required_container_names[@]}"; do
 done
 
 declare -A local_file_for_key=(
+  [compose]="$repo_root/ops/jenkins/compose.yaml"
+  [controller_dockerfile]="$repo_root/ops/jenkins/controller/Dockerfile"
+  [agent_dockerfile]="$repo_root/ops/jenkins/agents/rust-linux-ci/Dockerfile"
+  [router_dockerfile]="$repo_root/ops/jenkins/router/Dockerfile"
   [casc]="$repo_root/ops/jenkins/controller/casc/jenkins.yaml"
   [pipeline_job]="$repo_root/ops/jenkins/jobs/pr-validation.groovy"
   [run_pr_ci]="$repo_root/ops/jenkins/controller/support/run_pr_ci.sh"
+  [router_script]="$repo_root/ops/jenkins/router/router.py"
+  [router_repositories]="$repo_root/ops/jenkins/router/repositories.json"
 )
 
 declare -A remote_file_for_key=(
+  [compose]="$remote_compose_file"
+  [controller_dockerfile]="$remote_root/controller/Dockerfile"
+  [agent_dockerfile]="$remote_root/agents/rust-linux-ci/Dockerfile"
+  [router_dockerfile]="$remote_root/router/Dockerfile"
   [casc]="/opt/jenkins/casc/jenkins.yaml"
   [pipeline_job]="/opt/jenkins/jobs/pr-validation.groovy"
   [run_pr_ci]="/opt/jenkins/support/run_pr_ci.sh"
+  [router_script]="/app/router.py"
+  [router_repositories]="/app/repositories.json"
 )
 
 declare -A remote_container_for_key=(
+  [compose]=""
+  [controller_dockerfile]=""
+  [agent_dockerfile]=""
+  [router_dockerfile]=""
   [casc]="rldyourterm-jenkins-controller"
   [pipeline_job]="rldyourterm-jenkins-controller"
   [run_pr_ci]="rldyourterm-jenkins-controller"
+  [router_script]="rldyourterm-jenkins-webhook-router"
+  [router_repositories]="rldyourterm-jenkins-webhook-router"
 )
+
+get_remote_hash() {
+  local container_name="$1"
+  local remote_path="$2"
+
+  if [[ -z "$container_name" ]]; then
+    run_remote "sha256sum '${remote_path}'" | awk '{print $1}'
+    return
+  fi
+
+  run_remote "docker exec '${container_name}' sha256sum '${remote_path}'" | awk '{print $1}'
+}
 
 missing=0
 service_statuses=()
@@ -111,7 +141,7 @@ for key in "${!local_file_for_key[@]}"; do
 
   local_hash="$(sha256sum "$local_path" | awk '{print $1}')"
 
-  remote_hash="$(run_remote "docker exec '${remote_container}' sha256sum '${remote_path}'" </dev/null | awk '{print $1}')"
+  remote_hash="$(get_remote_hash "$remote_container" "$remote_path" </dev/null)"
 
   if [[ -z "$remote_hash" ]]; then
     echo "missing remote hash for $key ($remote_path)" >&2

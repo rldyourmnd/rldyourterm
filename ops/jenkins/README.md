@@ -28,6 +28,12 @@ bash ops/jenkins/verify_remote_sync.sh curestry
 ```
 
 This checks:
+- `ops/jenkins/compose.yaml` -> active compose file in remote root
+- `ops/jenkins/controller/Dockerfile` -> `controller/Dockerfile`
+- `ops/jenkins/agents/rust-linux-ci/Dockerfile` -> `agents/rust-linux-ci/Dockerfile`
+- `ops/jenkins/router/Dockerfile` -> `router/Dockerfile`
+- `ops/jenkins/router/router.py` -> `/app/router.py` in webhook-router
+- `ops/jenkins/router/repositories.json` -> `/app/repositories.json` in webhook-router
 - `ops/jenkins/controller/casc/jenkins.yaml` -> `/opt/jenkins/casc/jenkins.yaml`
 - `ops/jenkins/jobs/pr-validation.groovy` -> `/opt/jenkins/jobs/pr-validation.groovy`
 - `ops/jenkins/controller/support/run_pr_ci.sh` -> `/opt/jenkins/support/run_pr_ci.sh`
