@@ -79,6 +79,19 @@ def assertSupportedTriggerEvent(String triggerEvent) {
     }
 }
 
+def normalizeAllowedLogins(String rawLogins, String fallbackLogin) {
+    def normalized = []
+    (rawLogins ?: fallbackLogin)
+        .split(',')
+        .collect { it.trim().toLowerCase() }
+        .findAll { it }
+        .each { normalized << it }
+    if (!normalized) {
+        normalized << (fallbackLogin ?: '').trim().toLowerCase()
+    }
+    return normalized.findAll { it }
+}
+
 def isSupersededInterruption(Throwable interruption) {
     try {
         def causes = interruption?.causes ?: []
@@ -117,7 +130,7 @@ pipeline {
     }
 
     environment {
-        ALLOWED_GITHUB_LOGIN = 'rldyourmnd'
+        ALLOWED_GITHUB_LOGIN = "${env.RLDYOURTERM_ALLOWED_LOGIN ?: 'rldyourmnd'}"
         REPORT_ROOT = 'target/terminal-benchmark/jenkins'
         CARGO_TERM_COLOR = 'always'
         CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse'
@@ -172,17 +185,29 @@ exit 1
                         env.PR_MERGEABLE = prFields[6]
                         env.PR_MERGEABLE_STATE = prFields[7]
 
+                        def allowedLogins = normalizeAllowedLogins(
+                            env.RLDYOURTERM_ALLOWED_LOGIN,
+                            env.ALLOWED_GITHUB_LOGIN
+                        )
+                        def allowedActors = allowedLogins
+                        if (params.TRIGGER_EVENT == 'manual' && env.JENKINS_ADMIN_USER) {
+                            allowedLogins = (allowedLogins + env.JENKINS_ADMIN_USER.trim().toLowerCase()).unique()
+                            allowedActors = allowedLogins
+                        }
+                        env.ALLOWED_GITHUB_TRIGGER_ACTORS = allowedLogins.join(',')
+
                         currentBuild.displayName = "#${env.BUILD_NUMBER} PR-${params.PR_NUMBER} ${env.PR_HEAD_SHA.take(7)}"
                         currentBuild.description = "${params.TRIGGER_EVENT}:${params.TRIGGER_ACTION} by ${params.TRIGGER_ACTOR} -> ${env.PR_HTML_URL}"
 
-                        if ((params.TRIGGER_ACTOR ?: '').trim()) {
-                            if (params.TRIGGER_ACTOR != env.ALLOWED_GITHUB_LOGIN) {
-                                error("trigger actor '${params.TRIGGER_ACTOR}' is not allowed")
+                        def normalizedActor = (params.TRIGGER_ACTOR ?: '').trim().toLowerCase()
+                        def normalizedAuthor = (env.PR_AUTHOR_LOGIN ?: '').trim().toLowerCase()
+                        if (params.TRIGGER_EVENT == 'pull_request' || params.TRIGGER_EVENT == 'issue_comment') {
+                            if (!allowedActors.contains(normalizedAuthor)) {
+                                error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic ${params.TRIGGER_EVENT} Jenkins execution")
                             }
                         }
-
-                        if (params.TRIGGER_EVENT == 'pull_request' && env.PR_AUTHOR_LOGIN != env.ALLOWED_GITHUB_LOGIN) {
-                            error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic pull_request Jenkins execution")
+                        if (normalizedActor && !allowedActors.contains(normalizedActor)) {
+                            error("trigger actor '${params.TRIGGER_ACTOR}' is not allowed")
                         }
 
                         if (env.PR_MERGEABLE != 'true') {
