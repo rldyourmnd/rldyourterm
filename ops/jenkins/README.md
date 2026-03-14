@@ -66,6 +66,12 @@ In `extended` mode, Jenkins now runs the following suites in parallel:
 Each parallel suite uses an isolated `CARGO_TARGET_DIR` to reduce cross-suite
 cache collisions in shared agent workspaces.
 
+Behavior guarantees:
+- `Jenkins Extended Validation` is reported once after all suite updates are finished.
+- `pending` at suite level is used only for supersession scenarios when a newer run supersedes the current build.
+- All other flow interruptions, including `timeout`, are treated as `failure` for stricter gating.
+- `parallel(..., failFast: false)` is used to ensure every suite publishes a status before aggregation.
+
 ## Notes
 
 - Do not print credentials or token values in logs.
