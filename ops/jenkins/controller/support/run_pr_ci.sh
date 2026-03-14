@@ -18,6 +18,59 @@ fi
 root_dir="$(pwd)"
 report_root="${report_root%/}"
 
+emit_runtime_diagnostics() {
+  echo "Jenkins runtime diagnostics:"
+  echo "workdir: $(pwd)"
+  echo "uid: $(id -u)/$(id -g), user: $(id -un)"
+  echo "PATH: $PATH"
+  echo "CARGO_HOME: ${CARGO_HOME:-<unset>}"
+  echo "RUSTUP_HOME: ${RUSTUP_HOME:-<unset>}"
+  echo "CARGO_TARGET_DIR: ${CARGO_TARGET_DIR:-<unset>}"
+  echo "command -v cargo: $(command -v cargo || echo '<missing>')"
+  echo "command -v rustup: $(command -v rustup || echo '<missing>')"
+  echo "command -v rustc: $(command -v rustc || echo '<missing>')"
+  ls -la /home/jenkins/.cache/rust 2>/dev/null | sed 's/^/  /' || true
+}
+
+ensure_cargo_on_path() {
+  local candidate=""
+  local home_base="${HOME:-/home/jenkins}"
+
+  if command -v cargo >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for candidate in \
+    "${CARGO_HOME:-$home_base/.cache/rust/cargo}" \
+    "$home_base/.cache/rust/cargo" \
+    "$home_base/.cache/cargo" \
+    "$home_base/.cargo" \
+    "/usr/local/cargo"; do
+    if [[ -n "$candidate" && -x "$candidate/bin/cargo" ]]; then
+      export CARGO_HOME="$candidate"
+      if [[ ":$PATH:" != *":$candidate/bin:"* ]]; then
+        export PATH="$candidate/bin:$PATH"
+      fi
+      return 0
+    fi
+  done
+
+  if [[ -f "${CARGO_HOME:-$home_base/.cache/rust/cargo}/env" ]]; then
+    # shellcheck source=/dev/null
+    source "${CARGO_HOME:-$home_base/.cache/rust/cargo}/env"
+  fi
+
+  if command -v cargo >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "required command not found: cargo" >&2
+  emit_runtime_diagnostics
+  exit 127
+}
+
+ensure_cargo_on_path
+
 default_target_dir() {
   local mode="$1"
   local explicit_dir="${JENKINS_CARGO_TARGET_DIR:-${CARGO_TARGET_DIR:-}}"
@@ -34,6 +87,7 @@ require_command() {
   local name="$1"
   if ! command -v "$name" >/dev/null 2>&1; then
     echo "required command not found: $name" >&2
+    emit_runtime_diagnostics
     exit 1
   fi
 }

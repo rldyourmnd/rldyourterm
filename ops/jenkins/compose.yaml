@@ -51,8 +51,11 @@ services:
       JENKINS_AGENT_WORKDIR: /home/jenkins/agent
       JENKINS_ADMIN_USER: ${JENKINS_ADMIN_USER}
       JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD}
+      CARGO_HOME: /home/jenkins/.cache/rust/cargo
+      RUSTUP_HOME: /home/jenkins/.cache/rust/rustup
+      CARGO_TARGET_DIR: /home/jenkins/.cache/rust/target
     volumes:
-      - ./data/agent_rust_linux_ci:/home/jenkins
+      - ./data/agent_rust_linux_ci:/home/jenkins/agent
     depends_on:
       jenkins:
         condition: service_healthy
