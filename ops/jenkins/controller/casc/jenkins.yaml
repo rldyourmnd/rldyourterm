@@ -70,6 +70,17 @@ jobs:
         description('Runs the server-side extended PR contour for rldyourterm and publishes the required Jenkins Extended Validation status.')
         properties {
           githubProjectUrl(repoUrl)
+          disableConcurrentBuilds()
+          buildDiscarder {
+            strategy {
+              logRotator {
+                numToKeepStr('30')
+                artifactNumToKeepStr('30')
+                daysToKeepStr('30')
+                artifactDaysToKeepStr('30')
+              }
+            }
+          }
         }
         parameters {
           stringParam('REPO_FULL_NAME', 'rldyourmnd/rldyourterm', 'GitHub repository in owner/name form.')
@@ -78,6 +89,7 @@ jobs:
           stringParam('TRIGGER_ACTION', '', 'GitHub event action that triggered the build.')
           stringParam('TRIGGER_ACTOR', '', 'GitHub login that triggered the build.')
           textParam('TRIGGER_COMMENT', '', 'Comment body for issue_comment triggers.')
+          stringParam('VALIDATION_MODE', '', 'Validation mode for the run (ci|extended|codeql|scorecard).')
         }
         definition {
           cps {
