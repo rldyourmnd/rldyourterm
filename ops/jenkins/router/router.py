@@ -71,8 +71,34 @@ def extract_pr_number(value: object) -> str | None:
     return None
 
 
+def _is_invalid_crumb_error(exc: urllib.error.HTTPError) -> bool:
+    if exc.code != HTTPStatus.FORBIDDEN:
+        return False
+
+    body = _safe_read_http_error_body(exc)
+    if not body:
+        return False
+
+    body_lower = body.lower()
+    return "invalid crumb" in body_lower or "no valid crumb" in body_lower
+
+
+def _safe_read_http_error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        raw = exc.fp.read() if exc.fp is not None else b""
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
 def is_transient_jenkins_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == HTTPStatus.FORBIDDEN:
+            return _is_invalid_crumb_error(exc)
         return exc.code in (
             HTTPStatus.BAD_GATEWAY,
             HTTPStatus.SERVICE_UNAVAILABLE,
