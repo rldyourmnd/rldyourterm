@@ -5,6 +5,7 @@ import hmac
 import importlib.util
 import io
 import json
+import os
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
@@ -162,6 +163,47 @@ class RouterHelpersTest(unittest.TestCase):
         self.assertEqual(load_crumb.call_count, 2)
         stop_builds.assert_called_once()
         sleep_mock.assert_called_once_with(2.0)
+
+    def test_stop_matching_running_builds_times_out_when_builds_do_not_stop(self) -> None:
+        build_payload = [
+            {
+                "building": True,
+                "number": 99,
+                "actions": [
+                    {
+                        "parameters": [
+                            {"name": "PR_NUMBER", "value": "99"},
+                        ],
+                    },
+                ],
+            },
+        ]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "JENKINS_BUILD_CANCEL_MAX_ATTEMPTS": "2",
+                    "JENKINS_BUILD_CANCEL_RETRY_SECONDS": "0.1",
+                },
+            ),
+            mock.patch.object(router, "list_job_builds", return_value=build_payload),
+            mock.patch.object(router, "stop_build") as stop_builds,
+            mock.patch.object(router.time, "sleep") as sleep_mock,
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                router.stop_matching_running_builds(
+                    base_url="https://jenkins.example",
+                    job_name="Rldyourterm/PR-Validation",
+                    pr_number="99",
+                    opener=mock.Mock(),
+                    crumb_header="Jenkins-Crumb",
+                    crumb_value="token",
+                )
+
+        self.assertIn("timed out waiting for PR 99 builds to stop", str(ctx.exception))
+        self.assertEqual(stop_builds.call_count, 2)
+        self.assertEqual(sleep_mock.call_count, 1)
 
 
 if __name__ == "__main__":

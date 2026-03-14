@@ -191,7 +191,10 @@ def stop_matching_running_builds(
     if not pr_number:
         return
 
-    for _ in range(10):
+    max_attempts = int(os.environ.get("JENKINS_BUILD_CANCEL_MAX_ATTEMPTS", "8"))
+    retry_delay_seconds = float(os.environ.get("JENKINS_BUILD_CANCEL_RETRY_SECONDS", "2"))
+
+    for attempt in range(max_attempts):
         matching_builds: list[int] = []
         for build in list_job_builds(base_url, job_name, opener):
             if not isinstance(build, dict):
@@ -217,7 +220,14 @@ def stop_matching_running_builds(
                 crumb_value=crumb_value,
             )
 
-        time.sleep(1.5)
+        if attempt + 1 >= max_attempts:
+            break
+
+        time.sleep(retry_delay_seconds)
+
+    raise RuntimeError(
+        f"timed out waiting for PR {pr_number} builds to stop for job '{job_name}' after {max_attempts} attempts"
+    )
 
 
 class GithubWebhookRouter(BaseHTTPRequestHandler):
