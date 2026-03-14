@@ -58,6 +58,14 @@ status context `Jenkins Extended Validation` for all modes. The mode is encoded
 in the status description (`Jenkins ci/extended/codeql/scorecard validation ...`)
 for operational visibility.
 
+In `extended` mode, Jenkins now runs the following suites in parallel:
+- `extended` (terminal and rust core checks)
+- `codeql`
+- `scorecard`
+
+Each parallel suite uses an isolated `CARGO_TARGET_DIR` to reduce cross-suite
+cache collisions in shared agent workspaces.
+
 ## Notes
 
 - Do not print credentials or token values in logs.
