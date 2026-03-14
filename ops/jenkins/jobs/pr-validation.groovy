@@ -342,8 +342,7 @@ git rev-parse HEAD
                         }
 
                         if (!branches.isEmpty()) {
-                            branches.failFast = false
-                            parallel branches
+                            parallel branches, failFast: false
                         }
 
                         def failedValidations = []
