@@ -30,6 +30,33 @@ curl -fsSL -X POST \\
     )
 }
 
+def resolveValidationMode(String triggerEvent, String requestedMode) {
+    final allowedModes = ['ci', 'extended', 'codeql', 'scorecard']
+
+    if (requestedMode?.trim()) {
+        def normalizedMode = requestedMode.trim()
+        if (!allowedModes.contains(normalizedMode)) {
+            error("unsupported VALIDATION_MODE '${normalizedMode}'")
+        }
+        return normalizedMode
+    }
+
+    switch (triggerEvent) {
+        case 'pull_request':
+            return 'ci'
+        case 'issue_comment':
+            return 'extended'
+        default:
+            return 'ci'
+    }
+}
+
+def assertSupportedTriggerEvent(String triggerEvent) {
+    if (!(triggerEvent in ['pull_request', 'issue_comment', 'manual'])) {
+        error("unsupported TRIGGER_EVENT '${triggerEvent}'")
+    }
+}
+
 pipeline {
     agent { label 'linux-ci' }
 
@@ -150,22 +177,10 @@ git rev-parse HEAD
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
+                        assertSupportedTriggerEvent(params.TRIGGER_EVENT)
+
                         String runner = fileExists('scripts/ci/run_jenkins_pr_ci.sh') ? 'bash scripts/ci/run_jenkins_pr_ci.sh' : 'bash /opt/jenkins/support/run_pr_ci.sh'
-                        String validationMode = params.VALIDATION_MODE?.trim()
-
-                        if (!validationMode) {
-                            if (params.TRIGGER_EVENT == 'pull_request') {
-                                validationMode = 'ci'
-                            } else if (params.TRIGGER_EVENT == 'issue_comment') {
-                                validationMode = 'extended'
-                            } else {
-                                validationMode = 'extended'
-                            }
-                        }
-
-                        if (!(validationMode in ['ci', 'extended', 'codeql', 'scorecard'])) {
-                            error("unsupported validation mode: ${validationMode}")
-                        }
+                        String validationMode = resolveValidationMode(params.TRIGGER_EVENT, params.VALIDATION_MODE)
 
                         String validationContext = 'Jenkins Extended Validation'
                         String validationReportRoot = (validationMode == 'extended')
