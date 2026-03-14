@@ -206,7 +206,7 @@ class RouterHelpersTest(unittest.TestCase):
         with (
             mock.patch.object(router, "build_basic_auth_header", return_value="Basic test"),
             mock.patch.object(router, "build_jenkins_opener", return_value=opener),
-            mock.patch.object(router, "load_crumb", return_value=("Jenkins-Crumb", "crumb-value")),
+            mock.patch.object(router, "load_crumb", return_value=("Jenkins-Crumb", "crumb-value")) as load_crumb,
             mock.patch.object(
                 router,
                 "stop_matching_running_builds",
