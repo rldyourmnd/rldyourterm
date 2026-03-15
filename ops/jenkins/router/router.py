@@ -16,10 +16,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+_CONFIG: dict[str, object] | None = None
+
+
 def load_config() -> dict[str, object]:
     config_path = Path(os.environ["ROUTER_CONFIG"])
     with config_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def get_config() -> dict[str, object]:
+    global _CONFIG  # noqa: PLW0603
+    if _CONFIG is None:
+        _CONFIG = load_config()
+    return _CONFIG
 
 
 def verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -295,7 +305,11 @@ class GithubWebhookRouter(BaseHTTPRequestHandler):
             self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
+        MAX_BODY_SIZE = 1_048_576  # 1 MB
         content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length > MAX_BODY_SIZE:
+            self.send_error(413, "Payload Too Large")
+            return
         body = self.rfile.read(content_length)
         signature = self.headers.get("X-Hub-Signature-256")
         event = self.headers.get("X-GitHub-Event", "")
@@ -311,7 +325,7 @@ class GithubWebhookRouter(BaseHTTPRequestHandler):
             self._json_response(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
             return
 
-        config = load_config()
+        config = get_config()
         repositories = config["repositories"]
         repository = payload.get("repository", {})
         repo_full_name = repository.get("full_name")
