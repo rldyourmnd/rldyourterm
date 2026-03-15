@@ -290,16 +290,23 @@ impl Grid {
         let top = region_top as usize;
         let bottom = region_bottom as usize;
 
-        for dst_row in top..=(bottom - lines_usize) {
-            let src_row = dst_row + lines_usize;
-            let src_start = src_row * width;
-            let dst_start = dst_row * width;
-            self.cells
-                .copy_within(src_start..(src_start + width), dst_start);
-            self.wrapped[dst_row] = self.wrapped[src_row];
+        if lines < region_height {
+            for dst_row in top..=(bottom - lines_usize) {
+                let src_row = dst_row + lines_usize;
+                let src_start = src_row * width;
+                let dst_start = dst_row * width;
+                self.cells
+                    .copy_within(src_start..(src_start + width), dst_start);
+                self.wrapped[dst_row] = self.wrapped[src_row];
+            }
         }
 
-        for row in (bottom + 1 - lines_usize)..=bottom {
+        let clear_start = if lines < region_height {
+            bottom + 1 - lines_usize
+        } else {
+            top
+        };
+        for row in clear_start..=bottom {
             let start = row * width;
             self.cells[start..(start + width)].fill(Cell::default());
             self.wrapped[row] = false;
@@ -331,24 +338,28 @@ impl Grid {
         let top = region_top as usize;
         let bottom = region_bottom as usize;
 
-        for dst_row in top..=(bottom - lines_usize) {
-            let src_row = dst_row + lines_usize;
-            let src_start = src_row * width;
-            let dst_start = dst_row * width;
-            self.cells
-                .copy_within(src_start..(src_start + width), dst_start);
-            self.wrapped[dst_row] = self.wrapped[src_row];
+        if lines < region_height {
+            for dst_row in top..=(bottom - lines_usize) {
+                let src_row = dst_row + lines_usize;
+                let src_start = src_row * width;
+                let dst_start = dst_row * width;
+                self.cells
+                    .copy_within(src_start..(src_start + width), dst_start);
+                self.wrapped[dst_row] = self.wrapped[src_row];
+            }
         }
 
-        for row in (bottom + 1 - lines_usize)..=bottom {
+        let clear_start = if lines < region_height {
+            bottom + 1 - lines_usize
+        } else {
+            top
+        };
+        for row in clear_start..=bottom {
             let start = row * width;
             self.cells[start..(start + width)].fill(Cell::default());
             self.wrapped[row] = false;
         }
 
-        // Region scroll invalidates the DMA scroll optimization (which assumes
-        // a uniform full-screen shift). Reset scroll_count so GPU renderer
-        // falls back to the standard dirty-row upload path.
         self.scroll_count = 0;
         self.mark_all_dirty();
     }
@@ -371,15 +382,22 @@ impl Grid {
         let top = region_top as usize;
         let bottom = region_bottom as usize;
 
-        for dst_row in (top..=(bottom - lines_usize)).rev() {
-            let src_start = dst_row * width;
-            let dst_start = (dst_row + lines_usize) * width;
-            self.cells
-                .copy_within(src_start..(src_start + width), dst_start);
-            self.wrapped[dst_row + lines_usize] = self.wrapped[dst_row];
+        if lines < region_height {
+            for dst_row in (top..=(bottom - lines_usize)).rev() {
+                let src_start = dst_row * width;
+                let dst_start = (dst_row + lines_usize) * width;
+                self.cells
+                    .copy_within(src_start..(src_start + width), dst_start);
+                self.wrapped[dst_row + lines_usize] = self.wrapped[dst_row];
+            }
         }
 
-        for row in top..(top + lines_usize) {
+        let clear_end = if lines < region_height {
+            top + lines_usize
+        } else {
+            bottom + 1
+        };
+        for row in top..clear_end {
             let start = row * width;
             self.cells[start..(start + width)].fill(Cell::default());
             self.wrapped[row] = false;

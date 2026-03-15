@@ -299,6 +299,31 @@ fn scroll_down_region_resets_scroll_count() {
 }
 
 #[test]
+fn scroll_region_full_height_at_top_does_not_underflow() {
+    // Regression: scroll_{up,down}_region had usize underflow when
+    // lines >= region_height and region_top == 0.
+    let attrs = Attrs::default();
+
+    let mut grid = Grid::new(10, 4);
+    let _ = grid.put_char(0, 0, 'A', attrs);
+
+    // Scroll entire region (lines == region_height) starting at row 0
+    grid.scroll_up_region_discard(4, 0, 3);
+    assert_eq!(grid.row_string(0).unwrap_or_default().trim(), "");
+
+    let mut grid2 = Grid::new(10, 4);
+    let _ = grid2.put_char(0, 0, 'A', attrs);
+    grid2.scroll_down_region(4, 0, 3);
+    assert_eq!(grid2.row_string(0).unwrap_or_default().trim(), "");
+
+    let mut grid3 = Grid::new(10, 4);
+    let _ = grid3.put_char(0, 0, 'A', attrs);
+    let removed = grid3.scroll_up_region(4, 0, 3);
+    assert_eq!(removed.len(), 4);
+    assert_eq!(grid3.row_string(0).unwrap_or_default().trim(), "");
+}
+
+#[test]
 fn resize_resets_dirty_to_new_height() {
     let mut grid = Grid::new(3, 3);
     grid.take_dirty_rows();
