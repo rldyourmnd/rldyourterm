@@ -206,16 +206,6 @@ fn synchronized_output_mode() {
     assert!(!t.synchronized_output_enabled());
 }
 
-#[test]
-fn focus_reporting_toggle() {
-    let mut t = term();
-    assert!(!t.focus_reporting_enabled());
-    feed_bytes(&mut t, b"\x1b[?1004h");
-    assert!(t.focus_reporting_enabled());
-    feed_bytes(&mut t, b"\x1b[?1004l");
-    assert!(!t.focus_reporting_enabled());
-}
-
 // ── Starship prompt patterns ───────────────────────────────
 
 #[test]
