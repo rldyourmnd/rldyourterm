@@ -146,7 +146,7 @@ impl GlyphCache {
             if ch != FALLBACK_GLYPH_CHAR {
                 self.eviction_queue.push_back(ch);
             }
-            self.cache.entry(ch).or_insert(bitmap);
+            return self.cache.entry(ch).or_insert(bitmap);
         }
 
         self.cache
