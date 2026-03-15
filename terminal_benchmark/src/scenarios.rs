@@ -22,7 +22,7 @@ use rldyourterm_render_gpu::{
 use rldyourterm_services::render_mode::RenderMode;
 use rldyourterm_services::session::{SessionController, SessionTransition};
 use rldyourterm_services::terminal::{Attrs, CELL_HEIGHT, CELL_WIDTH, Grid, Parser, TerminalState};
-use rldyourterm_settings::SettingsService;
+use rldyourterm_settings::{SettingsService, parse_palette_command};
 use rldyourterm_shell_integration::plan_shell_launch;
 use rldyourterm_ui::{UiBootstrapConfig, UiBootstrapHooks, UiRuntime};
 use std::hint::black_box;
@@ -159,6 +159,10 @@ fn run_iteration(
             bench_cpu_cycle_ingest_render_delta(cli, workload)
         }
         ScenarioArg::CpuPixelRasterDelta => bench_cpu_pixel_raster_delta(cli, workload),
+        ScenarioArg::CoreGridReflow => bench_core_grid_reflow(cli),
+        ScenarioArg::CoreUnicodeIngest => bench_core_unicode_ingest(cli),
+        ScenarioArg::SettingsParseThrough => bench_settings_parse_throughput(),
+        ScenarioArg::CpuRenderScrollback => bench_cpu_render_scrollback(cli, workload),
         _ => unreachable!("canonical-headless suite gating rejected non-headless scenario"),
     }
 }
@@ -656,6 +660,227 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
     })
 }
 
+fn bench_core_grid_reflow(cli: &Cli) -> Result<IterationOutcome> {
+    let mut state = TerminalState::new(80, 24, cli.scrollback_cap);
+    let mut responses = Vec::new();
+    // Fill the grid with 1000 wrapped text lines that exceed 80 cols to trigger reflow.
+    let wrapped_payload = build_wrapped_text_payload(80, 1000);
+    feed_bytes_in_chunks(
+        &mut state,
+        &wrapped_payload,
+        canonical_chunk_bytes(cli.chunk_bytes),
+        &mut responses,
+    );
+    let reflow_cycles = 200usize;
+    let start = Instant::now();
+    for _ in 0..reflow_cycles {
+        state.resize(40, 24);
+        state.resize(80, 24);
+    }
+    let elapsed = start.elapsed();
+    black_box(state.cursor);
+    black_box(state.scrollback.len());
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: reflow_cycles as u64,
+        byte_units: (reflow_cycles * 80 * 24 * std::mem::size_of::<u32>()) as u64,
+        notes: vec![format!(
+            "reflow_cycles={} grid=80x24->40x24->80x24 wrapped_payload_bytes={}",
+            reflow_cycles,
+            wrapped_payload.len()
+        )],
+    })
+}
+
+fn bench_core_unicode_ingest(cli: &Cli) -> Result<IterationOutcome> {
+    let mut state = TerminalState::new(cli.cols, cli.rows, cli.scrollback_cap);
+    let mut responses = Vec::new();
+    let unicode_payload = build_mixed_unicode_payload(1024 * 1024);
+    let chunk_bytes = canonical_chunk_bytes(cli.chunk_bytes);
+    let start = Instant::now();
+    feed_bytes_in_chunks(&mut state, &unicode_payload, chunk_bytes, &mut responses);
+    let elapsed = start.elapsed();
+    black_box(state.window_title());
+    black_box(state.cursor);
+    black_box(responses.len());
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: unicode_payload.len() as u64,
+        byte_units: unicode_payload.len() as u64,
+        notes: vec![format!(
+            "chunks={} payload_bytes={} responses={}",
+            chunk_count(&unicode_payload, chunk_bytes),
+            unicode_payload.len(),
+            responses.len()
+        )],
+    })
+}
+
+fn bench_settings_parse_throughput() -> Result<IterationOutcome> {
+    let parse_inputs = build_settings_parse_inputs();
+    let total_commands = 10_000usize;
+    let mut commands_parsed = 0u64;
+    let mut bytes_parsed = 0u64;
+    let start = Instant::now();
+    for index in 0..total_commands {
+        let input = parse_inputs[index % parse_inputs.len()];
+        let result = parse_palette_command(input);
+        black_box(&result);
+        commands_parsed += 1;
+        bytes_parsed += input.len() as u64;
+    }
+    let elapsed = start.elapsed();
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: commands_parsed,
+        byte_units: bytes_parsed,
+        notes: vec![format!(
+            "total_commands={} input_templates={} includes_invalid=true",
+            total_commands,
+            parse_inputs.len()
+        )],
+    })
+}
+
+fn bench_cpu_render_scrollback(cli: &Cli, workload: &Workload) -> Result<IterationOutcome> {
+    let mut state = seeded_terminal_state(cli, workload);
+    // Feed enough data to fill scrollback so we have content to scroll into.
+    let flood_payload = build_scrollback_render_payload(cli.cols, cli.rows as usize * 4);
+    feed_bytes_in_chunks(
+        &mut state,
+        &flood_payload,
+        canonical_chunk_bytes(cli.chunk_bytes),
+        &mut Vec::new(),
+    );
+
+    let visible_cols = usize::from(cli.cols).saturating_add(PIXEL_BUFFER_MARGIN_COLS);
+    let visible_rows = usize::from(cli.rows).saturating_add(PIXEL_BUFFER_MARGIN_ROWS);
+    let width = visible_cols * CELL_WIDTH;
+    let height = visible_rows * CELL_HEIGHT;
+    let mut buffer = vec![0u32; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut current_damage_rows_scratch = Vec::new();
+    let mut repaint_rows_scratch = Vec::new();
+    let mut persisted_damage_rows_scratch = Vec::new();
+    let previous_damage_rows = Vec::new();
+    // Set viewport_offset > 0 to render from scrollback.
+    let viewport_offset = cli.rows as usize;
+    let start = Instant::now();
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &previous_damage_rows,
+        None,
+        &mut current_damage_rows_scratch,
+        &mut repaint_rows_scratch,
+        &mut persisted_damage_rows_scratch,
+        true,
+        viewport_offset,
+        u32::MAX,
+        u32::MAX,
+    );
+    let elapsed = start.elapsed();
+    black_box(buffer[0]);
+    black_box(current_damage_rows_scratch.len());
+    Ok(IterationOutcome {
+        elapsed,
+        primary_units: 1,
+        byte_units: (buffer.len() * std::mem::size_of::<u32>()) as u64,
+        notes: vec![format!(
+            "pixel_buffer={}x{} viewport_offset={} scrollback_lines={}",
+            width,
+            height,
+            viewport_offset,
+            state.scrollback.len()
+        )],
+    })
+}
+
+fn build_wrapped_text_payload(cols: u16, lines: usize) -> Vec<u8> {
+    let wrap_width = usize::from(cols).saturating_mul(2);
+    let mut output = String::with_capacity(lines * (wrap_width + 8));
+    for index in 0..lines {
+        // Each line is longer than cols to force wrapping during reflow.
+        let body: String = format!(
+            "reflow-line-{:05}-{}",
+            index,
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat((wrap_width / 26) + 1)
+        );
+        let truncated: String = body.chars().take(wrap_width).collect();
+        output.push_str(&truncated);
+        output.push_str("\r\n");
+    }
+    output.into_bytes()
+}
+
+fn build_mixed_unicode_payload(target_bytes: usize) -> Vec<u8> {
+    let segments: &[&str] = &[
+        "Hello world, terminal benchmark test line with ASCII text. ",
+        "\u{0410}\u{0411}\u{0412}\u{0413}\u{0414}\u{0415}\u{0416}\u{0417}\u{0418}\u{0419} ",
+        "\u{4E2D}\u{6587}\u{6D4B}\u{8BD5}\u{884C}\u{5185}\u{5BB9} ",
+        "\u{0394}\u{03BB}\u{03C0}\u{03A9}\u{03B8}\u{03C6}\u{03C8} ",
+        "\u{1F600}\u{1F680}\u{1F4BB}\u{1F525}\u{2728}\u{1F914} ",
+        "mixed-123-\u{00E9}\u{00F1}\u{00FC}-end ",
+    ];
+    let mut output = String::with_capacity(target_bytes + 256);
+    let mut segment_index = 0usize;
+    while output.len() < target_bytes {
+        output.push_str(segments[segment_index % segments.len()]);
+        segment_index += 1;
+        if segment_index.is_multiple_of(8) {
+            output.push_str("\r\n");
+        }
+    }
+    let bytes = output.into_bytes();
+    bytes[..target_bytes.min(bytes.len())].to_vec()
+}
+
+fn build_settings_parse_inputs() -> Vec<&'static str> {
+    vec![
+        "mode cpu",
+        "mode gpu",
+        "shell fish",
+        "shell zsh",
+        "shell auto",
+        "shell auto-init on",
+        "shell auto-init off",
+        "render cadence monitor-auto",
+        "theme set aurora",
+        "theme set cuberpunk",
+        "profile throughput",
+        "profile balanced",
+        "debug on",
+        "debug off",
+        "  MODE\tGPU  ",
+        // Invalid inputs for mixed valid/invalid coverage.
+        "",
+        "nonexistent command here",
+        "mode INVALID_VALUE",
+        "theme set neon",
+        "shell BADTARGET",
+    ]
+}
+
+fn build_scrollback_render_payload(cols: u16, lines: usize) -> Vec<u8> {
+    let width = usize::from(cols.max(32));
+    let mut output = String::with_capacity(lines * (width + 16));
+    for index in 0..lines {
+        let body = format!(
+            "scrollback-render {:06} {}",
+            index,
+            "X".repeat(width.saturating_sub(30))
+        );
+        let truncated: String = body.chars().take(width).collect();
+        output.push_str(&truncated);
+        output.push_str("\r\n");
+    }
+    output.into_bytes()
+}
+
 fn consume_transition(transition: SessionTransition, transitions: &mut u64) {
     black_box(transition.sequence);
     *transitions += 1;
@@ -684,7 +909,7 @@ mod tests {
     #[test]
     fn all_selection_expands_to_canonical_suite() {
         let scenarios = selected_scenarios(ScenarioArg::All);
-        assert_eq!(scenarios.len(), 14);
+        assert_eq!(scenarios.len(), 18);
         assert!(scenarios.contains(&ScenarioArg::ServiceSessionRuntimeCycle));
         assert!(scenarios.contains(&ScenarioArg::GpuSurfacePolicy));
         assert_eq!(descriptor(ScenarioArg::UiCommandCycle).layer, "ui");
