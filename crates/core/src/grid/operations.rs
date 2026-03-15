@@ -313,6 +313,46 @@ impl Grid {
         removed
     }
 
+    pub fn scroll_up_region_discard(&mut self, lines: u16, region_top: u16, region_bottom: u16) {
+        if lines == 0 || self.height == 0 || region_top > region_bottom {
+            return;
+        }
+        let region_top = region_top.min(self.height.saturating_sub(1));
+        let region_bottom = region_bottom.min(self.height.saturating_sub(1));
+        let region_height = region_bottom - region_top + 1;
+        let lines = lines.min(region_height);
+
+        if self.width == 0 {
+            return;
+        }
+
+        let width = self.width as usize;
+        let lines_usize = lines as usize;
+        let top = region_top as usize;
+        let bottom = region_bottom as usize;
+
+        for dst_row in top..=(bottom - lines_usize) {
+            let src_row = dst_row + lines_usize;
+            let src_start = src_row * width;
+            let dst_start = dst_row * width;
+            self.cells
+                .copy_within(src_start..(src_start + width), dst_start);
+            self.wrapped[dst_row] = self.wrapped[src_row];
+        }
+
+        for row in (bottom + 1 - lines_usize)..=bottom {
+            let start = row * width;
+            self.cells[start..(start + width)].fill(Cell::default());
+            self.wrapped[row] = false;
+        }
+
+        // Region scroll invalidates the DMA scroll optimization (which assumes
+        // a uniform full-screen shift). Reset scroll_count so GPU renderer
+        // falls back to the standard dirty-row upload path.
+        self.scroll_count = 0;
+        self.mark_all_dirty();
+    }
+
     pub fn scroll_down_region(&mut self, lines: u16, region_top: u16, region_bottom: u16) {
         if lines == 0 || self.height == 0 || region_top > region_bottom {
             return;
