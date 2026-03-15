@@ -87,7 +87,11 @@ fn stress_mixed_region_and_full_scroll() {
     let mut grid = Grid::new(80, 24);
     for _ in 0..1000 {
         grid.scroll_up(2);
-        assert!(grid.scroll_count() > 0);
+        assert_eq!(
+            grid.scroll_count(),
+            2,
+            "scroll_up(2) should set count to exactly 2"
+        );
         grid.scroll_up_region(1, 5, 20);
         assert_eq!(grid.scroll_count(), 0);
     }

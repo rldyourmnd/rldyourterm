@@ -167,13 +167,17 @@ fn combining_diacritical_marks() {
 
     // The character should be stored in the grid
     let row_text = row(&t, 0);
-    // Either the combining mark is merged with the base or stored separately;
-    // the key guarantee is no panic and content is retrievable
-    assert!(!row_text.is_empty(), "combining char text must be stored");
-    // Cursor should advance by the display width of the base character (1 column)
+    // The base character 'e' must survive in the grid
     assert!(
-        t.cursor.col <= 2,
-        "cursor must not advance excessively for combining marks"
+        row_text.contains('e'),
+        "base char must survive, got: '{}'",
+        row_text
+    );
+    // Cursor should advance by the display width of the base character (1 column)
+    assert_eq!(
+        t.cursor.col, 1,
+        "combining mark should not advance cursor, got col={}",
+        t.cursor.col
     );
 }
 
@@ -185,14 +189,17 @@ fn multiple_combining_marks_on_single_base() {
     feed_bytes(&mut t, text.as_bytes());
 
     let row_text = row(&t, 0);
+    // The base character 'a' must survive in the grid
     assert!(
-        !row_text.is_empty(),
-        "stacked combining marks must not panic"
+        row_text.contains('a'),
+        "base char must survive, got: '{}'",
+        row_text
     );
-    // Cursor should be at most 2 cols forward (base char width)
-    assert!(
-        t.cursor.col <= 2,
-        "multiple combining marks should not consume extra columns"
+    // Cursor should advance by the display width of the base character (1 column)
+    assert_eq!(
+        t.cursor.col, 1,
+        "stacked combiners should not advance cursor, got col={}",
+        t.cursor.col
     );
 }
 

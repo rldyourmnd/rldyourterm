@@ -629,11 +629,12 @@ fn continuation_cell_renders_no_extra_glyph() {
     // independently trigger a separate glyph render call. We just verify
     // the test completes without panic and the grid state is consistent.
     let cell3_non_bg = cell3.iter().filter(|&&p| p != DEFAULT_BG_U32).count();
-    // cell3 non-bg could be 0 or non-zero depending on the font glyph extent;
-    // the key invariant is that NO crash occurred and the pixel count is bounded.
-    assert!(
-        cell3_non_bg <= CELL_WIDTH * CELL_HEIGHT,
-        "continuation cell pixel count must be bounded"
+    // The rasterizer skips width-0 continuation cells entirely, so no
+    // independent glyph should be drawn. Any non-bg pixels indicate the
+    // continuation cell was incorrectly treated as an owning cell.
+    assert_eq!(
+        cell3_non_bg, 0,
+        "continuation cell should render no independent glyph pixels"
     );
 }
 

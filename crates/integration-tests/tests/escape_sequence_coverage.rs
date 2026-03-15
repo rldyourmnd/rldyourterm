@@ -666,7 +666,7 @@ fn osc_2_sets_window_title() {
 }
 
 #[test]
-fn osc_52_clipboard_set() {
+fn osc_52_clipboard_bel_and_st_terminator() {
     let mut t = term();
     // Base64 for "Hello" is SGVsbG8=
     feed_bytes(&mut t, b"\x1b]52;c;SGVsbG8=\x07");

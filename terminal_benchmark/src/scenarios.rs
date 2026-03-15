@@ -788,7 +788,7 @@ fn bench_cpu_render_scrollback(cli: &Cli, workload: &Workload) -> Result<Iterati
     black_box(current_damage_rows_scratch.len());
     Ok(IterationOutcome {
         elapsed,
-        primary_units: 1,
+        primary_units: (width as u64) * (height as u64),
         byte_units: (buffer.len() * std::mem::size_of::<u32>()) as u64,
         notes: vec![format!(
             "pixel_buffer={}x{} viewport_offset={} scrollback_lines={}",
