@@ -89,23 +89,18 @@ impl GlyphCache {
         };
 
         let max_entries = max_entries.max(1);
-        let mut cache = HashMap::with_capacity(max_entries.min(1024));
-        let mut value = Self {
+        let mut result = Self {
             fonts,
             px_size,
             cell_width,
             cell_height,
-            cache: HashMap::new(),
+            cache: HashMap::with_capacity(max_entries.min(1024)),
             eviction_queue: VecDeque::new(),
             max_entries,
         };
-
-        cache.insert(
-            FALLBACK_GLYPH_CHAR,
-            value.rasterize_into_cell(FALLBACK_GLYPH_CHAR),
-        );
-        value.cache = cache;
-        value
+        let fallback_bitmap = result.rasterize_into_cell(FALLBACK_GLYPH_CHAR);
+        result.cache.insert(FALLBACK_GLYPH_CHAR, fallback_bitmap);
+        result
     }
 
     /// Add a fallback font to the chain. Fonts are tried in insertion order
@@ -154,11 +149,9 @@ impl GlyphCache {
             self.cache.entry(ch).or_insert(bitmap);
         }
 
-        if self.cache.contains_key(&ch) {
-            return &self.cache[&ch];
-        }
-
-        &self.cache[&FALLBACK_GLYPH_CHAR]
+        self.cache
+            .get(&ch)
+            .unwrap_or_else(|| &self.cache[&FALLBACK_GLYPH_CHAR])
     }
 
     /// Check if any font in the chain contains a real glyph for `ch`.
