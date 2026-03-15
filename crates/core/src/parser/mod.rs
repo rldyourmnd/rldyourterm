@@ -235,9 +235,7 @@ impl Parser {
         match self.state {
             ParseState::Ground => {}
             ParseState::Escape => {
-                actions.push(ParserAction::UnsupportedSequence(
-                    String::from_utf8_lossy(&[0x1B]).into_owned(),
-                ));
+                actions.push(ParserAction::UnsupportedSequence(String::from("\x1B")));
             }
             ParseState::Csi => {
                 actions.push(ParserAction::UnsupportedSequence(
