@@ -27,6 +27,8 @@ pub fn benchmark_coverage_summary() -> CoverageSummary {
                     "core-scrollback-flood".to_owned(),
                     "core-parser-throughput".to_owned(),
                     "core-grid-scroll".to_owned(),
+                    "core-grid-reflow".to_owned(),
+                    "core-unicode-ingest".to_owned(),
                 ],
                 validation_commands: vec![
                     "cargo test -p rldyourterm-core --locked".to_owned(),
@@ -48,7 +50,10 @@ pub fn benchmark_coverage_summary() -> CoverageSummary {
             },
             CoverageLayer {
                 layer: "features/settings".to_owned(),
-                benchmark_scenarios: vec!["settings-apply-cycle".to_owned()],
+                benchmark_scenarios: vec![
+                    "settings-apply-cycle".to_owned(),
+                    "settings-parse-through".to_owned(),
+                ],
                 validation_commands: vec!["cargo test -p rldyourterm-settings --locked".to_owned()],
                 notes: "Palette command parsing plus application is benchmarked through the public SettingsService API.".to_owned(),
             },
@@ -77,6 +82,7 @@ pub fn benchmark_coverage_summary() -> CoverageSummary {
                     "cpu-render-delta".to_owned(),
                     "cpu-cycle-ingest-render-delta".to_owned(),
                     "cpu-pixel-raster-delta".to_owned(),
+                    "cpu-render-scrollback".to_owned(),
                 ],
                 validation_commands: vec!["cargo test -p rldyourterm-render-cpu --locked".to_owned()],
                 notes: "Canonical CPU frame and raster paths are benchmarked directly and validated by renderer tests.".to_owned(),

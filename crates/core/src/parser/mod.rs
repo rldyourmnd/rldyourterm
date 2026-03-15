@@ -8,6 +8,8 @@ mod handlers;
 mod tests_advanced;
 #[cfg(test)]
 mod tests_basic;
+#[cfg(test)]
+mod tests_stress;
 
 use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 use crate::state::{MouseFormat, MouseMode};

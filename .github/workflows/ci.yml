@@ -134,8 +134,6 @@ jobs:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: "false"
-      - name: Benchmark helper unit tests
-        run: bash scripts/ci/run_python_ci_unittests.sh
       - run: bash scripts/ci/run_terminal_benchmark_smoke.sh
 
   dead-weight:

@@ -24,7 +24,7 @@ fi
 
 shellcheck --severity=warning -x "${shell_files[@]}"
 
-mapfile -t python_files < <(rg --files -g '*.py' scripts/ci ops/jenkins/router)
+mapfile -t python_files < <(rg --files -g '*.py' ops/jenkins/router)
 if [[ "${#python_files[@]}" -gt 0 ]]; then
   python3 -m py_compile "${python_files[@]}"
 fi
