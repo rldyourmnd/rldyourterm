@@ -18,12 +18,16 @@ pub enum GpuFailureKind {
     SurfaceError,
     SubmitError,
     SwapchainOutOfDate,
+    BackendUnavailable,
 }
 
 impl GpuFailureKind {
     #[must_use]
     pub const fn is_immediate_fallback(self) -> bool {
-        matches!(self, Self::DeviceLost | Self::OutOfMemory)
+        matches!(
+            self,
+            Self::DeviceLost | Self::OutOfMemory | Self::BackendUnavailable
+        )
     }
 }
 
@@ -143,6 +147,7 @@ impl RenderModeController {
         let _ = self.set_mode_with_transition(mode);
     }
 
+    #[must_use]
     pub fn set_mode_with_transition(&mut self, mode: RenderMode) -> Option<RenderModeTransition> {
         let previous_mode = self.mode;
         let previous_path = self.active_path;

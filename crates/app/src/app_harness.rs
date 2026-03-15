@@ -326,10 +326,12 @@ fn parse_gpu_failure_command(raw: &str) -> Result<UiRuntimeCommand> {
         "surface-error" => GpuFailureKind::SurfaceError,
         "submit-error" => GpuFailureKind::SubmitError,
         "swapchain-out-of-date" => GpuFailureKind::SwapchainOutOfDate,
+        "backend-unavailable" => GpuFailureKind::BackendUnavailable,
         _ => {
             return Err(anyhow!(
                 "unsupported gpu failure kind `{kind_token}`; expected one of: \
-device-lost, out-of-memory, surface-error, submit-error, swapchain-out-of-date"
+device-lost, out-of-memory, surface-error, submit-error, swapchain-out-of-date, \
+backend-unavailable"
             ));
         }
     };

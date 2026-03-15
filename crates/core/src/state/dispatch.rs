@@ -164,11 +164,7 @@ impl TerminalState {
                 selection,
                 base64_data,
             } => {
-                self.pending_clipboard = Some((selection, base64_data.clone()));
-                events.push(CoreEvent::ClipboardSetRequested {
-                    selection,
-                    base64_data,
-                });
+                self.pending_clipboard = Some((selection, base64_data));
             }
             ParserAction::ShellMarker(kind) => {
                 events.push(CoreEvent::ShellMarkerReceived { kind });

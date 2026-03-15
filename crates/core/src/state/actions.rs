@@ -442,7 +442,7 @@ impl TerminalState {
         if top == 0 && bottom == self.grid.height().saturating_sub(1) {
             self.push_scrolled_lines(n, events);
         } else {
-            let _ = self.grid.scroll_up_region(n, top, bottom);
+            self.grid.scroll_up_region_discard(n, top, bottom);
         }
     }
 
@@ -480,7 +480,7 @@ impl TerminalState {
         if top == 0 && bottom == self.grid.height().saturating_sub(1) {
             self.push_scrolled_lines(lines, events);
         } else {
-            let _ = self.grid.scroll_up_region(lines, top, bottom);
+            self.grid.scroll_up_region_discard(lines, top, bottom);
         }
     }
 

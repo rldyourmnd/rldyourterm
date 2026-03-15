@@ -21,33 +21,26 @@ struct WindowRuntimeState {
     closed: bool,
 }
 
+#[derive(Default)]
+struct PlatformWindowInner {
+    window: Option<Arc<Window>>,
+    cached_timing: Option<MonitorTiming>,
+    state: WindowRuntimeState,
+}
+
 pub struct PlatformWindowControl {
-    window: Mutex<Option<Arc<Window>>>,
-    cached_timing: Mutex<Option<MonitorTiming>>,
-    state: Mutex<WindowRuntimeState>,
+    inner: Mutex<PlatformWindowInner>,
 }
 
 impl fmt::Debug for PlatformWindowControl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let window_attached = self
-            .window
-            .lock()
-            .map(|window| window.is_some())
-            .unwrap_or(false);
-        let cached_timing = self
-            .cached_timing
-            .lock()
-            .map(|cached| cached.clone())
-            .ok()
-            .flatten();
-
-        match self.state.lock() {
-            Ok(state) => f
+        match self.inner.lock() {
+            Ok(inner) => f
                 .debug_struct("PlatformWindowControl")
-                .field("window_attached", &window_attached)
-                .field("cached_timing", &cached_timing)
-                .field("title", &state.title)
-                .field("closed", &state.closed)
+                .field("window_attached", &inner.window.is_some())
+                .field("cached_timing", &inner.cached_timing)
+                .field("title", &inner.state.title)
+                .field("closed", &inner.state.closed)
                 .finish(),
             Err(_) => f
                 .debug_struct("PlatformWindowControl")
@@ -74,15 +67,45 @@ impl PlatformWindowControl {
 
     fn new(window: Option<Arc<Window>>) -> Self {
         Self {
-            window: Mutex::new(window),
-            cached_timing: Mutex::new(None),
-            state: Mutex::new(WindowRuntimeState::default()),
+            inner: Mutex::new(PlatformWindowInner {
+                window,
+                cached_timing: None,
+                state: WindowRuntimeState::default(),
+            }),
         }
     }
 
+    fn lock_inner(
+        &self,
+        operation: WindowOperation,
+    ) -> FoundationResult<MutexGuard<'_, PlatformWindowInner>> {
+        self.inner.lock().map_err(|_| {
+            FoundationError::window(
+                operation,
+                WindowFailureCode::BoundaryFault,
+                Recoverability::Fatal,
+                "window control lock poisoned",
+                None,
+            )
+        })
+    }
+
     fn apply_config(&self, config: &WindowConfig) -> FoundationResult<()> {
-        self.set_title_internal(&config.title)?;
-        if let Some(window) = self.clone_window(WindowOperation::SetTitle)? {
+        let mut inner = self.lock_inner(WindowOperation::SetTitle)?;
+        if inner.state.closed {
+            return Err(FoundationError::window(
+                WindowOperation::SetTitle,
+                WindowFailureCode::InvalidWindowState,
+                Recoverability::Degrade,
+                "set_title called after window close",
+                None,
+            ));
+        }
+
+        inner.state.title = Some(config.title.clone());
+
+        if let Some(window) = inner.window.as_ref() {
+            window.set_title(&config.title);
             window.set_min_inner_size(window_size(
                 config.min_width,
                 config.min_height,
@@ -108,25 +131,27 @@ impl PlatformWindowControl {
     }
 
     fn resolve_monitor_timing(&self) -> FoundationResult<MonitorTimingReading> {
-        if let Some(window) = self.clone_window(WindowOperation::QueryMonitorTiming)? {
+        let mut inner = self.lock_inner(WindowOperation::QueryMonitorTiming)?;
+
+        if let Some(window) = inner.window.as_ref() {
             if let Some(monitor) = window.current_monitor() {
                 let current_timing = Self::timing_from_monitor(&monitor);
                 if current_timing.refresh_rate_millihz.is_some() {
-                    self.write_cached_timing(Some(current_timing.clone()))?;
+                    inner.cached_timing = Some(current_timing.clone());
                     return Ok(MonitorTimingReading::from_current_monitor(current_timing));
                 }
 
                 if let Some(primary_monitor) = window.primary_monitor() {
                     let primary_timing = Self::timing_from_monitor(&primary_monitor);
                     if primary_timing.refresh_rate_millihz.is_some() {
-                        self.write_cached_timing(Some(primary_timing.clone()))?;
+                        inner.cached_timing = Some(primary_timing.clone());
                         return Ok(MonitorTimingReading::from_primary_monitor_fallback(
                             primary_timing,
                         ));
                     }
                 }
 
-                if let Some(cached_timing) = self.read_cached_timing()? {
+                if let Some(cached_timing) = inner.cached_timing.as_ref() {
                     let merged = MonitorTiming {
                         monitor_name: current_timing.monitor_name,
                         refresh_rate_millihz: cached_timing.refresh_rate_millihz,
@@ -138,45 +163,47 @@ impl PlatformWindowControl {
             }
 
             if let Some(monitor) = window.primary_monitor() {
-                return self.resolve_from_monitor(monitor, false);
+                return Ok(Self::resolve_from_monitor_inner(&mut inner, monitor, false));
             }
         }
 
-        if let Some(cached_timing) = self.read_cached_timing()? {
-            return Ok(MonitorTimingReading::from_cached_fallback(cached_timing));
+        if let Some(cached_timing) = inner.cached_timing.as_ref() {
+            return Ok(MonitorTimingReading::from_cached_fallback(
+                cached_timing.clone(),
+            ));
         }
 
         Ok(MonitorTimingReading::unavailable())
     }
 
-    fn resolve_from_monitor(
-        &self,
+    fn resolve_from_monitor_inner(
+        inner: &mut PlatformWindowInner,
         monitor: MonitorHandle,
         is_current: bool,
-    ) -> FoundationResult<MonitorTimingReading> {
+    ) -> MonitorTimingReading {
         let timing = Self::timing_from_monitor(&monitor);
         if timing.refresh_rate_millihz.is_some() {
-            self.write_cached_timing(Some(timing.clone()))?;
-            return Ok(if is_current {
+            inner.cached_timing = Some(timing.clone());
+            return if is_current {
                 MonitorTimingReading::from_current_monitor(timing)
             } else {
                 MonitorTimingReading::from_primary_monitor_fallback(timing)
-            });
+            };
         }
 
-        if let Some(cached) = self.read_cached_timing()? {
+        if let Some(cached) = inner.cached_timing.as_ref() {
             let merged = MonitorTiming {
                 monitor_name: timing.monitor_name,
                 refresh_rate_millihz: cached.refresh_rate_millihz,
             };
-            return Ok(MonitorTimingReading::from_cached_fallback(merged));
+            return MonitorTimingReading::from_cached_fallback(merged);
         }
 
-        Ok(if is_current {
+        if is_current {
             MonitorTimingReading::from_current_monitor(timing)
         } else {
             MonitorTimingReading::from_primary_monitor_fallback(timing)
-        })
+        }
     }
 
     fn timing_from_monitor(monitor: &MonitorHandle) -> MonitorTiming {
@@ -186,129 +213,46 @@ impl PlatformWindowControl {
         }
     }
 
-    fn lock_state(
-        &self,
-        operation: WindowOperation,
-    ) -> FoundationResult<MutexGuard<'_, WindowRuntimeState>> {
-        self.state.lock().map_err(|_| {
-            FoundationError::window(
-                operation,
-                WindowFailureCode::BoundaryFault,
-                Recoverability::Fatal,
-                "window runtime state lock poisoned",
-                None,
-            )
-        })
-    }
-
-    fn clone_window(&self, operation: WindowOperation) -> FoundationResult<Option<Arc<Window>>> {
-        self.window
-            .lock()
-            .map(|window| window.as_ref().map(Arc::clone))
-            .map_err(|_| {
-                FoundationError::window(
-                    operation,
-                    WindowFailureCode::BoundaryFault,
-                    Recoverability::Fatal,
-                    "window handle lock poisoned",
-                    None,
-                )
-            })
-    }
-
-    fn clear_window(&self, operation: WindowOperation) -> FoundationResult<()> {
-        self.window
-            .lock()
-            .map(|mut window| {
-                *window = None;
-            })
-            .map_err(|_| {
-                FoundationError::window(
-                    operation,
-                    WindowFailureCode::BoundaryFault,
-                    Recoverability::Fatal,
-                    "window handle lock poisoned",
-                    None,
-                )
-            })
-    }
-
     fn set_title_internal(&self, title: &str) -> FoundationResult<()> {
-        {
-            let mut state = self.lock_state(WindowOperation::SetTitle)?;
-            if state.closed {
-                return Err(FoundationError::window(
-                    WindowOperation::SetTitle,
-                    WindowFailureCode::InvalidWindowState,
-                    Recoverability::Degrade,
-                    "set_title called after window close",
-                    None,
-                ));
-            }
-
-            if state.title.as_deref() == Some(title) {
-                return Ok(());
-            }
-            state.title = Some(title.to_string());
+        let mut inner = self.lock_inner(WindowOperation::SetTitle)?;
+        if inner.state.closed {
+            return Err(FoundationError::window(
+                WindowOperation::SetTitle,
+                WindowFailureCode::InvalidWindowState,
+                Recoverability::Degrade,
+                "set_title called after window close",
+                None,
+            ));
         }
 
-        if let Some(window) = self.clone_window(WindowOperation::SetTitle)? {
+        if inner.state.title.as_deref() == Some(title) {
+            return Ok(());
+        }
+        inner.state.title = Some(title.to_string());
+
+        if let Some(window) = inner.window.as_ref() {
             window.set_title(title);
         } else {
             tracing::debug!("set_title called on detached window control");
         }
         Ok(())
     }
-
-    fn read_cached_timing(&self) -> FoundationResult<Option<MonitorTiming>> {
-        self.cached_timing
-            .lock()
-            .map(|cached| cached.clone())
-            .map_err(|_| {
-                FoundationError::window(
-                    WindowOperation::QueryMonitorTiming,
-                    WindowFailureCode::BoundaryFault,
-                    Recoverability::Fatal,
-                    "monitor timing cache lock poisoned",
-                    None,
-                )
-            })
-    }
-
-    fn write_cached_timing(&self, timing: Option<MonitorTiming>) -> FoundationResult<()> {
-        self.cached_timing
-            .lock()
-            .map(|mut cached| {
-                *cached = timing;
-            })
-            .map_err(|_| {
-                FoundationError::window(
-                    WindowOperation::QueryMonitorTiming,
-                    WindowFailureCode::BoundaryFault,
-                    Recoverability::Fatal,
-                    "monitor timing cache lock poisoned",
-                    None,
-                )
-            })
-    }
 }
 
 impl WindowControl for PlatformWindowControl {
     fn request_redraw(&self) -> FoundationResult<()> {
-        {
-            let state = self.lock_state(WindowOperation::RequestRedraw)?;
-            if state.closed {
-                return Err(FoundationError::window(
-                    WindowOperation::RequestRedraw,
-                    WindowFailureCode::InvalidWindowState,
-                    Recoverability::Degrade,
-                    "request_redraw called after window close",
-                    None,
-                ));
-            }
+        let inner = self.lock_inner(WindowOperation::RequestRedraw)?;
+        if inner.state.closed {
+            return Err(FoundationError::window(
+                WindowOperation::RequestRedraw,
+                WindowFailureCode::InvalidWindowState,
+                Recoverability::Degrade,
+                "request_redraw called after window close",
+                None,
+            ));
         }
 
-        if let Some(window) = self.clone_window(WindowOperation::RequestRedraw)? {
+        if let Some(window) = inner.window.as_ref() {
             window.request_redraw();
         } else {
             tracing::debug!("request_redraw called on detached window control");
@@ -331,14 +275,13 @@ impl WindowControl for PlatformWindowControl {
     }
 
     fn close(&self) -> FoundationResult<()> {
-        {
-            let mut state = self.lock_state(WindowOperation::Close)?;
-            if state.closed {
-                return Ok(());
-            }
-            state.closed = true;
+        let mut inner = self.lock_inner(WindowOperation::Close)?;
+        if inner.state.closed {
+            return Ok(());
         }
-        self.clear_window(WindowOperation::Close)
+        inner.state.closed = true;
+        inner.window = None;
+        Ok(())
     }
 }
 

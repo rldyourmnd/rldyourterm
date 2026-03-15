@@ -6,13 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub const RUNTIME_PROFILE_SCHEMA_VERSION: u16 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ShellTarget {
-    Fish,
-    Zsh,
-    Auto,
-}
+pub use rldyourterm_services::shell_target::ShellTarget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

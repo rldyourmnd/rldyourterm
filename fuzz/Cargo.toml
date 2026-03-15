@@ -19,5 +19,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "terminal_state_feed"
+path = "fuzz_targets/terminal_state_feed.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

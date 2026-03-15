@@ -2067,6 +2067,7 @@ dependencies = [
 name = "rldyourterm-shell-integration"
 version = "0.1.0"
 dependencies = [
+ "rldyourterm-services",
  "tracing",
 ]
 

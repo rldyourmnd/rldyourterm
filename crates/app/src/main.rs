@@ -363,6 +363,7 @@ fn gpu_failure_kind_token(kind: GpuFailureKind) -> &'static str {
         GpuFailureKind::SurfaceError => "surface-error",
         GpuFailureKind::SubmitError => "submit-error",
         GpuFailureKind::SwapchainOutOfDate => "swapchain-out-of-date",
+        GpuFailureKind::BackendUnavailable => "backend-unavailable",
     }
 }
 

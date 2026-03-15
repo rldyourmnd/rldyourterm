@@ -62,6 +62,10 @@ impl PlatformPtyIo {
         matches!(inner.exit_code, Some(code) if code != UNKNOWN_EXIT_CODE)
     }
 
+    fn is_kill_sentinel(code: i32) -> bool {
+        code == UNKNOWN_EXIT_CODE
+    }
+
     fn close_handles(inner: &mut PtyInner) {
         inner.closed = true;
         inner.reader = None;
@@ -310,7 +314,12 @@ impl PtyIo for PlatformPtyIo {
                 if !Self::has_final_exit(&inner) {
                     let _ = Self::cache_exit_code(&mut inner, code);
                 }
-                Ok(inner.exit_code.unwrap_or(code))
+                // Prefer the real exit code from wait_for_exit over a kill sentinel
+                // that may have been set during the TOCTOU window.
+                match inner.exit_code {
+                    Some(cached) if !Self::is_kill_sentinel(cached) => Ok(cached),
+                    _ => Ok(code),
+                }
             }
             Err(error) => Err(error),
         }

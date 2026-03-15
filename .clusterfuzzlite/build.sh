@@ -10,7 +10,7 @@ cd "$SRC/rldyourterm"
 # ClusterFuzzLite may inject an outdated RUSTUP_TOOLCHAIN (seen in CI logs).
 # Use a pinned nightly by default for deterministic fuzz CI and MSRV alignment.
 # Override via CFLITE_RUST_TOOLCHAIN when intentionally updating the snapshot.
-CFLITE_RUST_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN:-nightly-2026-03-07}"
+CFLITE_RUST_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN:-nightly-2026-03-11}"
 export RUSTUP_TOOLCHAIN="${CFLITE_RUST_TOOLCHAIN}"
 
 if ! rustup run "${CFLITE_RUST_TOOLCHAIN}" rustc --version >/dev/null 2>&1; then

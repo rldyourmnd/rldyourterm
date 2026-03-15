@@ -9,14 +9,14 @@ use rldyourterm_foundation::api::diagnostics::{
 use rldyourterm_services::render_mode::RenderMode;
 use rldyourterm_services::runtime_protocol::{UiCommandOutcome, UiCommandReceipt};
 use rldyourterm_services::session::SessionTransitionOutcome;
+use rldyourterm_services::shell_target::ShellTarget;
 use rldyourterm_settings::{
     RenderCadencePolicy, RuntimeProfilePreset, SettingsApplyOutcome, SettingsCommand,
-    SettingsPaletteApplyOutcome, SettingsPaletteRejectReason, SettingsState,
-    ShellTarget as SettingsShellTarget, ThemePreset,
+    SettingsPaletteApplyOutcome, SettingsPaletteRejectReason, SettingsState, ThemePreset,
 };
 use rldyourterm_shell_integration::{
     FishBaselineFailureCause, ShellLaunchPlan, ShellLaunchProfile, ShellResolution,
-    ShellResolutionError, ShellResolutionReason, ShellTarget as IntegrationShellTarget,
+    ShellResolutionError, ShellResolutionReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -546,7 +546,7 @@ impl ShellResolutionTypedPayload {
     }
 
     pub fn from_resolution_failure(
-        requested: IntegrationShellTarget,
+        requested: ShellTarget,
         error: ShellResolutionError,
         fallback_cause: Option<FishBaselineFailureCause>,
     ) -> Self {
@@ -673,22 +673,12 @@ impl From<&SettingsState> for SettingsStateTypedPayload {
     }
 }
 
-impl From<SettingsShellTarget> for ShellTargetKind {
-    fn from(value: SettingsShellTarget) -> Self {
+impl From<ShellTarget> for ShellTargetKind {
+    fn from(value: ShellTarget) -> Self {
         match value {
-            SettingsShellTarget::Fish => Self::Fish,
-            SettingsShellTarget::Zsh => Self::Zsh,
-            SettingsShellTarget::Auto => Self::Auto,
-        }
-    }
-}
-
-impl From<IntegrationShellTarget> for ShellTargetKind {
-    fn from(value: IntegrationShellTarget) -> Self {
-        match value {
-            IntegrationShellTarget::Fish => Self::Fish,
-            IntegrationShellTarget::Zsh => Self::Zsh,
-            IntegrationShellTarget::Auto => Self::Auto,
+            ShellTarget::Fish => Self::Fish,
+            ShellTarget::Zsh => Self::Zsh,
+            ShellTarget::Auto => Self::Auto,
         }
     }
 }
@@ -768,11 +758,11 @@ fn render_mode_input(mode: RenderMode) -> &'static str {
     }
 }
 
-fn settings_shell_input(target: SettingsShellTarget) -> &'static str {
+fn settings_shell_input(target: ShellTarget) -> &'static str {
     match target {
-        SettingsShellTarget::Fish => "fish",
-        SettingsShellTarget::Zsh => "zsh",
-        SettingsShellTarget::Auto => "auto",
+        ShellTarget::Fish => "fish",
+        ShellTarget::Zsh => "zsh",
+        ShellTarget::Auto => "auto",
     }
 }
 
