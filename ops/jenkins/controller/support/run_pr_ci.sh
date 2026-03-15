@@ -18,22 +18,88 @@ fi
 root_dir="$(pwd)"
 report_root="${report_root%/}"
 
+emit_runtime_diagnostics() {
+  echo "Jenkins runtime diagnostics:"
+  echo "workdir: $(pwd)"
+  echo "uid: $(id -u)/$(id -g), user: $(id -un)"
+  echo "PATH: $PATH"
+  echo "CARGO_HOME: ${CARGO_HOME:-<unset>}"
+  echo "RUSTUP_HOME: ${RUSTUP_HOME:-<unset>}"
+  echo "CARGO_TARGET_DIR: ${CARGO_TARGET_DIR:-<unset>}"
+  echo "command -v cargo: $(command -v cargo || echo '<missing>')"
+  echo "command -v rustup: $(command -v rustup || echo '<missing>')"
+  echo "command -v rustc: $(command -v rustc || echo '<missing>')"
+  ls -la /home/jenkins/.cache/rust 2>/dev/null | sed 's/^/  /' || true
+}
+
+ensure_cargo_on_path() {
+  local candidate=""
+  local home_base="${HOME:-/home/jenkins}"
+
+  if command -v cargo >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for candidate in \
+    "${CARGO_HOME:-$home_base/.cache/rust/cargo}" \
+    "$home_base/.cache/rust/cargo" \
+    "$home_base/.cache/cargo" \
+    "$home_base/.cargo" \
+    "/usr/local/cargo"; do
+    if [[ -n "$candidate" && -x "$candidate/bin/cargo" ]]; then
+      export CARGO_HOME="$candidate"
+      if [[ ":$PATH:" != *":$candidate/bin:"* ]]; then
+        export PATH="$candidate/bin:$PATH"
+      fi
+      return 0
+    fi
+  done
+
+  if [[ -f "${CARGO_HOME:-$home_base/.cache/rust/cargo}/env" ]]; then
+    # shellcheck source=/dev/null
+    source "${CARGO_HOME:-$home_base/.cache/rust/cargo}/env"
+  fi
+
+  if command -v cargo >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "required command not found: cargo" >&2
+  emit_runtime_diagnostics
+  exit 127
+}
+
+ensure_cargo_on_path
+
+default_target_dir() {
+  local mode="$1"
+  local explicit_dir="${JENKINS_CARGO_TARGET_DIR:-${CARGO_TARGET_DIR:-}}"
+
+  if [[ -n "$explicit_dir" ]]; then
+    printf '%s\n' "$explicit_dir"
+    return 0
+  fi
+
+  printf '%s\n' "${root_dir}/.jenkins-target/${mode}"
+}
+
 require_command() {
   local name="$1"
   if ! command -v "$name" >/dev/null 2>&1; then
     echo "required command not found: $name" >&2
+    emit_runtime_diagnostics
     exit 1
   fi
 }
 
 prepare_clean_codeql_workspace() {
+  local target_dir="$1"
+
   # CodeQL must analyze the checked-out source tree, not leftover cargo and fuzz
   # outputs from the earlier CI contour in the same Jenkins workspace.
-  if [[ -d target ]]; then
-    find target -mindepth 1 -maxdepth 1 ! -name terminal-benchmark -exec rm -rf {} +
+  if [[ -n "$target_dir" && -d "$target_dir" ]]; then
+    rm -rf "$target_dir"
   fi
-
-  rm -rf fuzz/target
 }
 
 pr_title="${JENKINS_PR_TITLE:-}"
@@ -102,6 +168,7 @@ validate_semantic_pr_title() {
 
 run_ci_suite() {
   local root="$1"
+  local target_dir="${2:-$(default_target_dir ci)}"
   local ci_root="$root/ci"
   local system_suite_report="$ci_root/jenkins-system-suite.json"
   local benchmark_report="$ci_root/jenkins-benchmark-report.json"
@@ -126,27 +193,30 @@ run_ci_suite() {
 
   bash scripts/ci/run_python_ci_unittests.sh
 
-  cargo fmt --all -- --check
-  cargo check --workspace --all-targets --locked
-  cargo test --workspace --locked
-  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-  cargo +1.92.0 check --workspace --all-targets --locked
+  CARGO_TARGET_DIR="$target_dir" cargo fmt --all -- --check
+  CARGO_TARGET_DIR="$target_dir" cargo check --workspace --all-targets --locked
+  CARGO_TARGET_DIR="$target_dir" cargo test --workspace --locked
+  CARGO_TARGET_DIR="$target_dir" cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  CARGO_TARGET_DIR="$target_dir" cargo +1.92.0 check --workspace --all-targets --locked
 
-  bash scripts/ci/run_terminal_system_suite.sh \
+  CARGO_TARGET_DIR="$target_dir" \
+    bash scripts/ci/run_terminal_system_suite.sh \
     "$system_suite_report" \
     --benchmark-report "$benchmark_report" \
     --governance-mode ci
 
-  cargo audit
-  cargo deny check bans licenses advisories sources
+  CARGO_TARGET_DIR="$target_dir" cargo audit
+  CARGO_TARGET_DIR="$target_dir" cargo deny check bans licenses advisories sources
 
-  bash scripts/mvp/run_matrix.sh 3
+  CARGO_TARGET_DIR="$target_dir" bash scripts/mvp/run_matrix.sh 3
 
-  cargo +"$fuzz_toolchain" fuzz run parser_feed -- -max_total_time="$fuzz_seconds"
+  CARGO_TARGET_DIR="$target_dir" \
+    cargo +"$fuzz_toolchain" fuzz run parser_feed -- -max_total_time="$fuzz_seconds"
 }
 
 run_codeql_suite() {
   local root="$1"
+  local target_dir="${2:-$(default_target_dir codeql)}"
   local codeql_root="$root/codeql"
   local database_root="$codeql_root/database"
   local diagnostics_root="$codeql_root/diagnostics"
@@ -160,7 +230,7 @@ run_codeql_suite() {
   require_command codeql
   require_command cargo
 
-  prepare_clean_codeql_workspace
+  prepare_clean_codeql_workspace "$target_dir"
 
   mkdir -p "$codeql_root"
   rm -rf "$database_root" "$diagnostics_root" "$sarif_path"
@@ -168,7 +238,7 @@ run_codeql_suite() {
   codeql database create "$database_root" \
     --language=rust \
     --source-root "$root_dir" \
-    --command "cargo build --workspace --locked"
+    --command "CARGO_TARGET_DIR=$target_dir cargo build --workspace --locked"
 
   codeql database analyze "$database_root" \
     codeql/rust-queries:codeql-suites/rust-security-and-quality.qls \
@@ -232,6 +302,7 @@ run_codeql_suite() {
 
 run_extended_suite() {
   local root="$1"
+  local target_dir="${2:-$(default_target_dir extended)}"
   local extended_root="$root/extended"
   local benchmark_report="$extended_root/jenkins-extended-benchmark-report.json"
 
@@ -242,15 +313,18 @@ run_extended_suite() {
   ensure_cargo_tool cargo-machete cargo-machete "$cargo_machete_version"
   ensure_cargo_tool cargo-udeps cargo-udeps "$cargo_udeps_version"
 
-  RLDYOURTERM_UDEPS_TOOLCHAIN="$fuzz_toolchain" \
+  CARGO_TARGET_DIR="$target_dir" \
+    RLDYOURTERM_UDEPS_TOOLCHAIN="$fuzz_toolchain" \
     bash scripts/ci/run_dead_weight_checks.sh extended
 
-  env TERMINAL_BENCHMARK_SCALE="$extended_benchmark_scale" \
+  CARGO_TARGET_DIR="$target_dir" \
+    env TERMINAL_BENCHMARK_SCALE="$extended_benchmark_scale" \
     bash scripts/ci/run_terminal_benchmark_full.sh "$benchmark_report"
 
-  bash scripts/ci/run_e2e_governance.sh --mode release
-  bash scripts/mvp/run_matrix.sh "$extended_matrix_repeat"
-  cargo +"$fuzz_toolchain" fuzz run parser_feed -- -max_total_time="$extended_fuzz_seconds"
+  CARGO_TARGET_DIR="$target_dir" bash scripts/ci/run_e2e_governance.sh --mode release
+  CARGO_TARGET_DIR="$target_dir" bash scripts/mvp/run_matrix.sh "$extended_matrix_repeat"
+  CARGO_TARGET_DIR="$target_dir" \
+    cargo +"$fuzz_toolchain" fuzz run parser_feed -- -max_total_time="$extended_fuzz_seconds"
 }
 
 run_scorecard_suite() {
@@ -274,16 +348,16 @@ cd "$root_dir"
 
 case "$mode" in
   ci)
-    run_ci_suite "$report_root"
+    run_ci_suite "$report_root" "$(default_target_dir ci)"
     ;;
   codeql)
-    run_codeql_suite "$report_root"
+    run_codeql_suite "$report_root" "$(default_target_dir codeql)"
     ;;
   scorecard)
     run_scorecard_suite "$report_root"
     ;;
   extended)
-    run_extended_suite "$report_root"
+    run_extended_suite "$report_root" "$(default_target_dir extended)"
     ;;
   -h|--help|help)
     usage

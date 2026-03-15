@@ -21,8 +21,8 @@
   },
   "jenkins_jobs": {
     "Rldyourterm/PR-Validation": {
-      "description": "Extended server-side PR validation for rldyourterm",
-      "estimated_duration": "60-120 minutes"
+      "description": "Adaptive Jenkins PR validation for rldyourterm (default CI for pull_request, Extended for @jenkins comment)",
+      "estimated_duration": "20-120 minutes"
     }
   }
 }

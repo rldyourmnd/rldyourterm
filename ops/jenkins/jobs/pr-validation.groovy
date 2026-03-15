@@ -25,9 +25,88 @@ curl -fsSL -X POST \\
   -H "Authorization: Bearer \$GITHUB_TOKEN" \\
   -H 'X-GitHub-Api-Version: 2022-11-28' \\
   --data "\$payload" \\
-  'https://api.github.com/repos/${repoFullName}/statuses/${sha}' >/dev/null
+  "https://api.github.com/repos/${repoFullName}/statuses/${sha}" >/dev/null
 """
     )
+}
+
+def githubSetCommitStatusSafe(
+    String repoFullName,
+    String sha,
+    String context,
+    String state,
+    String description,
+    String targetUrl
+) {
+    try {
+        githubSetCommitStatus(
+            repoFullName,
+            sha,
+            context,
+            state,
+            description,
+            targetUrl
+        )
+    } catch (err) {
+        echo "warning: failed to publish commit status '${context}' (${state}: ${description}): ${err}"
+    }
+}
+
+def resolveValidationMode(String triggerEvent, String requestedMode) {
+    final allowedModes = ['ci', 'extended', 'codeql', 'scorecard']
+
+    if (requestedMode?.trim()) {
+        def normalizedMode = requestedMode.trim()
+        if (!allowedModes.contains(normalizedMode)) {
+            error("unsupported VALIDATION_MODE '${normalizedMode}'")
+        }
+        return normalizedMode
+    }
+
+    switch (triggerEvent) {
+        case 'pull_request':
+            return 'ci'
+        case 'issue_comment':
+            return 'extended'
+        default:
+            return 'ci'
+    }
+}
+
+def assertSupportedTriggerEvent(String triggerEvent) {
+    if (!(triggerEvent in ['pull_request', 'issue_comment', 'manual'])) {
+        error("unsupported TRIGGER_EVENT '${triggerEvent}'")
+    }
+}
+
+def normalizeAllowedLogins(String rawLogins, String fallbackLogin) {
+    def normalized = []
+    (rawLogins ?: fallbackLogin)
+        .split(',')
+        .collect { it.trim().toLowerCase() }
+        .findAll { it }
+        .each { normalized << it }
+    if (!normalized) {
+        normalized << (fallbackLogin ?: '').trim().toLowerCase()
+    }
+    return normalized.findAll { it }
+}
+
+def isSupersededInterruption(Throwable interruption) {
+    try {
+        def causes = interruption?.causes ?: []
+        for (cause in causes) {
+            def causeName = String.valueOf(cause?.getClass()?.getName() ?: '').toLowerCase()
+            def causeText = String.valueOf(cause ?: '').toLowerCase()
+            if (causeName.contains('supersed') || causeText.contains('superseded') || causeText.contains('newer')) {
+                return true
+            }
+        }
+    } catch (ignore) {
+        echo "warning: unable to inspect interruption causes: ${ignore}"
+    }
+
+    return false
 }
 
 pipeline {
@@ -36,8 +115,8 @@ pipeline {
     options {
         timestamps()
         ansiColor('xterm')
+        disableConcurrentBuilds(abortPrevious: true)
         timeout(time: 120, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
     }
 
     parameters {
@@ -47,15 +126,19 @@ pipeline {
         string(name: 'TRIGGER_ACTION', defaultValue: '', trim: true)
         string(name: 'TRIGGER_ACTOR', defaultValue: '', trim: true)
         text(name: 'TRIGGER_COMMENT', defaultValue: '')
+        string(name: 'VALIDATION_MODE', defaultValue: '', trim: true)
     }
 
     environment {
-        ALLOWED_GITHUB_LOGIN = 'rldyourmnd'
+        ALLOWED_GITHUB_LOGIN = "${env.RLDYOURTERM_ALLOWED_LOGIN ?: 'rldyourmnd'}"
         REPORT_ROOT = 'target/terminal-benchmark/jenkins'
         CARGO_TERM_COLOR = 'always'
         CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse'
         CARGO_NET_RETRY = '5'
-        CARGO_INCREMENTAL = '0'
+        CARGO_INCREMENTAL = '1'
+        JENKINS_PR_FUZZ_SECONDS = '180'
+        JENKINS_EXTENDED_FUZZ_SECONDS = '600'
+        JENKINS_RUST_FUZZ_TOOLCHAIN = 'nightly-2026-03-11'
         RUSTFLAGS = '-D warnings'
     }
 
@@ -102,17 +185,29 @@ exit 1
                         env.PR_MERGEABLE = prFields[6]
                         env.PR_MERGEABLE_STATE = prFields[7]
 
+                        def allowedLogins = normalizeAllowedLogins(
+                            env.RLDYOURTERM_ALLOWED_LOGIN,
+                            env.ALLOWED_GITHUB_LOGIN
+                        )
+                        def allowedActors = allowedLogins
+                        if (params.TRIGGER_EVENT == 'manual' && env.JENKINS_ADMIN_USER) {
+                            allowedLogins = (allowedLogins + env.JENKINS_ADMIN_USER.trim().toLowerCase()).unique()
+                            allowedActors = allowedLogins
+                        }
+                        env.ALLOWED_GITHUB_TRIGGER_ACTORS = allowedLogins.join(',')
+
                         currentBuild.displayName = "#${env.BUILD_NUMBER} PR-${params.PR_NUMBER} ${env.PR_HEAD_SHA.take(7)}"
                         currentBuild.description = "${params.TRIGGER_EVENT}:${params.TRIGGER_ACTION} by ${params.TRIGGER_ACTOR} -> ${env.PR_HTML_URL}"
 
-                        if ((params.TRIGGER_ACTOR ?: '').trim()) {
-                            if (params.TRIGGER_ACTOR != env.ALLOWED_GITHUB_LOGIN) {
-                                error("trigger actor '${params.TRIGGER_ACTOR}' is not allowed")
+                        def normalizedActor = (params.TRIGGER_ACTOR ?: '').trim().toLowerCase()
+                        def normalizedAuthor = (env.PR_AUTHOR_LOGIN ?: '').trim().toLowerCase()
+                        if (params.TRIGGER_EVENT == 'pull_request' || params.TRIGGER_EVENT == 'issue_comment') {
+                            if (!allowedActors.contains(normalizedAuthor)) {
+                                error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic ${params.TRIGGER_EVENT} Jenkins execution")
                             }
                         }
-
-                        if (params.TRIGGER_EVENT == 'pull_request' && env.PR_AUTHOR_LOGIN != env.ALLOWED_GITHUB_LOGIN) {
-                            error("PR author '${env.PR_AUTHOR_LOGIN}' is not allowed for automatic pull_request Jenkins execution")
+                        if (normalizedActor && !allowedActors.contains(normalizedActor)) {
+                            error("trigger actor '${params.TRIGGER_ACTOR}' is not allowed")
                         }
 
                         if (env.PR_MERGEABLE != 'true') {
@@ -145,25 +240,64 @@ git rev-parse HEAD
             }
         }
 
-        stage('Run Extended Validation') {
+        stage('Run Jenkins Validation') {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     script {
+                        assertSupportedTriggerEvent(params.TRIGGER_EVENT)
+
                         String runner = fileExists('scripts/ci/run_jenkins_pr_ci.sh') ? 'bash scripts/ci/run_jenkins_pr_ci.sh' : 'bash /opt/jenkins/support/run_pr_ci.sh'
-                        def validations = [
-                            [
-                                context: 'Jenkins Extended Validation',
-                                mode: 'extended',
-                                reportRoot: "${env.REPORT_ROOT}/extended",
-                                pendingDescription: 'Jenkins extended validation is running',
-                                successDescription: 'Jenkins extended validation passed',
-                                failureDescription: 'Jenkins extended validation failed',
-                            ],
-                        ]
-                        def failures = []
+                        String validationMode = resolveValidationMode(params.TRIGGER_EVENT, params.VALIDATION_MODE)
+
+                        String aggregateContext = 'Jenkins Extended Validation'
+                        String baseReportRoot = (validationMode == 'extended')
+                            ? "${env.REPORT_ROOT}/extended"
+                            : "${env.REPORT_ROOT}/ci"
+
+                        def validations = []
+                        def addValidation = { String name, String mode, String reportRoot, String context, int timeoutMinutes ->
+                            validations << [
+                                name: name,
+                                mode: mode,
+                                reportRoot: reportRoot,
+                                context: context,
+                                timeoutMinutes: timeoutMinutes,
+                                pendingDescription: "Jenkins ${mode} validation is running",
+                                successDescription: "Jenkins ${mode} validation passed",
+                                failureDescription: "Jenkins ${mode} validation failed",
+                                supersededDescription: "Jenkins ${mode} validation was superseded by a newer run",
+                            ]
+                        }
+
+                        addValidation(
+                            'core',
+                            validationMode,
+                            baseReportRoot,
+                            aggregateContext,
+                            (validationMode == 'extended' ? 120 : 90)
+                        )
+
+                        if (validationMode == 'extended') {
+                            addValidation(
+                                'codeql',
+                                'codeql',
+                                "${env.REPORT_ROOT}/extended-codeql",
+                                "${aggregateContext} / codeql",
+                                120
+                            )
+                            addValidation(
+                                'scorecard',
+                                'scorecard',
+                                "${env.REPORT_ROOT}/extended-scorecard",
+                                "${aggregateContext} / scorecard",
+                                45
+                            )
+                        }
+
+                        def validationStates = [:]
 
                         validations.each { validation ->
-                            githubSetCommitStatus(
+                            githubSetCommitStatusSafe(
                                 params.REPO_FULL_NAME,
                                 env.PR_HEAD_SHA,
                                 validation.context,
@@ -173,13 +307,14 @@ git rev-parse HEAD
                             )
                         }
 
+                        def branches = [:]
                         validations.each { validation ->
-                            String supersededDescription = "Jenkins ${validation.context} validation was superseded by a newer run"
+                            def validationDef = validation
+                            branches[validationDef.name] = {
+                                String state = 'success'
+                                String description = validationDef.successDescription
+                                String targetDir = "${env.WORKSPACE}/.jenkins-target/${validationDef.name}"
 
-                            String state = 'success'
-                            String description = validation.successDescription
-
-                            try {
                                 withEnv([
                                     "JENKINS_PR_TITLE=${env.PR_TITLE}",
                                     "JENKINS_REPO_FULL_NAME=${params.REPO_FULL_NAME}",
@@ -189,34 +324,96 @@ git rev-parse HEAD
                                     "JENKINS_TRIGGER_EVENT=${params.TRIGGER_EVENT}",
                                     "JENKINS_TRIGGER_ACTION=${params.TRIGGER_ACTION}",
                                     "JENKINS_TRIGGER_ACTOR=${params.TRIGGER_ACTOR}",
-                                        ]) {
-                                    sh "${runner} ${validation.mode} '${validation.reportRoot}'"
+                                    "JENKINS_TRIGGER_COMMENT=${params.TRIGGER_COMMENT}",
+                                    "JENKINS_PR_FUZZ_SECONDS=${validationDef.mode == 'extended' ? env.JENKINS_EXTENDED_FUZZ_SECONDS : env.JENKINS_PR_FUZZ_SECONDS}",
+                                    "JENKINS_EXTENDED_FUZZ_SECONDS=${validationDef.mode == 'extended' ? env.JENKINS_EXTENDED_FUZZ_SECONDS : env.JENKINS_PR_FUZZ_SECONDS}",
+                                    "JENKINS_RUST_FUZZ_TOOLCHAIN=${env.JENKINS_RUST_FUZZ_TOOLCHAIN}",
+                                    "CARGO_TARGET_DIR=${targetDir}",
+                                ]) {
+                                    try {
+                                        timeout(time: validationDef.timeoutMinutes, unit: 'MINUTES') {
+                                            sh "${runner} ${validationDef.mode} '${validationDef.reportRoot}'"
+                                        }
+                                    } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException err) {
+                                        if (isSupersededInterruption(err)) {
+                                            state = 'pending'
+                                            description = validationDef.supersededDescription
+                                            echo "Validation stage ${validationDef.context} was superseded by a newer run"
+                                        } else {
+                                            state = 'failure'
+                                            description = validationDef.failureDescription
+                                            echo "Validation stage ${validationDef.context} was interrupted: ${err}"
+                                        }
+                                    } catch (err) {
+                                        state = 'failure'
+                                        description = validationDef.failureDescription
+                                        echo "Validation stage ${validationDef.context} failed: ${err}"
+                                    } finally {
+                                        githubSetCommitStatusSafe(
+                                            params.REPO_FULL_NAME,
+                                            env.PR_HEAD_SHA,
+                                            validationDef.context,
+                                            state,
+                                            description,
+                                            env.BUILD_URL
+                                        )
+                                        validationStates[validationDef.name] = [
+                                            state: state,
+                                            description: description,
+                                        ]
+                                    }
                                 }
-                            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException err) {
-                                state = 'pending'
-                                description = supersededDescription
-                                echo "Validation stage ${validation.context} was interrupted by a newer Jenkins run"
-                                throw err
-                            } catch (err) {
-                                state = 'failure'
-                                description = validation.failureDescription
-                                failures << validation.context
-                                echo "Validation stage ${validation.context} failed: ${err}"
-                            } finally {
-                                githubSetCommitStatus(
-                                    params.REPO_FULL_NAME,
-                                    env.PR_HEAD_SHA,
-                                    validation.context,
-                                    state,
-                                    description,
-                                    env.BUILD_URL
-                                )
                             }
                         }
 
-                        if (!failures.isEmpty()) {
-                            error("Validation failures: ${failures.join(', ')}")
+                        if (!branches.isEmpty()) {
+                            parallel branches
                         }
+
+                        def failedValidations = []
+                        def interruptedValidations = []
+                        validations.each { validation ->
+                            def result = validationStates[validation.name]
+                            if (!result || result.state == 'failure') {
+                                failedValidations << validation.name
+                            } else if (result.state == 'pending') {
+                                interruptedValidations << validation.name
+                            }
+                        }
+
+                        if (!interruptedValidations.isEmpty()) {
+                            githubSetCommitStatusSafe(
+                                params.REPO_FULL_NAME,
+                                env.PR_HEAD_SHA,
+                                aggregateContext,
+                                'pending',
+                                "Jenkins ${validationMode} validation was interrupted",
+                                env.BUILD_URL
+                            )
+                            currentBuild.result = 'ABORTED'
+                            return
+                        }
+
+                        if (!failedValidations.isEmpty()) {
+                            githubSetCommitStatusSafe(
+                                params.REPO_FULL_NAME,
+                                env.PR_HEAD_SHA,
+                                aggregateContext,
+                                'failure',
+                                "Jenkins ${validationMode} validation failed: ${failedValidations.join(', ')}",
+                                env.BUILD_URL
+                            )
+                            error("Validation failures: ${failedValidations.join(', ')}")
+                        }
+
+                        githubSetCommitStatusSafe(
+                            params.REPO_FULL_NAME,
+                            env.PR_HEAD_SHA,
+                            aggregateContext,
+                            'success',
+                            "Jenkins ${validationMode} validation passed",
+                            env.BUILD_URL
+                        )
                     }
                 }
             }

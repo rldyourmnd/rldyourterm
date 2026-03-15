@@ -22,6 +22,10 @@
       "app_id": 15368
     },
     {
+      "context": "ClusterFuzzLite PR fuzzing",
+      "app_id": 15368
+    },
+    {
       "context": "Jenkins Extended Validation",
       "app_id": -1
     }
