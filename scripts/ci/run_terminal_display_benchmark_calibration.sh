@@ -19,7 +19,7 @@ esac
 
 bash scripts/ci/run_terminal_display_benchmark_controlled.sh "$report_path"
 
-python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
+bash scripts/ci/refresh_terminal_benchmark_baseline.sh \
   "$report_path" \
   "$baseline_path" \
   --comparison-mode "$comparison_mode" \

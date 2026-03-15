@@ -34,6 +34,10 @@ pub fn scenario_belongs_to_suite(scenario: ScenarioArg) -> bool {
             | ScenarioArg::CpuRenderDelta
             | ScenarioArg::CpuCycleIngestRenderDelta
             | ScenarioArg::CpuPixelRasterDelta
+            | ScenarioArg::CoreGridReflow
+            | ScenarioArg::CoreUnicodeIngest
+            | ScenarioArg::SettingsParseThrough
+            | ScenarioArg::CpuRenderScrollback
     )
 }
 
@@ -54,6 +58,10 @@ pub fn selected_scenarios(selection: ScenarioArg) -> Vec<ScenarioArg> {
             ScenarioArg::CpuRenderDelta,
             ScenarioArg::CpuCycleIngestRenderDelta,
             ScenarioArg::CpuPixelRasterDelta,
+            ScenarioArg::CoreGridReflow,
+            ScenarioArg::CoreUnicodeIngest,
+            ScenarioArg::SettingsParseThrough,
+            ScenarioArg::CpuRenderScrollback,
         ],
         one => vec![one],
     }
@@ -166,6 +174,34 @@ pub const fn descriptor(scenario: ScenarioArg) -> ScenarioDescriptor {
             description: "Headless CPU pixel raster path over a dirty terminal buffer",
             primary_unit_label: "pixels",
         },
+        ScenarioArg::CoreGridReflow => ScenarioDescriptor {
+            name: "core-grid-reflow",
+            layer: "core",
+            benchmark_kind: "throughput",
+            description: "Grid resize_with_reflow shrink plus expand cycle over wrapped text lines",
+            primary_unit_label: "reflows",
+        },
+        ScenarioArg::CoreUnicodeIngest => ScenarioDescriptor {
+            name: "core-unicode-ingest",
+            layer: "core",
+            benchmark_kind: "throughput",
+            description: "Mixed Unicode ingest through TerminalState covering CJK, Latin, Cyrillic, and emoji",
+            primary_unit_label: "bytes",
+        },
+        ScenarioArg::SettingsParseThrough => ScenarioDescriptor {
+            name: "settings-parse-through",
+            layer: "features/settings",
+            benchmark_kind: "throughput",
+            description: "Settings palette command parse throughput over mixed valid and invalid inputs",
+            primary_unit_label: "commands",
+        },
+        ScenarioArg::CpuRenderScrollback => ScenarioDescriptor {
+            name: "cpu-render-scrollback",
+            layer: "features/render-cpu",
+            benchmark_kind: "raster",
+            description: "CPU pixel raster frame with scrollback viewport offset active",
+            primary_unit_label: "frames",
+        },
         _ => panic!("invalid canonical-headless scenario"),
     }
 }
@@ -212,7 +248,7 @@ mod tests {
     #[test]
     fn all_selection_expands_to_full_canonical_suite() {
         let scenarios = selected_scenarios(ScenarioArg::All);
-        assert_eq!(scenarios.len(), 14);
+        assert_eq!(scenarios.len(), 18);
         assert!(scenarios.contains(&ScenarioArg::ServiceSessionRuntimeCycle));
         assert!(scenarios.contains(&ScenarioArg::UiCommandCycle));
         assert!(scenarios.contains(&ScenarioArg::SettingsApplyCycle));

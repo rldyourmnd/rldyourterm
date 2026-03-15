@@ -6,6 +6,8 @@ mod renderer;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_stress;
 
 pub use rasterize::{
     DEFAULT_BG_U32, DEFAULT_FG_U32, render_terminal_buffer, resolve_cell_colors, rgb_to_u32,

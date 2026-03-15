@@ -191,8 +191,6 @@ run_ci_suite() {
 
   bash scripts/ci/validate_cflite_toolchain_pin.sh
 
-  bash scripts/ci/run_python_ci_unittests.sh
-
   CARGO_TARGET_DIR="$target_dir" cargo fmt --all -- --check
   CARGO_TARGET_DIR="$target_dir" cargo check --workspace --all-targets --locked
   CARGO_TARGET_DIR="$target_dir" cargo test --workspace --locked

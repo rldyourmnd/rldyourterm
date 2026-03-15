@@ -231,7 +231,7 @@ Advisory live-display baselines remain non-blocking. The validator emits regress
 Refresh a baseline from a validated report:
 
 ```bash
-python3 scripts/ci/refresh_terminal_benchmark_baseline.py \
+bash scripts/ci/refresh_terminal_benchmark_baseline.sh \
   /tmp/report.json \
   terminal_benchmark/baselines/custom.json
 ```
