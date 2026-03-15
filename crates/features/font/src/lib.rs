@@ -90,22 +90,73 @@ impl GlyphCache {
 
         let max_entries = max_entries.max(1);
         let mut cache = HashMap::with_capacity(max_entries.min(1024));
-        let mut value = Self {
+
+        // Pre-rasterize fallback glyph to avoid two-phase initialization
+        let fallback_bitmap = Self::rasterize_fallback(&fonts, px_size, cell_width, cell_height);
+        cache.insert(FALLBACK_GLYPH_CHAR, fallback_bitmap);
+
+        Self {
             fonts,
             px_size,
             cell_width,
             cell_height,
-            cache: HashMap::new(),
+            cache,
             eviction_queue: VecDeque::new(),
             max_entries,
-        };
+        }
+    }
 
-        cache.insert(
-            FALLBACK_GLYPH_CHAR,
-            value.rasterize_into_cell(FALLBACK_GLYPH_CHAR),
-        );
-        value.cache = cache;
-        value
+    /// Rasterize the fallback glyph without requiring a full GlyphCache instance.
+    /// Used during construction to avoid two-phase initialization.
+    fn rasterize_fallback(
+        fonts: &[FontEntry],
+        px_size: f32,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> GlyphBitmap {
+        // Try font8x8 first for 8x16 cells
+        if cell_width == 8 && cell_height == 16 {
+            if let Some(bitmap) =
+                Self::try_font8x8_basic_static(FALLBACK_GLYPH_CHAR, cell_width, cell_height)
+            {
+                return bitmap;
+            }
+        }
+
+        // Try each font in the chain
+        for entry in fonts {
+            if entry.font.lookup_glyph_index(FALLBACK_GLYPH_CHAR) != 0 {
+                return Self::rasterize_with_font(entry, FALLBACK_GLYPH_CHAR, px_size);
+            }
+        }
+
+        // No font has the glyph - return empty
+        Self::empty_glyph()
+    }
+
+    /// Static version of try_font8x8_basic for use during construction.
+    fn try_font8x8_basic_static(ch: char, cell_width: u16, cell_height: u16) -> Option<GlyphBitmap> {
+        if cell_width != 8 || cell_height != 16 {
+            return None;
+        }
+        let raw = BASIC_FONTS.get(ch)?;
+        let mut data = Vec::with_capacity(8 * 16);
+        for byte in raw {
+            for bit in (0..8).rev() {
+                data.push(if (byte >> bit) & 1 == 1 { 255 } else { 0 });
+            }
+            // Double each row vertically to fill 8x16 cell
+            for bit in (0..8).rev() {
+                data.push(if (byte >> bit) & 1 == 1 { 255 } else { 0 });
+            }
+        }
+        Some(GlyphBitmap {
+            data,
+            x_offset: 0,
+            y_offset: 0,
+            glyph_width: 8,
+            glyph_height: 16,
+        })
     }
 
     /// Add a fallback font to the chain. Fonts are tried in insertion order
@@ -131,7 +182,11 @@ impl GlyphCache {
 
     /// Get or rasterize a glyph for `ch`. Returns a reference to the cached bitmap.
     pub fn get(&mut self, ch: char) -> &GlyphBitmap {
-        if !self.cache.contains_key(&ch) {
+        // Check if we need to create the glyph (avoids borrow issues)
+        let needs_rasterize = !self.cache.contains_key(&ch);
+
+        if needs_rasterize {
+            // Slow path: need to rasterize and cache
             if self.cache.len() >= self.max_entries {
                 while let Some(candidate) = self.eviction_queue.pop_front() {
                     if self.cache.remove(&candidate).is_some() {
@@ -151,14 +206,13 @@ impl GlyphCache {
             if ch != FALLBACK_GLYPH_CHAR {
                 self.eviction_queue.push_back(ch);
             }
-            self.cache.entry(ch).or_insert(bitmap);
+
+            // Insert and return reference in a single operation (no double lookup)
+            return self.cache.entry(ch).or_insert(bitmap);
         }
 
-        if self.cache.contains_key(&ch) {
-            return &self.cache[&ch];
-        }
-
-        &self.cache[&FALLBACK_GLYPH_CHAR]
+        // Fast path: glyph already cached (single lookup)
+        self.cache.get(&ch).expect("verified by contains_key above")
     }
 
     /// Check if any font in the chain contains a real glyph for `ch`.
