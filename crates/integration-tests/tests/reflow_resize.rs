@@ -225,7 +225,7 @@ fn multiple_resize_cycles() {
         all.push('\n');
     }
     assert!(
-        all.contains("Line one") || all.contains("line one"),
+        all.contains("Line one"),
         "content should survive multiple resizes"
     );
 }
@@ -295,9 +295,9 @@ fn cursor_not_lost_in_scrollback_overflow() {
     );
     // Cursor row should contain our text
     let cursor_row_text = row(&t, t.cursor.row);
-    // "Cursor here" is 11 chars, wraps to "Cursor her" + "e"
+    // "Cursor here" is 11 chars, wraps to "Cursor her" + "e" in 10-wide grid
     assert!(
-        cursor_row_text.contains("Cursor") || cursor_row_text.contains("e"),
+        cursor_row_text.contains("Cursor her"),
         "cursor row must contain cursor-adjacent text"
     );
 }

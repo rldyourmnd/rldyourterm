@@ -15,11 +15,16 @@ fn scrollback_churn_at_cap() {
     }
     // Scrollback must be exactly at cap
     assert_eq!(t.scrollback.len(), 100);
-    // Oldest visible line should be near the end of the sequence
+    // Oldest surviving line should be from near end of sequence
+    // (100000 - 24 grid rows - 100 scrollback = line 99876 at earliest)
     let first = t.scrollback.get(0).expect("scrollback not empty");
     assert!(
+        !first.contains("Line 000000"),
+        "very first line must have been evicted by scrollback cap"
+    );
+    assert!(
         first.contains("Line 0"),
-        "first line should be from recent output"
+        "oldest surviving line should be from near end of sequence"
     );
 }
 
@@ -35,7 +40,7 @@ fn scrollback_zero_cap_never_grows() {
 
 #[test]
 fn scrollback_byte_budget_enforcement() {
-    // 50 line cap, 256 byte budget - tests byte_cap trimming
+    // 50 line cap - tests line-count cap as binding constraint
     let mut t = TerminalState::new(80, 24, 50);
     // Note: scrollback byte budget is DEFAULT_SCROLLBACK_BYTE_CAP (512MB),
     // so we test at the API level with the public constructor.
