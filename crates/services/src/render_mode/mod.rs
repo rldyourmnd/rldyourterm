@@ -18,12 +18,16 @@ pub enum GpuFailureKind {
     SurfaceError,
     SubmitError,
     SwapchainOutOfDate,
+    BackendUnavailable,
 }
 
 impl GpuFailureKind {
     #[must_use]
     pub const fn is_immediate_fallback(self) -> bool {
-        matches!(self, Self::DeviceLost | Self::OutOfMemory)
+        matches!(
+            self,
+            Self::DeviceLost | Self::OutOfMemory | Self::BackendUnavailable
+        )
     }
 }
 

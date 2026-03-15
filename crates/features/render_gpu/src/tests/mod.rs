@@ -498,7 +498,7 @@ fn gpu_render_error_mapping_is_deterministic() {
     );
     assert_eq!(
         GpuRenderError::BackendUnavailable.failure_kind(),
-        GpuFailureKind::DeviceLost
+        GpuFailureKind::BackendUnavailable
     );
 }
 

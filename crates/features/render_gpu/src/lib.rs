@@ -70,7 +70,7 @@ impl GpuRenderError {
                 GpuFailureKind::SurfaceError
             }
             GpuRenderError::SubmitFailed => GpuFailureKind::SubmitError,
-            GpuRenderError::BackendUnavailable => GpuFailureKind::DeviceLost,
+            GpuRenderError::BackendUnavailable => GpuFailureKind::BackendUnavailable,
         }
     }
 }
