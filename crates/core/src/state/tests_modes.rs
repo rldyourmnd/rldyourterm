@@ -855,12 +855,7 @@ fn osc_7_stores_cwd_and_deduplicates() {
 #[test]
 fn osc_52_stores_pending_clipboard() {
     let mut state = TerminalState::new(80, 24, 5);
-    let events = state.feed(b"\x1b]52;c;SGVsbG8=\x07");
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, CoreEvent::ClipboardSetRequested { .. }))
-    );
+    let _events = state.feed(b"\x1b]52;c;SGVsbG8=\x07");
 
     let pending = state.take_pending_clipboard();
     assert_eq!(pending, Some(('c', "SGVsbG8=".to_string())));

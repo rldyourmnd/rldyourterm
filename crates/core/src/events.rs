@@ -55,10 +55,6 @@ pub(crate) enum CoreEvent {
     CurrentWorkingDirectoryChanged {
         path: String,
     },
-    ClipboardSetRequested {
-        selection: char,
-        base64_data: String,
-    },
     ShellMarkerReceived {
         kind: crate::parser::ShellMarkerKind,
     },
