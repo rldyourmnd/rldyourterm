@@ -53,7 +53,7 @@ impl GpuBackend {
             return;
         }
 
-        let buf_size = (new_capacity * std::mem::size_of::<CellInstance>()) as u64;
+        let buf_size = new_capacity as u64 * std::mem::size_of::<CellInstance>() as u64;
         let buf_usage = wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC;
@@ -336,7 +336,7 @@ pub(super) fn prepare_and_upload_dirty_rows(
     row_byte_size: usize,
 ) {
     let flush = |backend: &GpuBackend, start: usize, end: usize| {
-        let byte_offset = (start * row_byte_size) as u64;
+        let byte_offset = start as u64 * row_byte_size as u64;
         let instance_start = start * grid_cols;
         let instance_end = end * grid_cols;
         backend.queue.write_buffer(

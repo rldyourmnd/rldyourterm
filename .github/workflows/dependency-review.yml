@@ -40,4 +40,4 @@ jobs:
         run: echo "Dependency Review workflow dispatch does not validate a pull-request diff."
 
       - if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.7.1

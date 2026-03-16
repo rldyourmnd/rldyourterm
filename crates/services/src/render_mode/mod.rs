@@ -143,10 +143,6 @@ impl RenderModeController {
         self.reset_failure_window();
     }
 
-    pub fn set_mode(&mut self, mode: RenderMode) {
-        let _ = self.set_mode_with_transition(mode);
-    }
-
     #[must_use]
     pub fn set_mode_with_transition(&mut self, mode: RenderMode) -> Option<RenderModeTransition> {
         let previous_mode = self.mode;

@@ -324,6 +324,20 @@ fn sgr_truecolor() {
 }
 
 #[test]
+fn sgr_256_color_rejects_out_of_range_index() {
+    let mut state = TerminalState::new(10, 2, 5);
+    let _ = state.feed(b"\x1b[38;5;256mX");
+    assert_eq!(state.pen.fg, Color::Default);
+}
+
+#[test]
+fn sgr_truecolor_rejects_out_of_range_component() {
+    let mut state = TerminalState::new(10, 2, 5);
+    let _ = state.feed(b"\x1b[38;2;256;0;0mX");
+    assert_eq!(state.pen.fg, Color::Default);
+}
+
+#[test]
 fn tab_advances_to_next_stop() {
     let mut state = TerminalState::new(20, 1, 5);
     let _ = state.feed(b"AB\t");
