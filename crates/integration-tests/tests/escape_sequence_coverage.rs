@@ -100,7 +100,10 @@ fn cursor_save_restore_decsc_decrc() {
     // Pen should be restored - verify by printing and checking attributes
     feed_bytes(&mut t, b"X");
     let cells = t.grid.row_cells(7).unwrap();
-    assert!(cells[14].attrs.bold, "bold should be restored after DECRC");
+    assert!(
+        cells[14].attrs.bold(),
+        "bold should be restored after DECRC"
+    );
 }
 
 // ── Erase operations ────────────────────────────────────────
@@ -493,10 +496,10 @@ fn sgr_reset_clears_all() {
     // Set multiple attributes
     feed_bytes(&mut t, b"\x1b[1;3;4;7;38;2;255;0;0mStyled");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.bold);
-    assert!(cells[0].attrs.italic);
-    assert!(cells[0].attrs.underline);
-    assert!(cells[0].attrs.inverse);
+    assert!(cells[0].attrs.bold());
+    assert!(cells[0].attrs.italic());
+    assert!(cells[0].attrs.underline());
+    assert!(cells[0].attrs.inverse());
     assert_eq!(cells[0].attrs.fg, Color::Rgb(255, 0, 0));
 
     // SGR 0: reset all
@@ -512,12 +515,12 @@ fn sgr_combined_attributes() {
     // Bold + italic + underline + strikethrough in one sequence
     feed_bytes(&mut t, b"\x1b[1;3;4;9mX");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.bold);
-    assert!(cells[0].attrs.italic);
-    assert!(cells[0].attrs.underline);
-    assert!(cells[0].attrs.strikethrough);
-    assert!(!cells[0].attrs.dim); // not set
-    assert!(!cells[0].attrs.inverse); // not set
+    assert!(cells[0].attrs.bold());
+    assert!(cells[0].attrs.italic());
+    assert!(cells[0].attrs.underline());
+    assert!(cells[0].attrs.strikethrough());
+    assert!(!cells[0].attrs.dim()); // not set
+    assert!(!cells[0].attrs.inverse()); // not set
 }
 
 #[test]
@@ -526,7 +529,7 @@ fn sgr_underline_color() {
     // Set underline + underline color (SGR 58;2;R;G;B)
     feed_bytes(&mut t, b"\x1b[4;58;2;0;128;255mA");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.underline);
+    assert!(cells[0].attrs.underline());
     assert_eq!(cells[0].attrs.underline_color, Color::Rgb(0, 128, 255));
 
     // Reset underline color (SGR 59)
@@ -534,7 +537,7 @@ fn sgr_underline_color() {
     let cells = t.grid.row_cells(0).unwrap();
     assert_eq!(cells[1].attrs.underline_color, Color::Default);
     // Underline itself should still be active
-    assert!(cells[1].attrs.underline);
+    assert!(cells[1].attrs.underline());
 }
 
 #[test]
@@ -581,37 +584,40 @@ fn sgr_individual_attribute_resets() {
     // SGR 22: reset bold and dim
     feed_bytes(&mut t, b"\x1b[22mA");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(!cells[0].attrs.bold, "bold should be reset by SGR 22");
-    assert!(!cells[0].attrs.dim, "dim should be reset by SGR 22");
-    assert!(cells[0].attrs.italic, "italic should remain after SGR 22");
+    assert!(!cells[0].attrs.bold(), "bold should be reset by SGR 22");
+    assert!(!cells[0].attrs.dim(), "dim should be reset by SGR 22");
+    assert!(cells[0].attrs.italic(), "italic should remain after SGR 22");
     assert!(
-        cells[0].attrs.underline,
+        cells[0].attrs.underline(),
         "underline should remain after SGR 22"
     );
 
     // SGR 23: reset italic
     feed_bytes(&mut t, b"\x1b[23mB");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(!cells[1].attrs.italic, "italic should be reset by SGR 23");
+    assert!(!cells[1].attrs.italic(), "italic should be reset by SGR 23");
 
     // SGR 24: reset underline
     feed_bytes(&mut t, b"\x1b[24mC");
     let cells = t.grid.row_cells(0).unwrap();
     assert!(
-        !cells[2].attrs.underline,
+        !cells[2].attrs.underline(),
         "underline should be reset by SGR 24"
     );
 
     // SGR 27: reset inverse
     feed_bytes(&mut t, b"\x1b[27mD");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(!cells[3].attrs.inverse, "inverse should be reset by SGR 27");
+    assert!(
+        !cells[3].attrs.inverse(),
+        "inverse should be reset by SGR 27"
+    );
 
     // SGR 29: reset strikethrough
     feed_bytes(&mut t, b"\x1b[29mE");
     let cells = t.grid.row_cells(0).unwrap();
     assert!(
-        !cells[4].attrs.strikethrough,
+        !cells[4].attrs.strikethrough(),
         "strikethrough should be reset by SGR 29"
     );
 }
@@ -623,22 +629,22 @@ fn sgr_double_underline_and_overline() {
     feed_bytes(&mut t, b"\x1b[4m"); // single underline
     feed_bytes(&mut t, b"\x1b[21mA");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.double_underline);
+    assert!(cells[0].attrs.double_underline());
     assert!(
-        !cells[0].attrs.underline,
+        !cells[0].attrs.underline(),
         "single underline cleared by SGR 21"
     );
 
     // SGR 53: overline
     feed_bytes(&mut t, b"\x1b[53mB");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[1].attrs.overline);
+    assert!(cells[1].attrs.overline());
 
     // SGR 55: reset overline
     feed_bytes(&mut t, b"\x1b[55mC");
     let cells = t.grid.row_cells(0).unwrap();
     assert!(
-        !cells[2].attrs.overline,
+        !cells[2].attrs.overline(),
         "overline should be reset by SGR 55"
     );
 }
@@ -883,25 +889,25 @@ fn sgr_blink_and_hidden() {
     // SGR 5: slow blink
     feed_bytes(&mut t, b"\x1b[5mA");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.blink);
+    assert!(cells[0].attrs.blink());
 
     // SGR 6: rapid blink (treated same as slow blink)
     feed_bytes(&mut t, b"\x1b[6mB");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[1].attrs.blink);
+    assert!(cells[1].attrs.blink());
 
     // SGR 25: reset blink
     feed_bytes(&mut t, b"\x1b[25mC");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(!cells[2].attrs.blink);
+    assert!(!cells[2].attrs.blink());
 
     // SGR 8: hidden
     feed_bytes(&mut t, b"\x1b[8mD");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[3].attrs.hidden);
+    assert!(cells[3].attrs.hidden());
 
     // SGR 28: reset hidden
     feed_bytes(&mut t, b"\x1b[28mE");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(!cells[4].attrs.hidden);
+    assert!(!cells[4].attrs.hidden());
 }

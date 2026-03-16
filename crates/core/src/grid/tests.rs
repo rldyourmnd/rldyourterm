@@ -39,25 +39,18 @@ fn put_char_out_of_bounds_is_error() {
 #[test]
 fn put_char_stores_attrs() {
     let mut grid = Grid::new(4, 2);
-    let attrs = Attrs {
-        fg: Color::Indexed(1),
-        bold: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default().with_fg(Color::Indexed(1)).with_bold();
     grid.put_char(0, 0, 'A', attrs).expect("valid put");
     let cell = grid.get_cell(0, 0).expect("valid get");
     assert_eq!(cell.ch, 'A');
     assert_eq!(cell.attrs.fg, Color::Indexed(1));
-    assert!(cell.attrs.bold);
+    assert!(cell.attrs.bold());
 }
 
 #[test]
 fn clear_resets_attrs_to_default() {
     let mut grid = Grid::new(2, 2);
-    let attrs = Attrs {
-        fg: Color::Rgb(255, 0, 0),
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default().with_fg(Color::Rgb(255, 0, 0));
     grid.put_char(0, 0, 'X', attrs).expect("valid put");
     grid.clear();
     let cell = grid.get_cell(0, 0).expect("valid get");

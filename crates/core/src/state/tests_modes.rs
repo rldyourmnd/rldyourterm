@@ -10,7 +10,7 @@ use super::{MouseFormat, MouseMode, TerminalState};
 fn cursor_save_restore_preserves_pen() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[1;31m\x1b7\x1b[0m\x1b8");
-    assert!(state.pen.bold);
+    assert!(state.pen.bold());
     assert_eq!(state.pen.fg, Color::Indexed(1));
 }
 
@@ -18,25 +18,25 @@ fn cursor_save_restore_preserves_pen() {
 fn sgr_hidden_sets_and_resets() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[8m");
-    assert!(state.pen.hidden);
+    assert!(state.pen.hidden());
     let _ = state.feed(b"\x1b[28m");
-    assert!(!state.pen.hidden);
+    assert!(!state.pen.hidden());
 }
 
 #[test]
 fn sgr_blink_sets_and_resets() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[5m");
-    assert!(state.pen.blink);
+    assert!(state.pen.blink());
     let _ = state.feed(b"\x1b[25m");
-    assert!(!state.pen.blink);
+    assert!(!state.pen.blink());
     // SGR 6 (rapid blink) also sets blink
     let _ = state.feed(b"\x1b[6m");
-    assert!(state.pen.blink);
+    assert!(state.pen.blink());
     // SGR 0 resets all
     let _ = state.feed(b"\x1b[0m");
-    assert!(!state.pen.blink);
-    assert!(!state.pen.hidden);
+    assert!(!state.pen.blink());
+    assert!(!state.pen.hidden());
 }
 
 #[test]
@@ -876,21 +876,21 @@ fn cwd_and_window_title_are_independent() {
 fn sgr_double_underline_sets_and_resets() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[21m");
-    assert!(state.pen.double_underline);
-    assert!(!state.pen.underline);
+    assert!(state.pen.double_underline());
+    assert!(!state.pen.underline());
     // SGR 24 resets both underline and double_underline
     let _ = state.feed(b"\x1b[24m");
-    assert!(!state.pen.double_underline);
-    assert!(!state.pen.underline);
+    assert!(!state.pen.double_underline());
+    assert!(!state.pen.underline());
 }
 
 #[test]
 fn sgr_overline_sets_and_resets() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[53m");
-    assert!(state.pen.overline);
+    assert!(state.pen.overline());
     let _ = state.feed(b"\x1b[55m");
-    assert!(!state.pen.overline);
+    assert!(!state.pen.overline());
 }
 
 #[test]

@@ -362,7 +362,7 @@ fn sgr_17_params_via_state_feed() {
     // 17 params: first 16 consumed, 17th silently truncated
     let _ = state.feed(b"\x1b[1;2;3;4;5;7;9;31;32;33;34;35;36;37;38;39;40mX");
     // Parser should not crash. Bold (1) should apply from first param.
-    assert!(state.pen.bold);
+    assert!(state.pen.bold());
 }
 
 #[test]

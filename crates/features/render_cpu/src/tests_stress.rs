@@ -323,10 +323,7 @@ fn bold_text_produces_wider_glyph_coverage() {
         .put_char(0, 0, 'H', Attrs::default())
         .expect("put normal H");
     // Place bold 'H' at col 2.
-    let bold_attrs = Attrs {
-        bold: true,
-        ..Attrs::default()
-    };
+    let bold_attrs = Attrs::default().with_bold();
     state
         .grid
         .put_char(0, 2, 'H', bold_attrs)
@@ -364,10 +361,7 @@ fn inverse_attr_paints_cell_bg_with_fg_color() {
     let mut state = state_with_default_scrollback(cols as u16, rows as u16);
     state.cursor.visible = false;
 
-    let inverse_attrs = Attrs {
-        inverse: true,
-        ..Attrs::default()
-    };
+    let inverse_attrs = Attrs::default().with_inverse();
     // A space with inverse: bg becomes DEFAULT_FG color, fg becomes DEFAULT_BG color.
     // Since the char is space, only the background fill matters.
     state
@@ -402,15 +396,8 @@ fn dim_attr_halves_rendered_pixel_brightness() {
     state.cursor.visible = false;
 
     let bright_fg = Color::Rgb(200, 100, 50);
-    let normal_attrs = Attrs {
-        fg: bright_fg,
-        ..Attrs::default()
-    };
-    let dim_attrs = Attrs {
-        fg: bright_fg,
-        dim: true,
-        ..Attrs::default()
-    };
+    let normal_attrs = Attrs::default().with_fg(bright_fg);
+    let dim_attrs = Attrs::default().with_fg(bright_fg).with_dim();
 
     state
         .grid
@@ -458,11 +445,9 @@ fn strikethrough_draws_line_at_mid_height() {
     let mut state = state_with_default_scrollback(cols as u16, rows as u16);
     state.cursor.visible = false;
 
-    let st_attrs = Attrs {
-        fg: Color::Rgb(255, 0, 0),
-        strikethrough: true,
-        ..Attrs::default()
-    };
+    let st_attrs = Attrs::default()
+        .with_fg(Color::Rgb(255, 0, 0))
+        .with_strikethrough();
     state
         .grid
         .put_char(0, 0, ' ', st_attrs)
@@ -501,11 +486,9 @@ fn underline_draws_line_at_cell_bottom() {
     let mut state = state_with_default_scrollback(cols as u16, rows as u16);
     state.cursor.visible = false;
 
-    let ul_attrs = Attrs {
-        fg: Color::Rgb(0, 255, 0),
-        underline: true,
-        ..Attrs::default()
-    };
+    let ul_attrs = Attrs::default()
+        .with_fg(Color::Rgb(0, 255, 0))
+        .with_underline();
     state
         .grid
         .put_char(0, 0, ' ', ul_attrs)

@@ -292,12 +292,10 @@ fn color_to_u32_rgb_constructs_correctly() {
 
 #[test]
 fn resolve_cell_colors_inverse_swaps_fg_bg() {
-    let attrs = Attrs {
-        fg: Color::Indexed(1),
-        bg: Color::Indexed(2),
-        inverse: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default()
+        .with_fg(Color::Indexed(1))
+        .with_bg(Color::Indexed(2))
+        .with_inverse();
     let (fg, bg) = resolve_cell_colors(&attrs);
     assert_eq!(fg, ANSI_PALETTE[2]);
     assert_eq!(bg, ANSI_PALETTE[1]);
@@ -305,11 +303,9 @@ fn resolve_cell_colors_inverse_swaps_fg_bg() {
 
 #[test]
 fn resolve_cell_colors_dim_halves_fg() {
-    let attrs = Attrs {
-        fg: Color::Rgb(200, 100, 50),
-        dim: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default()
+        .with_fg(Color::Rgb(200, 100, 50))
+        .with_dim();
     let (fg, _bg) = resolve_cell_colors(&attrs);
     assert_eq!(fg, rldyourterm_render_cpu::rgb_to_u32(100, 50, 25));
 }

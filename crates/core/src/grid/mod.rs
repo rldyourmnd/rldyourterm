@@ -20,21 +20,165 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+const ATTR_BOLD: u16 = 1 << 0;
+const ATTR_DIM: u16 = 1 << 1;
+const ATTR_ITALIC: u16 = 1 << 2;
+const ATTR_UNDERLINE: u16 = 1 << 3;
+const ATTR_DOUBLE_UNDERLINE: u16 = 1 << 4;
+const ATTR_OVERLINE: u16 = 1 << 5;
+const ATTR_INVERSE: u16 = 1 << 6;
+const ATTR_HIDDEN: u16 = 1 << 7;
+const ATTR_BLINK: u16 = 1 << 8;
+const ATTR_STRIKETHROUGH: u16 = 1 << 9;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Attrs {
     pub fg: Color,
     pub bg: Color,
-    pub bold: bool,
-    pub dim: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub double_underline: bool,
-    pub overline: bool,
     pub underline_color: Color,
-    pub inverse: bool,
-    pub hidden: bool,
-    pub blink: bool,
-    pub strikethrough: bool,
+    flags: u16,
+}
+
+impl Attrs {
+    fn get(&self, flag: u16) -> bool {
+        self.flags & flag != 0
+    }
+
+    fn set(&mut self, flag: u16, value: bool) {
+        if value {
+            self.flags |= flag;
+        } else {
+            self.flags &= !flag;
+        }
+    }
+
+    pub fn bold(&self) -> bool {
+        self.get(ATTR_BOLD)
+    }
+    pub fn set_bold(&mut self, v: bool) {
+        self.set(ATTR_BOLD, v);
+    }
+    pub fn dim(&self) -> bool {
+        self.get(ATTR_DIM)
+    }
+    pub fn set_dim(&mut self, v: bool) {
+        self.set(ATTR_DIM, v);
+    }
+    pub fn italic(&self) -> bool {
+        self.get(ATTR_ITALIC)
+    }
+    pub fn set_italic(&mut self, v: bool) {
+        self.set(ATTR_ITALIC, v);
+    }
+    pub fn underline(&self) -> bool {
+        self.get(ATTR_UNDERLINE)
+    }
+    pub fn set_underline(&mut self, v: bool) {
+        self.set(ATTR_UNDERLINE, v);
+    }
+    pub fn double_underline(&self) -> bool {
+        self.get(ATTR_DOUBLE_UNDERLINE)
+    }
+    pub fn set_double_underline(&mut self, v: bool) {
+        self.set(ATTR_DOUBLE_UNDERLINE, v);
+    }
+    pub fn overline(&self) -> bool {
+        self.get(ATTR_OVERLINE)
+    }
+    pub fn set_overline(&mut self, v: bool) {
+        self.set(ATTR_OVERLINE, v);
+    }
+    pub fn inverse(&self) -> bool {
+        self.get(ATTR_INVERSE)
+    }
+    pub fn set_inverse(&mut self, v: bool) {
+        self.set(ATTR_INVERSE, v);
+    }
+    pub fn hidden(&self) -> bool {
+        self.get(ATTR_HIDDEN)
+    }
+    pub fn set_hidden(&mut self, v: bool) {
+        self.set(ATTR_HIDDEN, v);
+    }
+    pub fn blink(&self) -> bool {
+        self.get(ATTR_BLINK)
+    }
+    pub fn set_blink(&mut self, v: bool) {
+        self.set(ATTR_BLINK, v);
+    }
+    pub fn strikethrough(&self) -> bool {
+        self.get(ATTR_STRIKETHROUGH)
+    }
+    pub fn set_strikethrough(&mut self, v: bool) {
+        self.set(ATTR_STRIKETHROUGH, v);
+    }
+
+    #[must_use]
+    pub fn with_fg(mut self, color: Color) -> Self {
+        self.fg = color;
+        self
+    }
+    #[must_use]
+    pub fn with_bg(mut self, color: Color) -> Self {
+        self.bg = color;
+        self
+    }
+    #[must_use]
+    pub fn with_underline_color_value(mut self, color: Color) -> Self {
+        self.underline_color = color;
+        self
+    }
+
+    #[must_use]
+    pub fn with_bold(mut self) -> Self {
+        self.set_bold(true);
+        self
+    }
+    #[must_use]
+    pub fn with_dim(mut self) -> Self {
+        self.set_dim(true);
+        self
+    }
+    #[must_use]
+    pub fn with_italic(mut self) -> Self {
+        self.set_italic(true);
+        self
+    }
+    #[must_use]
+    pub fn with_underline(mut self) -> Self {
+        self.set_underline(true);
+        self
+    }
+    #[must_use]
+    pub fn with_double_underline(mut self) -> Self {
+        self.set_double_underline(true);
+        self
+    }
+    #[must_use]
+    pub fn with_overline(mut self) -> Self {
+        self.set_overline(true);
+        self
+    }
+    #[must_use]
+    pub fn with_inverse(mut self) -> Self {
+        self.set_inverse(true);
+        self
+    }
+    #[must_use]
+    pub fn with_hidden(mut self) -> Self {
+        self.set_hidden(true);
+        self
+    }
+    #[must_use]
+    pub fn with_blink(mut self) -> Self {
+        self.set_blink(true);
+        self
+    }
+    #[must_use]
+    pub fn with_strikethrough(mut self) -> Self {
+        self.set_strikethrough(true);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
