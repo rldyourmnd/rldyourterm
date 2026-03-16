@@ -69,9 +69,7 @@ jobs:
         displayName('PR Validation')
         description('Runs the server-side extended PR contour for rldyourterm and publishes the required Jenkins Extended Validation status.')
         properties {
-          disableConcurrentBuilds {
-            abortPrevious()
-          }
+          disableConcurrentBuilds()
           githubProjectUrl(repoUrl)
           buildDiscarder {
             strategy {
