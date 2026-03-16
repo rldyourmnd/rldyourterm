@@ -1,3 +1,4 @@
+# jenkins/inbound-agent:latest-jdk21 pinned 2026-03-10
 FROM jenkins/inbound-agent:latest-jdk21@sha256:8cdeac9601a3381a629555e8d191f1bc4a7ee17546bbf64de54dabde9d2aacd9
 
 USER root

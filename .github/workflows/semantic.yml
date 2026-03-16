@@ -33,7 +33,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: echo "Semantic PR workflow dispatch does not validate PR metadata."
       - if: ${{ github.event_name == 'pull_request' }}
-        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v5.5.3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

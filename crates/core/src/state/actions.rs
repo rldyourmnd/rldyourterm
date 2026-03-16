@@ -516,18 +516,23 @@ fn parse_extended_color(params: &[Option<u16>], i: &mut usize) -> Option<Color> 
     let next = params.get(*i + 1).copied().flatten()?;
     match next {
         5 => {
-            // 256-color: 38;5;N or 48;5;N
+            // 256-color: 38;5;N or 48;5;N (valid range 0-255)
             let n = params.get(*i + 2).copied().flatten()?;
             *i += 2;
-            Some(Color::Indexed(n as u8))
+            let index = u8::try_from(n).ok()?;
+            Some(Color::Indexed(index))
         }
         2 => {
-            // truecolor: 38;2;R;G;B or 48;2;R;G;B
+            // truecolor: 38;2;R;G;B or 48;2;R;G;B (valid range 0-255 per component)
             let r = params.get(*i + 2).copied().flatten()?;
             let g = params.get(*i + 3).copied().flatten()?;
             let b = params.get(*i + 4).copied().flatten()?;
             *i += 4;
-            Some(Color::Rgb(r as u8, g as u8, b as u8))
+            Some(Color::Rgb(
+                u8::try_from(r).ok()?,
+                u8::try_from(g).ok()?,
+                u8::try_from(b).ok()?,
+            ))
         }
         _ => None,
     }

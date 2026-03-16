@@ -273,8 +273,8 @@ fn encode_mouse_event(
         }
         MouseFormat::Normal => {
             let cb = button_code.saturating_add(32);
-            let cx = (col as u8).saturating_add(33);
-            let cy = (row as u8).saturating_add(33);
+            let cx = (col.min(222) as u8).saturating_add(33);
+            let cy = (row.min(222) as u8).saturating_add(33);
             vec![0x1b, b'[', b'M', cb, cx, cy]
         }
     }
@@ -325,5 +325,19 @@ mod tests {
         assert_eq!(mouse_button_code(0b111), 0);
         assert_eq!(mouse_button_code(0b010), 1);
         assert_eq!(mouse_button_code(0b100), 2);
+    }
+
+    #[test]
+    fn normal_format_clamps_coordinates_to_protocol_maximum() {
+        let encoded = encode_mouse_event(MouseFormat::Normal, 0, 300, 400, true);
+        let cx = (222_u8).saturating_add(33);
+        let cy = (222_u8).saturating_add(33);
+        assert_eq!(encoded, vec![0x1b, b'[', b'M', 32, cx, cy]);
+    }
+
+    #[test]
+    fn normal_format_preserves_in_range_coordinates() {
+        let encoded = encode_mouse_event(MouseFormat::Normal, 0, 100, 50, true);
+        assert_eq!(encoded, vec![0x1b, b'[', b'M', 32, 133, 83]);
     }
 }

@@ -264,7 +264,7 @@ impl GpuRenderer {
         });
 
         let initial_capacity = initial_cell_buffer_capacity(config.width, config.height);
-        let cell_buf_size = (initial_capacity * std::mem::size_of::<CellInstance>()) as u64;
+        let cell_buf_size = initial_capacity as u64 * std::mem::size_of::<CellInstance>() as u64;
         let cell_buf_usage = wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC;
