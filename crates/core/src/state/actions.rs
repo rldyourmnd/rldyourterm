@@ -20,6 +20,13 @@ impl TerminalState {
         let width = self.grid.width();
         let char_width = UnicodeWidthChar::width(ch).unwrap_or(1) as u8;
 
+        // Width-0 characters (combining marks, variation selectors) cannot be
+        // represented in a single-char-per-cell grid without grapheme cluster
+        // support. Skip the grid put to avoid creating phantom continuation cells.
+        if char_width == 0 {
+            return;
+        }
+
         // VT100 deferred wrap: if wrap_pending is set from a previous print
         // at the last column, execute the actual wrap now before printing.
         if self.cursor.wrap_pending {

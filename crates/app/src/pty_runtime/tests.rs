@@ -8,9 +8,13 @@ use super::{
     should_flush_read_pump, tty_stdio_requirement_message,
 };
 use crate::runtime_shared::input::{
-    encode_crossterm_key_event as encode_key_event,
+    TerminalModeFlags, encode_crossterm_key_event,
     is_runtime_palette_shortcut_crossterm as is_runtime_palette_shortcut,
 };
+
+fn encode_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
+    encode_crossterm_key_event(key_event, TerminalModeFlags::default())
+}
 use crate::runtime_shared::pty_boundary::{
     PtyBoundaryPolicyDecision, classify_pty_boundary_failure,
 };

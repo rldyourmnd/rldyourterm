@@ -128,7 +128,10 @@ impl GuiRuntimeApp {
         // Clear text selection on any key press that produces PTY input.
         self.clear_selection();
 
-        let bytes = shared_encode_winit_key_event(event, self.interaction.modifiers);
+        let modes = crate::runtime_shared::input::TerminalModeFlags {
+            application_cursor_keys: self.terminal.application_cursor_keys_enabled(),
+        };
+        let bytes = shared_encode_winit_key_event(event, self.interaction.modifiers, modes);
 
         if let Some(ref bytes) = bytes {
             trace!(key = ?event.logical_key, len = bytes.len(), "keyboard input to PTY");

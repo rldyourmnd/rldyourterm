@@ -310,7 +310,8 @@ pub fn run_interactive_pty(
                     continue;
                 }
 
-                if let Some(bytes) = encode_crossterm_key_event(key_event) {
+                let modes = crate::runtime_shared::input::TerminalModeFlags::default();
+                if let Some(bytes) = encode_crossterm_key_event(key_event, modes) {
                     if let Err(error) = write_all_and_flush(&mut *writer, &bytes) {
                         match handle_pty_io_failure(
                             &mut session_policy,

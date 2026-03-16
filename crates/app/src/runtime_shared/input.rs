@@ -6,7 +6,7 @@ use winit::event::KeyEvent as WinitKeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::runtime_shared::key_encoding::{
-    csi_modified, encode_ctrl_letter, fkey_ss3_modified, tilde_modified, xterm_modifier_param,
+    cursor_key, encode_ctrl_letter, fkey_ss3_modified, tilde_modified, xterm_modifier_param,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,10 +156,19 @@ pub(crate) fn is_local_shutdown_key_winit(
     runtime_key_event_from_winit(&event.logical_key, modifiers).is_some_and(is_local_shutdown_key)
 }
 
-pub(crate) fn encode_runtime_key_event(key_event: RuntimeKeyEvent) -> Option<Vec<u8>> {
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TerminalModeFlags {
+    pub application_cursor_keys: bool,
+}
+
+pub(crate) fn encode_runtime_key_event(
+    key_event: RuntimeKeyEvent,
+    modes: TerminalModeFlags,
+) -> Option<Vec<u8>> {
     let modifiers = key_event.modifiers;
     let mod_param = modifiers.xterm_modifier_param();
     let has_mod = mod_param > 1;
+    let app_cursor = modes.application_cursor_keys;
 
     match key_event.key {
         RuntimeKey::Enter => Some(vec![b'\r']),
@@ -170,12 +179,12 @@ pub(crate) fn encode_runtime_key_event(key_event: RuntimeKeyEvent) -> Option<Vec
         }
         RuntimeKey::Tab if !modifiers.alt && !modifiers.control => Some(vec![b'\t']),
         RuntimeKey::Escape => Some(vec![0x1b]),
-        RuntimeKey::Up => Some(csi_modified(b'A', mod_param, has_mod)),
-        RuntimeKey::Down => Some(csi_modified(b'B', mod_param, has_mod)),
-        RuntimeKey::Right => Some(csi_modified(b'C', mod_param, has_mod)),
-        RuntimeKey::Left => Some(csi_modified(b'D', mod_param, has_mod)),
-        RuntimeKey::Home => Some(csi_modified(b'H', mod_param, has_mod)),
-        RuntimeKey::End => Some(csi_modified(b'F', mod_param, has_mod)),
+        RuntimeKey::Up => Some(cursor_key(b'A', mod_param, has_mod, app_cursor)),
+        RuntimeKey::Down => Some(cursor_key(b'B', mod_param, has_mod, app_cursor)),
+        RuntimeKey::Right => Some(cursor_key(b'C', mod_param, has_mod, app_cursor)),
+        RuntimeKey::Left => Some(cursor_key(b'D', mod_param, has_mod, app_cursor)),
+        RuntimeKey::Home => Some(cursor_key(b'H', mod_param, has_mod, app_cursor)),
+        RuntimeKey::End => Some(cursor_key(b'F', mod_param, has_mod, app_cursor)),
         RuntimeKey::Delete => Some(tilde_modified(3, mod_param, has_mod)),
         RuntimeKey::Insert => Some(tilde_modified(2, mod_param, has_mod)),
         RuntimeKey::PageUp => Some(tilde_modified(5, mod_param, has_mod)),
@@ -209,20 +218,24 @@ pub(crate) fn encode_runtime_key_event(key_event: RuntimeKeyEvent) -> Option<Vec
     }
 }
 
-pub(crate) fn encode_crossterm_key_event(key_event: KeyEvent) -> Option<Vec<u8>> {
+pub(crate) fn encode_crossterm_key_event(
+    key_event: KeyEvent,
+    modes: TerminalModeFlags,
+) -> Option<Vec<u8>> {
     let key_event = runtime_key_event_from_crossterm(key_event)?;
-    encode_runtime_key_event(key_event)
+    encode_runtime_key_event(key_event, modes)
 }
 
 pub(crate) fn encode_winit_key_event(
     event: &WinitKeyEvent,
     modifiers: ModifiersState,
+    modes: TerminalModeFlags,
 ) -> Option<Vec<u8>> {
     let modifiers = RuntimeKeyModifiers::from_winit(modifiers);
     encode_winit_text_bytes(event.text.as_deref(), modifiers).or_else(|| {
         runtime_key_from_winit(&event.logical_key)
             .map(|key| RuntimeKeyEvent { key, modifiers })
-            .and_then(encode_runtime_key_event)
+            .and_then(|ev| encode_runtime_key_event(ev, modes))
     })
 }
 
@@ -286,10 +299,14 @@ fn runtime_key_from_winit_ref(key: Key<&str>) -> Option<RuntimeKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeKeyModifiers, encode_crossterm_key_event, encode_winit_text_bytes,
-        is_runtime_palette_shortcut_winit, runtime_key_from_crossterm,
+        RuntimeKeyModifiers, TerminalModeFlags, encode_crossterm_key_event,
+        encode_winit_text_bytes, is_runtime_palette_shortcut_winit, runtime_key_from_crossterm,
         runtime_key_from_winit_borrowed,
     };
+
+    fn encode_key(key_event: KeyEvent) -> Option<Vec<u8>> {
+        encode_crossterm_key_event(key_event, TerminalModeFlags::default())
+    }
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
@@ -369,8 +386,79 @@ mod tests {
     #[test]
     fn crossterm_encoded_key_event_still_uses_shared_encoder() {
         assert_eq!(
-            encode_crossterm_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            encode_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Some(vec![b'\r'])
+        );
+    }
+
+    #[test]
+    fn application_cursor_keys_sends_ss3_for_arrows() {
+        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
+        let modes = TerminalModeFlags {
+            application_cursor_keys: true,
+        };
+        let no_mods = RuntimeKeyModifiers {
+            shift: false,
+            alt: false,
+            control: false,
+            super_key: false,
+        };
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Up,
+            modifiers: no_mods,
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1bOA".to_vec())
+        );
+
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Down,
+            modifiers: no_mods,
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1bOB".to_vec())
+        );
+
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Right,
+            modifiers: no_mods,
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1bOC".to_vec())
+        );
+
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Left,
+            modifiers: no_mods,
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1bOD".to_vec())
+        );
+    }
+
+    #[test]
+    fn application_cursor_keys_uses_csi_when_modifier_present() {
+        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
+        let modes = TerminalModeFlags {
+            application_cursor_keys: true,
+        };
+        let ctrl = RuntimeKeyModifiers {
+            shift: false,
+            alt: false,
+            control: true,
+            super_key: false,
+        };
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Up,
+            modifiers: ctrl,
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[1;5A".to_vec())
         );
     }
 }

@@ -568,8 +568,9 @@ fn is_runtime_palette_shortcut_key(key: Key<&str>, modifiers: ModifiersState) ->
 
 #[cfg(test)]
 fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+    let modes = crate::runtime_shared::input::TerminalModeFlags::default();
     crate::runtime_shared::input::runtime_key_event_from_winit(key, modifiers)
-        .and_then(crate::runtime_shared::input::encode_runtime_key_event)
+        .and_then(|ev| crate::runtime_shared::input::encode_runtime_key_event(ev, modes))
 }
 
 #[cfg(test)]
