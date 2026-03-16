@@ -157,8 +157,17 @@ pub enum ParserAction {
     },
     ShellMarker(ShellMarkerKind),
     SendPrimaryDA,
+    SendSecondaryDA,
+    SendXtversion,
+    RequestModeReport(u16),
     SendDeviceStatusReport,
     SendDeviceOk,
+    HyperlinkStart {
+        uri: String,
+    },
+    HyperlinkEnd,
+    QueryForegroundColor,
+    QueryBackgroundColor,
     UnsupportedSequence(String),
     IngestDegraded {
         reason: IngestDegradeReason,

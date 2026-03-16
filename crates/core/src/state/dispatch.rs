@@ -111,6 +111,26 @@ impl TerminalState {
                     data: b"\x1b[?1;2c".to_vec(),
                 });
             }
+            ParserAction::SendSecondaryDA => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: b"\x1b[>0;0;0c".to_vec(),
+                });
+            }
+            ParserAction::SendXtversion => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: b"\x1bP>|rldyourterm 0.1.0\x1b\\".to_vec(),
+                });
+            }
+            ParserAction::RequestModeReport(mode) => {
+                let setting = match self.is_private_mode_set(mode) {
+                    Some(true) => 1u8,
+                    Some(false) => 2u8,
+                    None => 0u8,
+                };
+                events.push(CoreEvent::TerminalResponse {
+                    data: format!("\x1b[?{mode};{setting}$y").into_bytes(),
+                });
+            }
             ParserAction::SendDeviceStatusReport => {
                 let row = self.cursor.row.saturating_add(1);
                 let col = self.cursor.col.saturating_add(1);
@@ -165,6 +185,22 @@ impl TerminalState {
                 base64_data,
             } => {
                 self.pending_clipboard = Some((selection, base64_data));
+            }
+            ParserAction::HyperlinkStart { uri } => {
+                self.current_hyperlink = Some(uri);
+            }
+            ParserAction::HyperlinkEnd => {
+                self.current_hyperlink = None;
+            }
+            ParserAction::QueryForegroundColor => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: b"\x1b]10;rgb:d8d8/d8d8/d8d8\x1b\\".to_vec(),
+                });
+            }
+            ParserAction::QueryBackgroundColor => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\".to_vec(),
+                });
             }
             ParserAction::ShellMarker(kind) => {
                 events.push(CoreEvent::ShellMarkerReceived { kind });

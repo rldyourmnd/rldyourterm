@@ -821,6 +821,97 @@ fn cursor_save_restore_dec_mode_1048() {
     assert_eq!(state.cursor.col, 7);
 }
 
+// ── Hyperlink state tracking (OSC 8) ───────────────────────
+
+#[test]
+fn osc_8_hyperlink_state_tracks_current_link() {
+    let mut state = TerminalState::new(80, 24, 5);
+    assert!(state.current_hyperlink().is_none());
+    let _ = state.feed(b"\x1b]8;;https://example.com\x07");
+    assert_eq!(state.current_hyperlink(), Some("https://example.com"));
+    let _ = state.feed(b"\x1b]8;;\x07");
+    assert!(state.current_hyperlink().is_none());
+}
+
+// ── DA2 / XTVERSION / DECRQM dispatch ─────────────────────
+
+#[test]
+fn da2_emits_terminal_response() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b[>c");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[>0;0;0c"))
+    );
+}
+
+#[test]
+fn xtversion_emits_terminal_response() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b[>q");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1bP>|rldyourterm 0.1.0\x1b\\"))
+    );
+}
+
+#[test]
+fn decrqm_reports_set_mode() {
+    let mut state = TerminalState::new(10, 4, 5);
+    // Enable bracketed paste
+    let _ = state.feed(b"\x1b[?2004h");
+    let events = state.feed(b"\x1b[?2004$p");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?2004;1$y")
+        )
+    );
+}
+
+#[test]
+fn decrqm_reports_reset_mode() {
+    let mut state = TerminalState::new(10, 4, 5);
+    // Mode 2004 is off by default
+    let events = state.feed(b"\x1b[?2004$p");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?2004;2$y")
+        )
+    );
+}
+
+#[test]
+fn decrqm_reports_unrecognized_mode() {
+    let mut state = TerminalState::new(10, 4, 5);
+    // Mode 9999 is not recognized
+    let events = state.feed(b"\x1b[?9999$p");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?9999;0$y")
+        )
+    );
+}
+
+#[test]
+fn query_foreground_color_emits_response() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b]10;?\x07");
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]10;rgb:d8d8/d8d8/d8d8\x1b\\")
+    ));
+}
+
+#[test]
+fn query_background_color_emits_response() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b]11;?\x07");
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\")
+    ));
+}
+
 // ── OSC integration tests ──────────────────────────────────
 
 #[test]
