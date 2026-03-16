@@ -548,3 +548,71 @@ fn unknown_intermediate_byte_is_unsupported() {
             .any(|a| matches!(a, ParserAction::UnsupportedSequence(_)))
     );
 }
+
+// ── DA2 (CSI > c) ──────────────────────────────────────────
+
+#[test]
+fn da2_sends_secondary_device_attributes() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[>c");
+    assert_eq!(actions, vec![ParserAction::SendSecondaryDA]);
+    // Also works with explicit param 0
+    let actions = parser.feed(b"\x1b[>0c");
+    assert_eq!(actions, vec![ParserAction::SendSecondaryDA]);
+}
+
+// ── XTVERSION (CSI > q) ────────────────────────────────────
+
+#[test]
+fn xtversion_sends_terminal_version() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[>q");
+    assert_eq!(actions, vec![ParserAction::SendXtversion]);
+}
+
+// ── DECRQM (CSI ? Ps $ p) ──────────────────────────────────
+
+#[test]
+fn decrqm_reports_mode_status() {
+    let mut parser = Parser::default();
+    // Query mode 1 (application cursor keys)
+    let actions = parser.feed(b"\x1b[?1$p");
+    assert_eq!(actions, vec![ParserAction::RequestModeReport(1)]);
+    // Query mode 2004 (bracketed paste)
+    let actions = parser.feed(b"\x1b[?2004$p");
+    assert_eq!(actions, vec![ParserAction::RequestModeReport(2004)]);
+}
+
+// ── OSC 8: Hyperlinks ──────────────────────────────────────
+
+#[test]
+fn osc_8_hyperlink_start_and_end() {
+    let mut parser = Parser::default();
+    // Start hyperlink with URI
+    let actions = parser.feed(b"\x1b]8;;https://example.com\x07");
+    assert_eq!(
+        actions,
+        vec![ParserAction::HyperlinkStart {
+            uri: "https://example.com".to_string(),
+        }]
+    );
+    // End hyperlink (empty URI)
+    let actions = parser.feed(b"\x1b]8;;\x07");
+    assert_eq!(actions, vec![ParserAction::HyperlinkEnd]);
+}
+
+// ── OSC 10/11: Color queries ───────────────────────────────
+
+#[test]
+fn osc_10_queries_foreground_color() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]10;?\x07");
+    assert_eq!(actions, vec![ParserAction::QueryForegroundColor]);
+}
+
+#[test]
+fn osc_11_queries_background_color() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]11;?\x07");
+    assert_eq!(actions, vec![ParserAction::QueryBackgroundColor]);
+}

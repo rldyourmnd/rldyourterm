@@ -82,6 +82,7 @@ pub struct TerminalState {
     pub(super) synchronized_output: bool,
     pub(super) last_printed_char: Option<char>,
     pub(super) tab_stops: Vec<bool>,
+    pub(super) current_hyperlink: Option<String>,
 }
 
 impl TerminalState {
@@ -113,6 +114,7 @@ impl TerminalState {
             synchronized_output: false,
             last_printed_char: None,
             tab_stops: Self::default_tab_stops(width),
+            current_hyperlink: None,
         }
     }
 
@@ -179,6 +181,34 @@ impl TerminalState {
     #[cfg(test)]
     pub(crate) fn auto_wrap_enabled(&self) -> bool {
         self.auto_wrap
+    }
+
+    /// Returns the currently active hyperlink URI, if any (set via OSC 8).
+    #[cfg(test)]
+    pub(crate) fn current_hyperlink(&self) -> Option<&str> {
+        self.current_hyperlink.as_deref()
+    }
+
+    /// Checks whether a DEC private mode is recognized and its current state.
+    /// Returns `Some(true)` if set, `Some(false)` if reset, `None` if unrecognized.
+    pub(super) fn is_private_mode_set(&self, mode: u16) -> Option<bool> {
+        match mode {
+            1 => Some(self.application_cursor_keys),
+            7 => Some(self.auto_wrap),
+            12 => Some(self.cursor_blink),
+            25 => Some(self.cursor.visible),
+            47 | 1047 => Some(self.alternate_screen.is_some()),
+            1000 => Some(self.mouse_mode == MouseMode::Basic),
+            1002 => Some(self.mouse_mode == MouseMode::ButtonTrack),
+            1003 => Some(self.mouse_mode == MouseMode::AnyEvent),
+            1004 => Some(self.focus_reporting),
+            1006 => Some(self.mouse_format == MouseFormat::Sgr),
+            1048 => Some(self.saved_cursor.is_some()),
+            1049 => Some(self.alternate_screen.is_some()),
+            2004 => Some(self.bracketed_paste),
+            2026 => Some(self.synchronized_output),
+            _ => None,
+        }
     }
 
     pub fn resize(&mut self, new_width: u16, new_height: u16) {

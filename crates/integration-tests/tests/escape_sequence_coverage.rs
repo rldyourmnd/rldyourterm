@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
 use rldyourterm_core::{Attrs, Color, TerminalState};
-use rldyourterm_integration_tests::{feed_bytes, row, term, term_full};
+use rldyourterm_integration_tests::{feed, feed_bytes, row, term, term_full};
 
 // ── Cursor movement (CSI) ───────────────────────────────────
 
@@ -910,4 +910,64 @@ fn sgr_blink_and_hidden() {
     feed_bytes(&mut t, b"\x1b[28mE");
     let cells = t.grid.row_cells(0).unwrap();
     assert!(!cells[4].attrs.hidden());
+}
+
+// ── DA2 (CSI > c) response ──────────────────────────────────
+
+#[test]
+fn da2_response_contains_terminal_type() {
+    let mut t = term();
+    let responses = feed(&mut t, b"\x1b[>c");
+    assert_eq!(responses.len(), 1);
+    let resp = String::from_utf8_lossy(&responses[0]);
+    assert!(
+        resp.contains(">0;0;0c"),
+        "DA2 response should contain terminal type identifier, got: {resp}"
+    );
+}
+
+// ── XTVERSION response ──────────────────────────────────────
+
+#[test]
+fn xtversion_response_contains_rldyourterm() {
+    let mut t = term();
+    let responses = feed(&mut t, b"\x1b[>q");
+    assert_eq!(responses.len(), 1);
+    let resp = String::from_utf8_lossy(&responses[0]);
+    assert!(
+        resp.contains("rldyourterm"),
+        "XTVERSION response should contain terminal name, got: {resp}"
+    );
+}
+
+// ── DECRQM mode query ───────────────────────────────────────
+
+#[test]
+fn decrqm_reports_known_mode_as_set() {
+    let mut t = term();
+    // Enable bracketed paste mode
+    feed_bytes(&mut t, b"\x1b[?2004h");
+    // Query its status via DECRQM
+    let responses = feed(&mut t, b"\x1b[?2004$p");
+    assert_eq!(responses.len(), 1);
+    let resp = String::from_utf8_lossy(&responses[0]);
+    // Setting 1 means "set"
+    assert!(
+        resp.contains("2004;1$y"),
+        "DECRQM should report mode 2004 as set (1), got: {resp}"
+    );
+}
+
+// ── OSC 8 hyperlink round-trip ──────────────────────────────
+
+#[test]
+fn osc_8_hyperlink_round_trip() {
+    let mut t = term();
+    // Start hyperlink, print text, end hyperlink
+    feed_bytes(&mut t, b"\x1b]8;;https://example.com\x07");
+    feed_bytes(&mut t, b"click here");
+    feed_bytes(&mut t, b"\x1b]8;;\x07");
+    // Verify terminal still functions after hyperlink sequences
+    feed_bytes(&mut t, b" normal text");
+    assert_eq!(row(&t, 0), "click here normal text");
 }

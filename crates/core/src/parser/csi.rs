@@ -23,6 +23,16 @@ impl Parser {
             return;
         }
 
+        // CSI > ... dispatches secondary DA, XTVERSION, etc.
+        if let Some((&b'>', rest)) = params_raw.split_first() {
+            let action = self.dispatch_gt_csi(rest, final_byte).unwrap_or_else(|| {
+                ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
+            });
+            actions.push(action);
+            self.reset_state_to_ground();
+            return;
+        }
+
         // ECMA-48: intermediate bytes (0x20-0x2F) appear between params and final byte.
         // Split off the trailing intermediate byte to dispatch CSI sequences like DECSCUSR.
         if let Some((&intermediate, numeric_params)) = params_raw.split_last()
@@ -158,12 +168,40 @@ impl Parser {
         }
     }
 
+    fn dispatch_gt_csi(&self, _params_raw: &[u8], final_byte: u8) -> Option<ParserAction> {
+        match final_byte {
+            b'c' => Some(ParserAction::SendSecondaryDA),
+            b'q' => Some(ParserAction::SendXtversion),
+            _ => None,
+        }
+    }
+
     fn dispatch_private_csi(
         &self,
         params_raw: &[u8],
         final_byte: u8,
         actions: &mut Vec<ParserAction>,
     ) {
+        // DECRQM: CSI ? Ps $ p - mode status query.
+        // The '$' intermediate (0x24) is within the intermediate range but arrives
+        // inside the private-prefix path, so we detect it here before parse_params
+        // which would reject the non-digit '$'.
+        if let Some((&intermediate, numeric_part)) = params_raw.split_last()
+            && intermediate == b'$'
+            && final_byte == b'p'
+        {
+            if let Ok(parsed) = parse_params(numeric_part)
+                && let Some(Some(mode)) = parsed.first()
+            {
+                actions.push(ParserAction::RequestModeReport(mode));
+                return;
+            }
+            actions.push(ParserAction::UnsupportedSequence(
+                self.csi_sequence_string(&self.csi_buffer),
+            ));
+            return;
+        }
+
         let parsed = match parse_params(params_raw) {
             Ok(p) => p,
             Err(()) => return,

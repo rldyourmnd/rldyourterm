@@ -289,6 +289,9 @@ fn parse_osc(raw: &str) -> Option<ParserAction> {
     match code {
         0 | 2 => Some(ParserAction::SetWindowTitle(payload.to_string())),
         7 => parse_osc_7_cwd(payload),
+        8 => parse_osc_8_hyperlink(payload),
+        10 => Some(ParserAction::QueryForegroundColor),
+        11 => Some(ParserAction::QueryBackgroundColor),
         52 => parse_osc_52_clipboard(payload),
         133 => parse_osc_133_shell_marker(payload),
         _ => None,
@@ -308,6 +311,18 @@ fn parse_osc_7_cwd(payload: &str) -> Option<ParserAction> {
         return None;
     }
     Some(ParserAction::SetCurrentWorkingDirectory(path.to_string()))
+}
+
+fn parse_osc_8_hyperlink(payload: &str) -> Option<ParserAction> {
+    // OSC 8 ; params ; uri ST
+    let (_, uri) = payload.split_once(';')?;
+    if uri.is_empty() {
+        Some(ParserAction::HyperlinkEnd)
+    } else {
+        Some(ParserAction::HyperlinkStart {
+            uri: uri.to_string(),
+        })
+    }
 }
 
 const OSC_52_MAX_DECODED_BYTES: usize = 100 * 1024;
