@@ -616,3 +616,23 @@ fn osc_11_queries_background_color() {
     let actions = parser.feed(b"\x1b]11;?\x07");
     assert_eq!(actions, vec![ParserAction::QueryBackgroundColor]);
 }
+
+#[test]
+fn osc_10_set_color_is_ignored() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]10;#ffffff\x07");
+    assert!(
+        actions.is_empty(),
+        "OSC 10 set should be ignored, got: {actions:?}"
+    );
+}
+
+#[test]
+fn osc_11_set_color_is_ignored() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]11;rgb:0000/0000/0000\x07");
+    assert!(
+        actions.is_empty(),
+        "OSC 11 set should be ignored, got: {actions:?}"
+    );
+}
