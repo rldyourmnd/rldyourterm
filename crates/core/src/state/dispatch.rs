@@ -205,6 +205,18 @@ impl TerminalState {
             ParserAction::ShellMarker(kind) => {
                 events.push(CoreEvent::ShellMarkerReceived { kind });
             }
+            ParserAction::PushKittyKeyboardMode(flags) => {
+                self.kitty_keyboard_flags = flags;
+            }
+            ParserAction::PopKittyKeyboardMode => {
+                self.kitty_keyboard_flags = 0;
+            }
+            ParserAction::QueryKittyKeyboardMode => {
+                let flags = self.kitty_keyboard_flags;
+                events.push(CoreEvent::TerminalResponse {
+                    data: format!("\x1b[?{flags}u").into_bytes(),
+                });
+            }
             ParserAction::UnsupportedSequence(sequence) => {
                 events.push(CoreEvent::UnsupportedSequenceIgnored { sequence });
             }

@@ -159,9 +159,20 @@ pub(crate) fn is_local_shutdown_key_winit(
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TerminalModeFlags {
     pub application_cursor_keys: bool,
+    pub kitty_keyboard_flags: u16,
 }
 
 pub(crate) fn encode_runtime_key_event(
+    key_event: RuntimeKeyEvent,
+    modes: TerminalModeFlags,
+) -> Option<Vec<u8>> {
+    if modes.kitty_keyboard_flags > 0 {
+        return encode_kitty_key_event(key_event, modes);
+    }
+    encode_legacy_key_event(key_event, modes)
+}
+
+fn encode_legacy_key_event(
     key_event: RuntimeKeyEvent,
     modes: TerminalModeFlags,
 ) -> Option<Vec<u8>> {
@@ -215,6 +226,56 @@ pub(crate) fn encode_runtime_key_event(
         RuntimeKey::Character(_) => None,
         RuntimeKey::Tab => None,
         RuntimeKey::F(_) => None,
+    }
+}
+
+/// Kitty keyboard protocol mode 1 (disambiguate) CSI u encoding.
+///
+/// Regular printable keys are sent as `CSI codepoint ; modifiers u`.
+/// Special keys (arrows, function keys, etc.) fall through to legacy encoding
+/// for maximum compatibility in mode 1.
+fn encode_kitty_key_event(key_event: RuntimeKeyEvent, modes: TerminalModeFlags) -> Option<Vec<u8>> {
+    let modifiers = key_event.modifiers;
+    let kitty_mod = kitty_modifier_param(modifiers);
+    let has_mod = kitty_mod > 1;
+
+    match key_event.key {
+        RuntimeKey::Enter => Some(kitty_csi_u(13, kitty_mod, has_mod)),
+        RuntimeKey::Tab => Some(kitty_csi_u(9, kitty_mod, has_mod)),
+        RuntimeKey::Backspace => Some(kitty_csi_u(127, kitty_mod, has_mod)),
+        RuntimeKey::Escape => Some(kitty_csi_u(27, kitty_mod, has_mod)),
+        RuntimeKey::Character(ch) => Some(kitty_csi_u(u32::from(ch), kitty_mod, has_mod)),
+        // Special keys fall through to legacy encoding for mode 1 compatibility
+        RuntimeKey::Up
+        | RuntimeKey::Down
+        | RuntimeKey::Right
+        | RuntimeKey::Left
+        | RuntimeKey::Home
+        | RuntimeKey::End
+        | RuntimeKey::Delete
+        | RuntimeKey::Insert
+        | RuntimeKey::PageUp
+        | RuntimeKey::PageDown
+        | RuntimeKey::F(_) => encode_legacy_key_event(key_event, modes),
+    }
+}
+
+/// Kitty keyboard protocol modifier encoding:
+/// `1 + shift + (alt << 1) + (ctrl << 2) + (super << 3)`
+fn kitty_modifier_param(modifiers: RuntimeKeyModifiers) -> u8 {
+    1 + u8::from(modifiers.shift)
+        + (u8::from(modifiers.alt) << 1)
+        + (u8::from(modifiers.control) << 2)
+        + (u8::from(modifiers.super_key) << 3)
+}
+
+/// Emit `CSI codepoint ; modifiers u` (kitty keyboard format).
+/// When no modifiers are active, omits the modifier parameter.
+fn kitty_csi_u(codepoint: u32, mod_param: u8, has_mod: bool) -> Vec<u8> {
+    if has_mod {
+        format!("\x1b[{codepoint};{mod_param}u").into_bytes()
+    } else {
+        format!("\x1b[{codepoint}u").into_bytes()
     }
 }
 
@@ -396,6 +457,7 @@ mod tests {
         use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
         let modes = TerminalModeFlags {
             application_cursor_keys: true,
+            ..Default::default()
         };
         let no_mods = RuntimeKeyModifiers {
             shift: false,
@@ -445,6 +507,7 @@ mod tests {
         use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
         let modes = TerminalModeFlags {
             application_cursor_keys: true,
+            ..Default::default()
         };
         let ctrl = RuntimeKeyModifiers {
             shift: false,
@@ -459,6 +522,181 @@ mod tests {
         assert_eq!(
             encode_runtime_key_event(ev, modes),
             Some(b"\x1b[1;5A".to_vec())
+        );
+    }
+
+    // --- Kitty keyboard protocol encoding ---
+
+    fn kitty_modes(flags: u16) -> TerminalModeFlags {
+        TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: flags,
+        }
+    }
+
+    fn no_mods() -> super::RuntimeKeyModifiers {
+        super::RuntimeKeyModifiers {
+            shift: false,
+            alt: false,
+            control: false,
+            super_key: false,
+        }
+    }
+
+    #[test]
+    fn kitty_mode_encodes_regular_keys_as_csi_u() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Character('a'),
+            modifiers: no_mods(),
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[97u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_encodes_enter_as_csi_13_u() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Enter,
+            modifiers: no_mods(),
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[13u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_encodes_tab_as_csi_9_u() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Tab,
+            modifiers: no_mods(),
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[9u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_encodes_backspace_as_csi_127_u() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Backspace,
+            modifiers: no_mods(),
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[127u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_encodes_escape_as_csi_27_u() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Escape,
+            modifiers: no_mods(),
+        };
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[27u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_encodes_ctrl_a_with_modifier() {
+        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Character('a'),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: true,
+                super_key: false,
+            },
+        };
+        // ctrl modifier = 1 + (1 << 2) = 5
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[97;5u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_encodes_shift_tab_with_modifier() {
+        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Tab,
+            modifiers: RuntimeKeyModifiers {
+                shift: true,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
+        };
+        // shift modifier = 1 + 1 = 2
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[9;2u".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_arrows_use_legacy_encoding() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Up,
+            modifiers: no_mods(),
+        };
+        // Arrows fall through to legacy in mode 1
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[A".to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_mode_disabled_uses_legacy() {
+        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
+        let modes = kitty_modes(0);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Enter,
+            modifiers: no_mods(),
+        };
+        // With kitty_keyboard_flags = 0, should use legacy encoding
+        assert_eq!(encode_runtime_key_event(ev, modes), Some(vec![b'\r']));
+    }
+
+    #[test]
+    fn kitty_mode_super_modifier_encoded() {
+        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
+        let modes = kitty_modes(1);
+        let ev = RuntimeKeyEvent {
+            key: RuntimeKey::Character('x'),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: true,
+            },
+        };
+        // super modifier = 1 + (1 << 3) = 9
+        assert_eq!(
+            encode_runtime_key_event(ev, modes),
+            Some(b"\x1b[120;9u".to_vec())
         );
     }
 }

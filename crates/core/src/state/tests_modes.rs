@@ -1017,6 +1017,53 @@ fn decscusr_sets_cursor_shape() {
 }
 
 #[test]
+fn kitty_keyboard_push_sets_flags() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert_eq!(state.kitty_keyboard_flags(), 0);
+    let _ = state.feed(b"\x1b[>1u");
+    assert_eq!(state.kitty_keyboard_flags(), 1);
+}
+
+#[test]
+fn kitty_keyboard_push_higher_flags() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[>31u");
+    assert_eq!(state.kitty_keyboard_flags(), 31);
+}
+
+#[test]
+fn kitty_keyboard_pop_resets_flags() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[>1u");
+    assert_eq!(state.kitty_keyboard_flags(), 1);
+    let _ = state.feed(b"\x1b[<u");
+    assert_eq!(state.kitty_keyboard_flags(), 0);
+}
+
+#[test]
+fn kitty_keyboard_query_responds() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[>3u");
+    let events = state.feed(b"\x1b[?u");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?3u"))
+    );
+}
+
+#[test]
+fn kitty_keyboard_query_responds_zero_when_disabled() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let events = state.feed(b"\x1b[?u");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?0u"))
+    );
+}
+
+#[test]
 fn decstbm_zero_bottom_does_not_underflow() {
     // CSI 0;0r sends both params as 0. The bottom param (0) must not underflow
     // when converted from 1-based to 0-based via subtraction.
