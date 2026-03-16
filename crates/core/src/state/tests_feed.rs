@@ -292,11 +292,11 @@ fn sgr_sets_pen_attributes() {
     let mut state = TerminalState::new(10, 2, 5);
     // ESC[1;31m = bold + red fg
     let _ = state.feed(b"\x1b[1;31mA");
-    assert!(state.pen.bold);
+    assert!(state.pen.bold());
     assert_eq!(state.pen.fg, Color::Indexed(1));
     let cell = state.grid.get_cell(0, 0).expect("cell");
     assert_eq!(cell.ch, 'A');
-    assert!(cell.attrs.bold);
+    assert!(cell.attrs.bold());
     assert_eq!(cell.attrs.fg, Color::Indexed(1));
 }
 
@@ -342,7 +342,7 @@ fn sgr_invalid_color_does_not_eat_subsequent_params() {
     let mut state = TerminalState::new(10, 2, 5);
     let _ = state.feed(b"\x1b[38;5;256;1mX");
     assert_eq!(state.pen.fg, Color::Default);
-    assert!(state.pen.bold);
+    assert!(state.pen.bold());
 }
 
 #[test]

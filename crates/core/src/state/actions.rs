@@ -279,31 +279,31 @@ impl TerminalState {
             let code = params[i].unwrap_or(0);
             match code {
                 0 => self.pen = Attrs::default(),
-                1 => self.pen.bold = true,
-                2 => self.pen.dim = true,
-                3 => self.pen.italic = true,
-                4 => self.pen.underline = true,
-                5 | 6 => self.pen.blink = true,
-                7 => self.pen.inverse = true,
-                8 => self.pen.hidden = true,
-                9 => self.pen.strikethrough = true,
+                1 => self.pen.set_bold(true),
+                2 => self.pen.set_dim(true),
+                3 => self.pen.set_italic(true),
+                4 => self.pen.set_underline(true),
+                5 | 6 => self.pen.set_blink(true),
+                7 => self.pen.set_inverse(true),
+                8 => self.pen.set_hidden(true),
+                9 => self.pen.set_strikethrough(true),
                 21 => {
-                    self.pen.underline = false;
-                    self.pen.double_underline = true;
+                    self.pen.set_underline(false);
+                    self.pen.set_double_underline(true);
                 }
                 22 => {
-                    self.pen.bold = false;
-                    self.pen.dim = false;
+                    self.pen.set_bold(false);
+                    self.pen.set_dim(false);
                 }
-                23 => self.pen.italic = false,
+                23 => self.pen.set_italic(false),
                 24 => {
-                    self.pen.underline = false;
-                    self.pen.double_underline = false;
+                    self.pen.set_underline(false);
+                    self.pen.set_double_underline(false);
                 }
-                25 => self.pen.blink = false,
-                27 => self.pen.inverse = false,
-                28 => self.pen.hidden = false,
-                29 => self.pen.strikethrough = false,
+                25 => self.pen.set_blink(false),
+                27 => self.pen.set_inverse(false),
+                28 => self.pen.set_hidden(false),
+                29 => self.pen.set_strikethrough(false),
                 30..=37 => self.pen.fg = Color::Indexed((code - 30) as u8),
                 38 => {
                     if let Some(color) = parse_extended_color(params, &mut i) {
@@ -318,8 +318,8 @@ impl TerminalState {
                     }
                 }
                 49 => self.pen.bg = Color::Default,
-                53 => self.pen.overline = true,
-                55 => self.pen.overline = false,
+                53 => self.pen.set_overline(true),
+                55 => self.pen.set_overline(false),
                 58 => {
                     if let Some(color) = parse_extended_color(params, &mut i) {
                         self.pen.underline_color = color;

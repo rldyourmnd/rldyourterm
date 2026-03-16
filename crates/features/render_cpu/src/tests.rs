@@ -615,33 +615,26 @@ fn resolve_cell_colors_default_attrs_produce_default_colors() {
 
 #[test]
 fn resolve_cell_colors_hidden_makes_fg_equal_bg() {
-    let attrs = Attrs {
-        hidden: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default().with_hidden();
     let (fg, bg) = resolve_cell_colors(&attrs);
     assert_eq!(fg, bg, "hidden text: fg must equal bg");
 }
 
 #[test]
 fn resolve_cell_colors_dim_halves_fg_brightness() {
-    let attrs = Attrs {
-        fg: Color::Rgb(200, 100, 50),
-        dim: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default()
+        .with_fg(Color::Rgb(200, 100, 50))
+        .with_dim();
     let (fg, _bg) = resolve_cell_colors(&attrs);
     assert_eq!(fg, rgb_to_u32(100, 50, 25));
 }
 
 #[test]
 fn resolve_cell_colors_inverse_swaps_fg_bg() {
-    let attrs = Attrs {
-        fg: Color::Rgb(255, 0, 0),
-        bg: Color::Rgb(0, 0, 255),
-        inverse: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default()
+        .with_fg(Color::Rgb(255, 0, 0))
+        .with_bg(Color::Rgb(0, 0, 255))
+        .with_inverse();
     let (fg, bg) = resolve_cell_colors(&attrs);
     assert_eq!(fg, rgb_to_u32(0, 0, 255), "fg should be original bg");
     assert_eq!(bg, rgb_to_u32(255, 0, 0), "bg should be original fg");

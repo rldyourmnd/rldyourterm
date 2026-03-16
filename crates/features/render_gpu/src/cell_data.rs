@@ -14,34 +14,34 @@ use tracing::{debug, info};
 #[inline]
 pub(super) fn pack_cell_flags(slot: u16, attrs: &super::Attrs) -> u32 {
     let mut flags = slot as u32;
-    if attrs.bold {
+    if attrs.bold() {
         flags |= ATTR_BOLD;
     }
-    if attrs.italic {
+    if attrs.italic() {
         flags |= ATTR_ITALIC;
     }
-    if attrs.underline {
+    if attrs.underline() {
         flags |= ATTR_UNDERLINE;
     }
-    if attrs.strikethrough {
+    if attrs.strikethrough() {
         flags |= ATTR_STRIKETHROUGH;
     }
-    if attrs.dim {
+    if attrs.dim() {
         flags |= ATTR_DIM;
     }
-    if attrs.inverse {
+    if attrs.inverse() {
         flags |= ATTR_INVERSE;
     }
-    if attrs.blink {
+    if attrs.blink() {
         flags |= ATTR_BLINK;
     }
-    if attrs.hidden {
+    if attrs.hidden() {
         flags |= ATTR_HIDDEN;
     }
-    if attrs.double_underline {
+    if attrs.double_underline() {
         flags |= ATTR_DOUBLE_UNDERLINE;
     }
-    if attrs.overline {
+    if attrs.overline() {
         flags |= ATTR_OVERLINE;
     }
     flags
@@ -156,7 +156,7 @@ impl GpuBackend {
                 }
 
                 // Resolve underline decoration color for shader (SGR 58).
-                let ul_color = if attrs.underline || attrs.double_underline {
+                let ul_color = if attrs.underline() || attrs.double_underline() {
                     if attrs.underline_color == Color::Default {
                         fg
                     } else {

@@ -504,10 +504,7 @@ fn gpu_render_error_mapping_is_deterministic() {
 
 #[test]
 fn pack_cell_flags_sets_double_underline_bit() {
-    let attrs = Attrs {
-        double_underline: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default().with_double_underline();
     let flags = pack_cell_flags(42, &attrs);
     assert_eq!(flags & 0xFFFF, 42, "lower 16 bits = slot");
     assert_ne!(
@@ -524,10 +521,7 @@ fn pack_cell_flags_sets_double_underline_bit() {
 
 #[test]
 fn pack_cell_flags_sets_overline_bit() {
-    let attrs = Attrs {
-        overline: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default().with_overline();
     let flags = pack_cell_flags(0, &attrs);
     assert_ne!(flags & ATTR_OVERLINE, 0, "overline bit must be set");
 }
@@ -536,19 +530,17 @@ fn pack_cell_flags_sets_overline_bit() {
 fn pack_cell_flags_wide_and_continuation_are_independent_of_attrs() {
     // ATTR_WIDE and ATTR_CONTINUATION are set per-cell in write_row_instances,
     // not by pack_cell_flags. Verify attrs alone don't set them.
-    let all_attrs = Attrs {
-        bold: true,
-        italic: true,
-        underline: true,
-        strikethrough: true,
-        dim: true,
-        inverse: true,
-        blink: true,
-        hidden: true,
-        double_underline: true,
-        overline: true,
-        ..Attrs::default()
-    };
+    let all_attrs = Attrs::default()
+        .with_bold()
+        .with_italic()
+        .with_underline()
+        .with_strikethrough()
+        .with_dim()
+        .with_inverse()
+        .with_blink()
+        .with_hidden()
+        .with_double_underline()
+        .with_overline();
     let flags = pack_cell_flags(0, &all_attrs);
     assert_eq!(flags & ATTR_WIDE, 0, "ATTR_WIDE must not be set by attrs");
     assert_eq!(
@@ -560,19 +552,17 @@ fn pack_cell_flags_wide_and_continuation_are_independent_of_attrs() {
 
 #[test]
 fn pack_cell_flags_all_bits_combined() {
-    let attrs = Attrs {
-        bold: true,
-        italic: true,
-        underline: true,
-        strikethrough: true,
-        dim: true,
-        inverse: true,
-        blink: true,
-        hidden: true,
-        double_underline: true,
-        overline: true,
-        ..Attrs::default()
-    };
+    let attrs = Attrs::default()
+        .with_bold()
+        .with_italic()
+        .with_underline()
+        .with_strikethrough()
+        .with_dim()
+        .with_inverse()
+        .with_blink()
+        .with_hidden()
+        .with_double_underline()
+        .with_overline();
     let flags = pack_cell_flags(0xFFFF, &attrs);
     assert_ne!(flags & ATTR_BOLD, 0);
     assert_ne!(flags & ATTR_ITALIC, 0);

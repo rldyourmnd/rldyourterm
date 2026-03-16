@@ -6,15 +6,25 @@ use super::super::*;
 #[test]
 fn stress_pack_cell_flags_all_64_combinations() {
     for bits in 0..64u8 {
-        let attrs = Attrs {
-            bold: bits & 1 != 0,
-            italic: bits & 2 != 0,
-            underline: bits & 4 != 0,
-            strikethrough: bits & 8 != 0,
-            dim: bits & 16 != 0,
-            inverse: bits & 32 != 0,
-            ..Default::default()
-        };
+        let mut attrs = Attrs::default();
+        if bits & 1 != 0 {
+            attrs = attrs.with_bold();
+        }
+        if bits & 2 != 0 {
+            attrs = attrs.with_italic();
+        }
+        if bits & 4 != 0 {
+            attrs = attrs.with_underline();
+        }
+        if bits & 8 != 0 {
+            attrs = attrs.with_strikethrough();
+        }
+        if bits & 16 != 0 {
+            attrs = attrs.with_dim();
+        }
+        if bits & 32 != 0 {
+            attrs = attrs.with_inverse();
+        }
         let slot = 12345u16;
         let flags = pack_cell_flags(slot, &attrs);
         assert_eq!(
@@ -22,26 +32,24 @@ fn stress_pack_cell_flags_all_64_combinations() {
             slot as u32,
             "atlas index corrupted at bits={bits}"
         );
-        assert_eq!((flags & ATTR_BOLD != 0), attrs.bold);
-        assert_eq!((flags & ATTR_ITALIC != 0), attrs.italic);
-        assert_eq!((flags & ATTR_UNDERLINE != 0), attrs.underline);
-        assert_eq!((flags & ATTR_STRIKETHROUGH != 0), attrs.strikethrough);
-        assert_eq!((flags & ATTR_DIM != 0), attrs.dim);
-        assert_eq!((flags & ATTR_INVERSE != 0), attrs.inverse);
+        assert_eq!((flags & ATTR_BOLD != 0), attrs.bold());
+        assert_eq!((flags & ATTR_ITALIC != 0), attrs.italic());
+        assert_eq!((flags & ATTR_UNDERLINE != 0), attrs.underline());
+        assert_eq!((flags & ATTR_STRIKETHROUGH != 0), attrs.strikethrough());
+        assert_eq!((flags & ATTR_DIM != 0), attrs.dim());
+        assert_eq!((flags & ATTR_INVERSE != 0), attrs.inverse());
     }
 }
 
 #[test]
 fn stress_pack_cell_flags_max_atlas_slot() {
-    let attrs = Attrs {
-        bold: true,
-        italic: true,
-        underline: true,
-        strikethrough: true,
-        dim: true,
-        inverse: true,
-        ..Default::default()
-    };
+    let attrs = Attrs::default()
+        .with_bold()
+        .with_italic()
+        .with_underline()
+        .with_strikethrough()
+        .with_dim()
+        .with_inverse();
     let slot = 0xFFFFu16;
     let flags = pack_cell_flags(slot, &attrs);
     assert_eq!(flags & 0xFFFF, 0xFFFF);

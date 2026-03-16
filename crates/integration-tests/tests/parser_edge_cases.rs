@@ -221,14 +221,14 @@ fn rapid_sgr_mode_cycling() {
     // Rapid cycling through SGR attributes
     feed_bytes(&mut t, b"\x1b[1mB\x1b[0m\x1b[3mI\x1b[0m\x1b[4mU\x1b[0mN");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.bold);
-    assert!(!cells[0].attrs.italic);
-    assert!(cells[1].attrs.italic);
-    assert!(!cells[1].attrs.bold);
-    assert!(cells[2].attrs.underline);
-    assert!(!cells[3].attrs.bold);
-    assert!(!cells[3].attrs.italic);
-    assert!(!cells[3].attrs.underline);
+    assert!(cells[0].attrs.bold());
+    assert!(!cells[0].attrs.italic());
+    assert!(cells[1].attrs.italic());
+    assert!(!cells[1].attrs.bold());
+    assert!(cells[2].attrs.underline());
+    assert!(!cells[3].attrs.bold());
+    assert!(!cells[3].attrs.italic());
+    assert!(!cells[3].attrs.underline());
 }
 
 #[test]
@@ -237,9 +237,9 @@ fn multiple_sgr_in_one_sequence() {
     // SGR 1;3;4m = bold + italic + underline
     feed_bytes(&mut t, b"\x1b[1;3;4mX");
     let cells = t.grid.row_cells(0).unwrap();
-    assert!(cells[0].attrs.bold);
-    assert!(cells[0].attrs.italic);
-    assert!(cells[0].attrs.underline);
+    assert!(cells[0].attrs.bold());
+    assert!(cells[0].attrs.italic());
+    assert!(cells[0].attrs.underline());
 }
 
 #[test]

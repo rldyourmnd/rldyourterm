@@ -342,8 +342,8 @@ fn cursor_save_restore_preserves_pen_attributes() {
     let cells = t.grid.row_cells(t.cursor.row).unwrap();
     // Find "Styled" text and check attributes
     let styled_start = t.cursor.col as usize - 6;
-    assert!(cells[styled_start].attrs.bold);
-    assert!(cells[styled_start].attrs.italic);
+    assert!(cells[styled_start].attrs.bold());
+    assert!(cells[styled_start].attrs.italic());
 }
 
 // ── CSI REP (repeat last char) ──────────────────────────────

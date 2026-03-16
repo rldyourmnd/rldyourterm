@@ -330,10 +330,19 @@ fn render_grid_row_cells(
             }
         }
 
-        let glyph_hidden_by_blink = cell.attrs.blink && !blink_visible;
+        let glyph_hidden_by_blink = cell.attrs.blink() && !blink_visible;
         if cell.ch != ' ' && !glyph_hidden_by_blink {
             let glyph = glyph_cache.get(cell.ch);
-            draw_glyph_blended(buffer, width, height, x, base_y, glyph, fg, cell.attrs.bold);
+            draw_glyph_blended(
+                buffer,
+                width,
+                height,
+                x,
+                base_y,
+                glyph,
+                fg,
+                cell.attrs.bold(),
+            );
         }
 
         // Resolve underline decoration color (SGR 58 or fallback to fg).
@@ -343,28 +352,28 @@ fn render_grid_row_cells(
             color_to_u32(cell.attrs.underline_color, DEFAULT_FG)
         };
 
-        if cell.attrs.underline {
+        if cell.attrs.underline() {
             draw_underline(buffer, width, height, x, base_y, ul_color);
             if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
                 draw_underline(buffer, width, height, x + CELL_WIDTH, base_y, ul_color);
             }
         }
 
-        if cell.attrs.double_underline {
+        if cell.attrs.double_underline() {
             draw_double_underline(buffer, width, height, x, base_y, ul_color);
             if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
                 draw_double_underline(buffer, width, height, x + CELL_WIDTH, base_y, ul_color);
             }
         }
 
-        if cell.attrs.strikethrough {
+        if cell.attrs.strikethrough() {
             draw_strikethrough(buffer, width, height, x, base_y, fg);
             if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
                 draw_strikethrough(buffer, width, height, x + CELL_WIDTH, base_y, fg);
             }
         }
 
-        if cell.attrs.overline {
+        if cell.attrs.overline() {
             draw_overline(buffer, width, height, x, base_y, fg);
             if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
                 draw_overline(buffer, width, height, x + CELL_WIDTH, base_y, fg);
@@ -377,16 +386,16 @@ pub fn resolve_cell_colors(attrs: &Attrs) -> (u32, u32) {
     let mut fg = color_to_u32(attrs.fg, DEFAULT_FG);
     let mut bg = color_to_u32(attrs.bg, DEFAULT_BG);
 
-    if attrs.dim {
+    if attrs.dim() {
         let (r, g, b) = u32_to_rgb(fg);
         fg = rgb_to_u32(r / 2, g / 2, b / 2);
     }
 
-    if attrs.inverse {
+    if attrs.inverse() {
         std::mem::swap(&mut fg, &mut bg);
     }
 
-    if attrs.hidden {
+    if attrs.hidden() {
         fg = bg;
     }
 
