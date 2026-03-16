@@ -1,3 +1,4 @@
+# jenkins/jenkins:lts-jdk21 pinned 2026-03-10
 FROM jenkins/jenkins:lts-jdk21@sha256:23b84d1066dbe69f2c17288c83ac071127092d726f14b3b80444d868468619c7
 
 USER root
