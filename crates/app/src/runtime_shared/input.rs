@@ -293,11 +293,27 @@ pub(crate) fn encode_winit_key_event(
     modes: TerminalModeFlags,
 ) -> Option<Vec<u8>> {
     let modifiers = RuntimeKeyModifiers::from_winit(modifiers);
-    encode_winit_text_bytes(event.text.as_deref(), modifiers).or_else(|| {
-        runtime_key_from_winit(&event.logical_key)
-            .map(|key| RuntimeKeyEvent { key, modifiers })
-            .and_then(|ev| encode_runtime_key_event(ev, modes))
-    })
+    // When kitty keyboard mode is active, skip the text bytes fast path
+    // so that all printable keys are routed through CSI u encoding.
+    if modes.kitty_keyboard_flags == 0
+        && let Some(bytes) = encode_winit_text_bytes(event.text.as_deref(), modifiers)
+    {
+        return Some(bytes);
+    }
+    runtime_key_from_winit(&event.logical_key)
+        .map(|key| RuntimeKeyEvent { key, modifiers })
+        .or_else(|| {
+            // Fallback: extract first char from text for kitty CSI u encoding
+            event
+                .text
+                .as_deref()
+                .and_then(|t| t.chars().next())
+                .map(|ch| RuntimeKeyEvent {
+                    key: RuntimeKey::Character(ch),
+                    modifiers,
+                })
+        })
+        .and_then(|ev| encode_runtime_key_event(ev, modes))
 }
 
 fn encode_winit_text_bytes(text: Option<&str>, modifiers: RuntimeKeyModifiers) -> Option<Vec<u8>> {

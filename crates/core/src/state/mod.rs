@@ -80,7 +80,7 @@ pub struct TerminalState {
     pub(super) cursor_shape: u8,
     pub(super) focus_reporting: bool,
     pub(super) synchronized_output: bool,
-    pub(super) kitty_keyboard_flags: u16,
+    pub(super) kitty_keyboard_stack: Vec<u16>,
     pub(super) last_printed_char: Option<char>,
     pub(super) tab_stops: Vec<bool>,
     pub(super) current_hyperlink: Option<String>,
@@ -113,7 +113,7 @@ impl TerminalState {
             cursor_shape: 0,
             focus_reporting: false,
             synchronized_output: false,
-            kitty_keyboard_flags: 0,
+            kitty_keyboard_stack: Vec::new(),
             last_printed_char: None,
             tab_stops: Self::default_tab_stops(width),
             current_hyperlink: None,
@@ -181,7 +181,7 @@ impl TerminalState {
     }
 
     pub fn kitty_keyboard_flags(&self) -> u16 {
-        self.kitty_keyboard_flags
+        self.kitty_keyboard_stack.last().copied().unwrap_or(0)
     }
 
     #[cfg(test)]

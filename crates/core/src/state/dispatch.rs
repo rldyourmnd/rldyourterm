@@ -206,13 +206,13 @@ impl TerminalState {
                 events.push(CoreEvent::ShellMarkerReceived { kind });
             }
             ParserAction::PushKittyKeyboardMode(flags) => {
-                self.kitty_keyboard_flags = flags;
+                self.kitty_keyboard_stack.push(flags);
             }
             ParserAction::PopKittyKeyboardMode => {
-                self.kitty_keyboard_flags = 0;
+                self.kitty_keyboard_stack.pop();
             }
             ParserAction::QueryKittyKeyboardMode => {
-                let flags = self.kitty_keyboard_flags;
+                let flags = self.kitty_keyboard_stack.last().copied().unwrap_or(0);
                 events.push(CoreEvent::TerminalResponse {
                     data: format!("\x1b[?{flags}u").into_bytes(),
                 });
