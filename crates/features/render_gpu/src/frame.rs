@@ -146,7 +146,7 @@ impl GpuRenderer {
                 backend.write_row_instances(terminal, row, row, grid_cols);
             }
 
-            let upload_offset = (first_new_row * row_byte_size) as u64;
+            let upload_offset = first_new_row as u64 * row_byte_size as u64;
             let instance_start = first_new_row * grid_cols;
             let instance_end = grid_rows * grid_cols;
             backend.queue.write_buffer(
@@ -155,8 +155,8 @@ impl GpuRenderer {
                 bytemuck::cast_slice(&backend.cell_instances[instance_start..instance_end]),
             );
 
-            let src_offset = (scroll_count * row_byte_size) as u64;
-            let copy_size = (copy_rows * row_byte_size) as u64;
+            let src_offset = scroll_count as u64 * row_byte_size as u64;
+            let copy_size = copy_rows as u64 * row_byte_size as u64;
             scroll_dma = Some((src_offset, copy_size));
 
             std::mem::swap(&mut backend.cell_buffer, &mut backend.cell_buffer_back);

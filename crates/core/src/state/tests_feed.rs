@@ -338,6 +338,14 @@ fn sgr_truecolor_rejects_out_of_range_component() {
 }
 
 #[test]
+fn sgr_invalid_color_does_not_eat_subsequent_params() {
+    let mut state = TerminalState::new(10, 2, 5);
+    let _ = state.feed(b"\x1b[38;5;256;1mX");
+    assert_eq!(state.pen.fg, Color::Default);
+    assert!(state.pen.bold);
+}
+
+#[test]
 fn tab_advances_to_next_stop() {
     let mut state = TerminalState::new(20, 1, 5);
     let _ = state.feed(b"AB\t");
