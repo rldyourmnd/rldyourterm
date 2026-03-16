@@ -233,10 +233,10 @@ run_codeql_suite() {
   mkdir -p "$codeql_root"
   rm -rf "$database_root" "$diagnostics_root" "$sarif_path"
 
-  codeql database create "$database_root" \
+  CARGO_TARGET_DIR="$target_dir" codeql database create "$database_root" \
     --language=rust \
     --source-root "$root_dir" \
-    --command "CARGO_TARGET_DIR=$target_dir cargo build --workspace --locked"
+    --command "cargo build --workspace --locked"
 
   codeql database analyze "$database_root" \
     codeql/rust-queries:codeql-suites/rust-security-and-quality.qls \
