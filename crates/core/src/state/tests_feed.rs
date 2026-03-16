@@ -346,6 +346,14 @@ fn sgr_invalid_color_does_not_eat_subsequent_params() {
 }
 
 #[test]
+fn combining_mark_does_not_create_phantom_cell() {
+    let mut state = TerminalState::new(10, 2, 5);
+    let _ = state.feed("e\u{0301}".as_bytes());
+    assert_eq!(state.cursor.col, 1);
+    assert_eq!(state.grid.get_char(0, 0), Ok('e'));
+}
+
+#[test]
 fn tab_advances_to_next_stop() {
     let mut state = TerminalState::new(20, 1, 5);
     let _ = state.feed(b"AB\t");

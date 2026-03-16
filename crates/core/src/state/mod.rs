@@ -168,13 +168,11 @@ impl TerminalState {
         self.synchronized_output
     }
 
-    #[cfg(test)]
-    pub(crate) fn application_cursor_keys_enabled(&self) -> bool {
+    pub fn application_cursor_keys_enabled(&self) -> bool {
         self.application_cursor_keys
     }
 
-    #[cfg(test)]
-    pub(crate) fn application_keypad_mode_enabled(&self) -> bool {
+    pub fn application_keypad_mode_enabled(&self) -> bool {
         self.application_keypad_mode
     }
 

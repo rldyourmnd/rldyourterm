@@ -5,9 +5,16 @@ pub(crate) fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
     1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
 }
 
-pub(crate) fn csi_modified(final_byte: u8, mod_param: u8, has_mod: bool) -> Vec<u8> {
+pub(crate) fn cursor_key(
+    final_byte: u8,
+    mod_param: u8,
+    has_mod: bool,
+    app_cursor: bool,
+) -> Vec<u8> {
     if has_mod {
         format!("\x1b[1;{}{}", mod_param, final_byte as char).into_bytes()
+    } else if app_cursor {
+        vec![0x1b, b'O', final_byte]
     } else {
         vec![0x1b, b'[', final_byte]
     }
@@ -55,9 +62,11 @@ mod tests {
     }
 
     #[test]
-    fn csi_modified_plain_and_with_modifier() {
-        assert_eq!(csi_modified(b'A', 1, false), b"\x1b[A");
-        assert_eq!(csi_modified(b'A', 5, true), b"\x1b[1;5A");
+    fn cursor_key_normal_and_application_mode() {
+        assert_eq!(cursor_key(b'A', 1, false, false), b"\x1b[A");
+        assert_eq!(cursor_key(b'A', 1, false, true), b"\x1bOA");
+        assert_eq!(cursor_key(b'A', 5, true, false), b"\x1b[1;5A");
+        assert_eq!(cursor_key(b'A', 5, true, true), b"\x1b[1;5A");
     }
 
     #[test]
