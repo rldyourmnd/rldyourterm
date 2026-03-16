@@ -130,6 +130,7 @@ impl GuiRuntimeApp {
 
         let modes = crate::runtime_shared::input::TerminalModeFlags {
             application_cursor_keys: self.terminal.application_cursor_keys_enabled(),
+            kitty_keyboard_flags: self.terminal.kitty_keyboard_flags(),
         };
         let bytes = shared_encode_winit_key_event(event, self.interaction.modifiers, modes);
 

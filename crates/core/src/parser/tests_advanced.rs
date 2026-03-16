@@ -636,3 +636,52 @@ fn osc_11_set_color_is_ignored() {
         "OSC 11 set should be ignored, got: {actions:?}"
     );
 }
+
+// --- Kitty keyboard protocol ---
+
+#[test]
+fn kitty_keyboard_push_mode() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[>1u");
+    assert_eq!(actions, vec![ParserAction::PushKittyKeyboardMode(1)]);
+}
+
+#[test]
+fn kitty_keyboard_push_mode_flags_31() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[>31u");
+    assert_eq!(actions, vec![ParserAction::PushKittyKeyboardMode(31)]);
+}
+
+#[test]
+fn kitty_keyboard_push_mode_no_param_defaults_to_zero() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[>u");
+    assert_eq!(actions, vec![ParserAction::PushKittyKeyboardMode(0)]);
+}
+
+#[test]
+fn kitty_keyboard_pop_mode() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[<u");
+    assert_eq!(actions, vec![ParserAction::PopKittyKeyboardMode]);
+}
+
+#[test]
+fn kitty_keyboard_query_mode() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[?u");
+    assert_eq!(actions, vec![ParserAction::QueryKittyKeyboardMode]);
+}
+
+#[test]
+fn kitty_keyboard_push_followed_by_text() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[>1uHello");
+    assert!(actions.contains(&ParserAction::PushKittyKeyboardMode(1)));
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, ParserAction::PrintText(t) if t == "Hello"))
+    );
+}

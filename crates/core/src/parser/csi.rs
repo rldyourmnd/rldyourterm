@@ -18,17 +18,51 @@ impl Parser {
         };
 
         if let Some((&b'?', rest)) = params_raw.split_first() {
+            // Kitty keyboard protocol: CSI ? u queries current mode flags.
+            if final_byte == b'u' && rest.is_empty() {
+                actions.push(ParserAction::QueryKittyKeyboardMode);
+                self.reset_state_to_ground();
+                return;
+            }
             self.dispatch_private_csi(rest, final_byte, actions);
             self.reset_state_to_ground();
             return;
         }
 
-        // CSI > ... dispatches secondary DA, XTVERSION, etc.
+        // CSI > ... dispatches DA2, XTVERSION, and kitty keyboard push.
         if let Some((&b'>', rest)) = params_raw.split_first() {
-            let action = self.dispatch_gt_csi(rest, final_byte).unwrap_or_else(|| {
-                ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
-            });
-            actions.push(action);
+            if final_byte == b'u' {
+                let action = parse_params(rest)
+                    .ok()
+                    .map(|parsed| {
+                        let flags = parsed.first().and_then(|p| p).unwrap_or(0);
+                        ParserAction::PushKittyKeyboardMode(flags)
+                    })
+                    .unwrap_or_else(|| {
+                        ParserAction::UnsupportedSequence(
+                            self.csi_sequence_string(&self.csi_buffer),
+                        )
+                    });
+                actions.push(action);
+            } else {
+                let action = self.dispatch_gt_csi(rest, final_byte).unwrap_or_else(|| {
+                    ParserAction::UnsupportedSequence(self.csi_sequence_string(&self.csi_buffer))
+                });
+                actions.push(action);
+            }
+            self.reset_state_to_ground();
+            return;
+        }
+
+        // Kitty keyboard protocol: CSI < u pops the mode stack.
+        if let Some((&b'<', rest)) = params_raw.split_first() {
+            if final_byte == b'u' && rest.is_empty() {
+                actions.push(ParserAction::PopKittyKeyboardMode);
+            } else {
+                actions.push(ParserAction::UnsupportedSequence(
+                    self.csi_sequence_string(&self.csi_buffer),
+                ));
+            }
             self.reset_state_to_ground();
             return;
         }
