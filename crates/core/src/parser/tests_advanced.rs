@@ -664,7 +664,21 @@ fn kitty_keyboard_push_mode_no_param_defaults_to_zero() {
 fn kitty_keyboard_pop_mode() {
     let mut parser = Parser::default();
     let actions = parser.feed(b"\x1b[<u");
-    assert_eq!(actions, vec![ParserAction::PopKittyKeyboardMode]);
+    assert_eq!(actions, vec![ParserAction::PopKittyKeyboardMode(1)]);
+}
+
+#[test]
+fn kitty_keyboard_pop_mode_with_count() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[<3u");
+    assert_eq!(actions, vec![ParserAction::PopKittyKeyboardMode(3)]);
+}
+
+#[test]
+fn kitty_keyboard_pop_mode_count_1_explicit() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[<1u");
+    assert_eq!(actions, vec![ParserAction::PopKittyKeyboardMode(1)]);
 }
 
 #[test]

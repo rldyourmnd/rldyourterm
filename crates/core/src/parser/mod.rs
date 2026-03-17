@@ -169,7 +169,7 @@ pub enum ParserAction {
     QueryForegroundColor,
     QueryBackgroundColor,
     PushKittyKeyboardMode(u16),
-    PopKittyKeyboardMode,
+    PopKittyKeyboardMode(u16),
     QueryKittyKeyboardMode,
     UnsupportedSequence(String),
     IngestDegraded {

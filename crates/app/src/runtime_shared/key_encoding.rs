@@ -41,7 +41,15 @@ pub(crate) fn encode_ctrl_letter(ch: char) -> Option<u8> {
     if lower.is_ascii_lowercase() {
         Some((lower as u8) - b'a' + 1)
     } else {
-        None
+        match ch {
+            '@' => Some(0x00),  // NUL
+            '[' => Some(0x1B),  // ESC
+            '\\' => Some(0x1C), // FS
+            ']' => Some(0x1D),  // GS
+            '^' => Some(0x1E),  // RS
+            '_' => Some(0x1F),  // US
+            _ => None,
+        }
     }
 }
 
@@ -88,5 +96,15 @@ mod tests {
         assert_eq!(encode_ctrl_letter('z'), Some(26));
         assert_eq!(encode_ctrl_letter('A'), Some(1));
         assert_eq!(encode_ctrl_letter('1'), None);
+    }
+
+    #[test]
+    fn encode_ctrl_non_letter_special_chars() {
+        assert_eq!(encode_ctrl_letter('@'), Some(0x00)); // NUL
+        assert_eq!(encode_ctrl_letter('['), Some(0x1B)); // ESC
+        assert_eq!(encode_ctrl_letter('\\'), Some(0x1C)); // FS
+        assert_eq!(encode_ctrl_letter(']'), Some(0x1D)); // GS
+        assert_eq!(encode_ctrl_letter('^'), Some(0x1E)); // RS
+        assert_eq!(encode_ctrl_letter('_'), Some(0x1F)); // US
     }
 }

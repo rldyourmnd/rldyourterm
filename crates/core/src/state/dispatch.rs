@@ -206,10 +206,16 @@ impl TerminalState {
                 events.push(CoreEvent::ShellMarkerReceived { kind });
             }
             ParserAction::PushKittyKeyboardMode(flags) => {
-                self.kitty_keyboard_stack.push(flags);
+                if self.kitty_keyboard_stack.len() < 16 {
+                    self.kitty_keyboard_stack.push(flags);
+                }
             }
-            ParserAction::PopKittyKeyboardMode => {
-                self.kitty_keyboard_stack.pop();
+            ParserAction::PopKittyKeyboardMode(count) => {
+                for _ in 0..count {
+                    if self.kitty_keyboard_stack.pop().is_none() {
+                        break;
+                    }
+                }
             }
             ParserAction::QueryKittyKeyboardMode => {
                 let flags = self.kitty_keyboard_stack.last().copied().unwrap_or(0);

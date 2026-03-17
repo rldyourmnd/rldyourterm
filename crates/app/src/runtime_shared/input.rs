@@ -89,7 +89,7 @@ pub(crate) fn runtime_key_event_from_crossterm(key_event: KeyEvent) -> Option<Ru
         KeyCode::Insert => RuntimeKey::Insert,
         KeyCode::PageUp => RuntimeKey::PageUp,
         KeyCode::PageDown => RuntimeKey::PageDown,
-        KeyCode::F(index @ 1..=12) => RuntimeKey::F(index),
+        KeyCode::F(index @ 1..=24) => RuntimeKey::F(index),
         _ => return None,
     };
 
@@ -212,6 +212,14 @@ fn encode_legacy_key_event(
         RuntimeKey::F(10) => Some(tilde_modified(21, mod_param, has_mod)),
         RuntimeKey::F(11) => Some(tilde_modified(23, mod_param, has_mod)),
         RuntimeKey::F(12) => Some(tilde_modified(24, mod_param, has_mod)),
+        RuntimeKey::F(13) => Some(tilde_modified(25, mod_param, has_mod)),
+        RuntimeKey::F(14) => Some(tilde_modified(26, mod_param, has_mod)),
+        RuntimeKey::F(15) => Some(tilde_modified(28, mod_param, has_mod)),
+        RuntimeKey::F(16) => Some(tilde_modified(29, mod_param, has_mod)),
+        RuntimeKey::F(17) => Some(tilde_modified(31, mod_param, has_mod)),
+        RuntimeKey::F(18) => Some(tilde_modified(32, mod_param, has_mod)),
+        RuntimeKey::F(19) => Some(tilde_modified(33, mod_param, has_mod)),
+        RuntimeKey::F(20) => Some(tilde_modified(34, mod_param, has_mod)),
         RuntimeKey::Character(ch) if modifiers.control => {
             encode_ctrl_letter(ch).map(|code| vec![code])
         }
@@ -361,6 +369,14 @@ fn runtime_key_from_winit_ref(key: Key<&str>) -> Option<RuntimeKey> {
         Key::Named(NamedKey::F10) => Some(RuntimeKey::F(10)),
         Key::Named(NamedKey::F11) => Some(RuntimeKey::F(11)),
         Key::Named(NamedKey::F12) => Some(RuntimeKey::F(12)),
+        Key::Named(NamedKey::F13) => Some(RuntimeKey::F(13)),
+        Key::Named(NamedKey::F14) => Some(RuntimeKey::F(14)),
+        Key::Named(NamedKey::F15) => Some(RuntimeKey::F(15)),
+        Key::Named(NamedKey::F16) => Some(RuntimeKey::F(16)),
+        Key::Named(NamedKey::F17) => Some(RuntimeKey::F(17)),
+        Key::Named(NamedKey::F18) => Some(RuntimeKey::F(18)),
+        Key::Named(NamedKey::F19) => Some(RuntimeKey::F(19)),
+        Key::Named(NamedKey::F20) => Some(RuntimeKey::F(20)),
         Key::Character(text) => {
             let mut chars = text.chars();
             let ch = chars.next()?;
