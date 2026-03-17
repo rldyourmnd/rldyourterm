@@ -682,6 +682,18 @@ fn kitty_keyboard_pop_mode_count_1_explicit() {
 }
 
 #[test]
+fn kitty_keyboard_pop_malformed_params_rejected() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[<?u");
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, ParserAction::UnsupportedSequence(_))),
+        "malformed pop should be unsupported, got: {actions:?}"
+    );
+}
+
+#[test]
 fn kitty_keyboard_query_mode() {
     let mut parser = Parser::default();
     let actions = parser.feed(b"\x1b[?u");
