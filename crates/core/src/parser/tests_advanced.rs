@@ -167,15 +167,12 @@ fn parses_device_ok_query() {
 #[test]
 fn csi_at_exactly_max_len_is_accepted() {
     let mut parser = Parser::default();
+    // Build a CSI with exactly MAX_CSI_LEN param bytes + final byte.
+    // Use repeated digit chars to fill the buffer as a single large numeric param
+    // (stays within MAX_CSI_PARAMS=32 limit).
     let mut payload = vec![0x1B, b'['];
     let param_bytes = MAX_CSI_LEN - 1;
-    for i in 0..param_bytes {
-        if i % 2 == 0 {
-            payload.push(b'1');
-        } else {
-            payload.push(b';');
-        }
-    }
+    payload.extend(std::iter::repeat_n(b'1', param_bytes));
     payload.push(b'm');
     let actions = parser.feed(&payload);
     assert!(

@@ -74,6 +74,7 @@ pub struct TerminalState {
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
     pub(super) auto_wrap: bool,
+    pub(super) origin_mode: bool,
     pub(super) mouse_mode: MouseMode,
     pub(super) mouse_format: MouseFormat,
     pub(super) cursor_blink: bool,
@@ -107,6 +108,7 @@ impl TerminalState {
             application_keypad_mode: false,
             application_cursor_keys: false,
             auto_wrap: true,
+            origin_mode: false,
             mouse_mode: MouseMode::Off,
             mouse_format: MouseFormat::Normal,
             cursor_blink: false,
@@ -200,6 +202,7 @@ impl TerminalState {
     pub(super) fn is_private_mode_set(&self, mode: u16) -> Option<bool> {
         match mode {
             1 => Some(self.application_cursor_keys),
+            6 => Some(self.origin_mode),
             7 => Some(self.auto_wrap),
             12 => Some(self.cursor_blink),
             25 => Some(self.cursor.visible),

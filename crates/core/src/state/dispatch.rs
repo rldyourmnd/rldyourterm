@@ -91,6 +91,15 @@ impl TerminalState {
             ParserAction::ApplicationKeypadMode(enabled) => {
                 self.application_keypad_mode = enabled;
             }
+            ParserAction::SetOriginMode(enabled) => {
+                self.origin_mode = enabled;
+                if enabled {
+                    // DECOM set: cursor moves to home position within scroll region
+                    let top = self.scroll_region.map_or(0, |(t, _)| t);
+                    self.cursor.row = top;
+                    self.cursor.col = 0;
+                }
+            }
             ParserAction::SetWindowTitle(title) => {
                 if self.window_title != title {
                     self.window_title = title.clone();

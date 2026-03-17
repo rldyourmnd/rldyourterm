@@ -202,8 +202,15 @@ impl TerminalState {
             return;
         }
 
+        let effective_row = if self.origin_mode {
+            let top = self.scroll_region.map_or(0, |(t, _)| t);
+            row.saturating_add(top)
+        } else {
+            row
+        };
+
         self.cursor
-            .move_to(row, col, self.grid.width(), self.grid.height());
+            .move_to(effective_row, col, self.grid.width(), self.grid.height());
     }
 
     pub(super) fn apply_clear_display(
