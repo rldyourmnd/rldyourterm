@@ -14,7 +14,7 @@ mod tests_stress;
 use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 use crate::state::{MouseFormat, MouseMode};
 
-const MAX_CSI_LEN: usize = 64;
+const MAX_CSI_LEN: usize = 256;
 const MAX_OSC_LEN: usize = 4096;
 const REPLACEMENT_CHAR: char = '\u{FFFD}';
 
@@ -147,6 +147,7 @@ pub enum ParserAction {
     CursorSavePositionDec,
     CursorRestorePositionDec,
     SetCursorBlink(bool),
+    SetOriginMode(bool),
     SetFocusReporting(bool),
     SetSynchronizedOutput(bool),
     SetCursorShape(u8),

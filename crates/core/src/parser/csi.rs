@@ -269,6 +269,8 @@ impl Parser {
         match (mode, final_byte) {
             (1, b'h') => Some(ParserAction::ApplicationCursorKeys(true)),
             (1, b'l') => Some(ParserAction::ApplicationCursorKeys(false)),
+            (6, b'h') => Some(ParserAction::SetOriginMode(true)),
+            (6, b'l') => Some(ParserAction::SetOriginMode(false)),
             (7, b'h') => Some(ParserAction::AutoWrapMode(true)),
             (7, b'l') => Some(ParserAction::AutoWrapMode(false)),
             (25, b'h') => Some(ParserAction::SetCursorVisible(true)),
