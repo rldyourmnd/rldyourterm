@@ -54,10 +54,19 @@ impl Parser {
             return;
         }
 
-        // Kitty keyboard protocol: CSI < u pops the mode stack.
+        // Kitty keyboard protocol: CSI < Ps u pops Ps entries (default 1).
         if let Some((&b'<', rest)) = params_raw.split_first() {
-            if final_byte == b'u' && rest.is_empty() {
-                actions.push(ParserAction::PopKittyKeyboardMode);
+            if final_byte == b'u' {
+                if rest.is_empty() {
+                    actions.push(ParserAction::PopKittyKeyboardMode(1));
+                } else if let Ok(parsed) = parse_params(rest) {
+                    let count = parsed.first().and_then(|v| v).unwrap_or(1).max(1);
+                    actions.push(ParserAction::PopKittyKeyboardMode(count));
+                } else {
+                    actions.push(ParserAction::UnsupportedSequence(
+                        self.csi_sequence_string(&self.csi_buffer),
+                    ));
+                }
             } else {
                 actions.push(ParserAction::UnsupportedSequence(
                     self.csi_sequence_string(&self.csi_buffer),
