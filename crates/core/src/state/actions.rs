@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
 
+use unicode_normalization::UnicodeNormalization;
 use unicode_width::UnicodeWidthChar;
 
 use crate::{
@@ -20,10 +21,31 @@ impl TerminalState {
         let width = self.grid.width();
         let char_width = UnicodeWidthChar::width(ch).unwrap_or(1) as u8;
 
-        // Width-0 characters (combining marks, variation selectors) cannot be
-        // represented in a single-char-per-cell grid without grapheme cluster
-        // support. Skip the grid put to avoid creating phantom continuation cells.
+        // Width-0 characters (combining marks, variation selectors): attempt to
+        // compose with the previous cell's character via Unicode NFC normalization.
+        // If NFC produces a single codepoint (e.g., 'e' + U+0301 → 'é'), update
+        // the previous cell. Otherwise silently drop (full grapheme cluster support
+        // requires architectural changes tracked in #76).
         if char_width == 0 {
+            let prev_col = if self.cursor.wrap_pending {
+                self.cursor.col
+            } else {
+                self.cursor.col.saturating_sub(1)
+            };
+            if let Ok(prev_ch) = self.grid.get_char(self.cursor.row, prev_col) {
+                let mut buf = String::with_capacity(8);
+                buf.push(prev_ch);
+                buf.push(ch);
+                let composed: String = buf.nfc().collect();
+                let mut chars = composed.chars();
+                if let Some(first) = chars.next()
+                    && chars.next().is_none()
+                {
+                    let _ = self
+                        .grid
+                        .put_char(self.cursor.row, prev_col, first, self.pen);
+                }
+            }
             return;
         }
 
