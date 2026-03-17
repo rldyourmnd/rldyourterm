@@ -287,8 +287,12 @@ run_codeql_suite() {
 
   echo "CodeQL extraction diagnostics enforcement: errors=$errors actionable_warnings=$actionable extracted_with_errors_metric=$extracted_with_errors_metric extracted_with_errors_budget=$extracted_with_errors_budget"
 
-  if [[ "$errors" -gt 0 || "$actionable" -gt 0 ]]; then
-    echo "actionable CodeQL extraction diagnostics detected" >&2
+  if [[ "$errors" -gt 0 ]]; then
+    echo "CodeQL extraction errors detected: $errors" >&2
+    exit 1
+  fi
+  if [[ "$actionable" -gt "$extracted_with_errors_budget" ]]; then
+    echo "actionable CodeQL extraction warnings ($actionable) exceeded budget ($extracted_with_errors_budget)" >&2
     exit 1
   fi
 

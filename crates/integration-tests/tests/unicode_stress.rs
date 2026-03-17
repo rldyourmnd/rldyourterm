@@ -161,16 +161,15 @@ fn emoji_at_line_boundary() {
 #[test]
 fn combining_diacritical_marks() {
     let mut t = term_sized(20, 3);
-    // 'e' + combining acute accent (U+0301)
+    // 'e' + combining acute accent (U+0301) → 'é' via NFC
     let text = "e\u{0301}";
     feed_bytes(&mut t, text.as_bytes());
 
-    // The character should be stored in the grid
     let row_text = row(&t, 0);
-    // The base character 'e' must survive in the grid
+    // NFC composition: 'e' + U+0301 → 'é' (U+00E9)
     assert!(
-        row_text.contains('e'),
-        "base char must survive, got: '{}'",
+        row_text.contains('\u{00E9}'),
+        "NFC composed char must be present, got: '{}'",
         row_text
     );
     // Cursor should advance by the display width of the base character (1 column)
@@ -189,10 +188,11 @@ fn multiple_combining_marks_on_single_base() {
     feed_bytes(&mut t, text.as_bytes());
 
     let row_text = row(&t, 0);
-    // The base character 'a' must survive in the grid
+    // NFC: 'a' + U+0303 → 'ã' (U+00E3). Subsequent combiners that don't compose
+    // to a single codepoint are dropped (full grapheme support tracked in #76).
     assert!(
-        row_text.contains('a'),
-        "base char must survive, got: '{}'",
+        row_text.contains('\u{00E3}'),
+        "NFC composed char must be present, got: '{}'",
         row_text
     );
     // Cursor should advance by the display width of the base character (1 column)

@@ -346,11 +346,22 @@ fn sgr_invalid_color_does_not_eat_subsequent_params() {
 }
 
 #[test]
-fn combining_mark_does_not_create_phantom_cell() {
+fn combining_mark_composes_via_nfc() {
     let mut state = TerminalState::new(10, 2, 5);
     let _ = state.feed("e\u{0301}".as_bytes());
     assert_eq!(state.cursor.col, 1);
-    assert_eq!(state.grid.get_char(0, 0), Ok('e'));
+    assert_eq!(state.grid.get_char(0, 0), Ok('\u{00E9}')); // é (NFC composed)
+}
+
+#[test]
+fn combining_mark_that_cannot_compose_is_dropped() {
+    let mut state = TerminalState::new(10, 2, 5);
+    // 'a' + combining tilde + combining dot below + combining ring above
+    // NFC of these multiple marks does not reduce to a single codepoint
+    let _ = state.feed("a\u{0303}\u{0323}\u{030A}".as_bytes());
+    assert_eq!(state.cursor.col, 1);
+    // First combining mark composes: a + tilde → ã (U+00E3)
+    assert_eq!(state.grid.get_char(0, 0), Ok('\u{00E3}'));
 }
 
 #[test]
