@@ -107,6 +107,12 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
             WindowEvent::CloseRequested => self.handle_close_requested(event_loop),
             WindowEvent::RedrawRequested => {
                 self.frame.redraw_in_flight = false;
+                // Synchronized output (mode 2026): defer rendering while BSU
+                // is active. The pending redraw will be serviced when the
+                // application sends ESU (CSI ? 2026 l) and queue_redraw fires.
+                if self.terminal.synchronized_output_enabled() {
+                    return;
+                }
                 if let Err(error) = self.draw_frame() {
                     self.fatal_error = Some(error);
                     event_loop.exit();
