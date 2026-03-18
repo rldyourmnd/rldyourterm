@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use super::{
     JoinThreadOutcome, READ_PUMP_FLUSH_INTERVAL, READ_PUMP_FLUSH_MAX_BYTES, derive_poll_timeouts,

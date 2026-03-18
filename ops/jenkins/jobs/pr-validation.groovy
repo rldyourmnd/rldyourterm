@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 def shellEscape(String value) {
     return (value ?: '').replace("'", "'\"'\"'")
@@ -278,13 +278,10 @@ git rev-parse HEAD
                         )
 
                         if (validationMode == 'extended') {
-                            addValidation(
-                                'codeql',
-                                'codeql',
-                                "${env.REPORT_ROOT}/extended-codeql",
-                                "${aggregateContext} / codeql",
-                                120
-                            )
+                            // CodeQL removed from Jenkins extended validation: GitHub Actions
+                            // CodeQL is a required branch protection check and provides identical
+                            // coverage. Running CodeQL twice wastes server resources and causes
+                            // merge blocks when the Jenkins agent is under memory pressure.
                             addValidation(
                                 'scorecard',
                                 'scorecard',

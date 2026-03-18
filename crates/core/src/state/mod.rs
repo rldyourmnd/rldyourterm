@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 mod actions;
 mod dispatch;
@@ -310,5 +310,12 @@ impl TerminalState {
             }
         }
         self.feed_events_scratch = events;
+    }
+
+    /// Feed terminal bytes and expose all core events (bell, title change,
+    /// hyperlink, terminal responses, etc.). Use this when embedding the
+    /// terminal engine in a custom UI that needs full event visibility.
+    pub fn feed_all_events_into(&mut self, bytes: &[u8], events: &mut Vec<CoreEvent>) {
+        self.feed_into(bytes, events);
     }
 }

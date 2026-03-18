@@ -1,11 +1,14 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 mod cursor;
 pub mod error;
 mod events;
+pub use events::{CoreEvent, DisplayClearMode, IngestDegradeReason, LineClearMode};
+
 mod grid;
 mod parser;
+pub use parser::ShellMarkerKind;
 mod render_mode;
 mod scrollback;
 mod state;

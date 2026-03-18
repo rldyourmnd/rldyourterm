@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use super::super::{
     CHILD_EXIT_DRAIN_MAX_WAIT, MAX_FEED_BYTES_PER_CALL, OUTPUT_BATCH_MAX_BYTES,
