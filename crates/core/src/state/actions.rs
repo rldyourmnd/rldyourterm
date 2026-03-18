@@ -393,7 +393,9 @@ impl TerminalState {
             scrollback: std::mem::replace(&mut self.scrollback, Scrollback::new(0)),
             saved_cursor: self.saved_cursor.take(),
             scroll_region: self.scroll_region.take(),
+            origin_mode: self.origin_mode,
         };
+        self.origin_mode = false;
 
         self.alternate_screen = Some(Box::new(saved));
     }
@@ -416,7 +418,9 @@ impl TerminalState {
             ),
             saved_cursor: self.saved_cursor.take(),
             scroll_region: self.scroll_region.take(),
+            origin_mode: self.origin_mode,
         };
+        self.origin_mode = false;
 
         self.alternate_screen = Some(Box::new(saved));
     }
@@ -429,6 +433,7 @@ impl TerminalState {
             self.scrollback = saved.scrollback;
             self.saved_cursor = saved.saved_cursor;
             self.scroll_region = saved.scroll_region;
+            self.origin_mode = saved.origin_mode;
             if !self.grid.is_empty() {
                 self.cursor.row = self.cursor.row.min(self.grid.height().saturating_sub(1));
                 self.cursor.col = self.cursor.col.min(self.grid.width().saturating_sub(1));

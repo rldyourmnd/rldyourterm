@@ -52,6 +52,7 @@ pub(super) struct AlternateScreenState {
     pub(super) scrollback: Scrollback,
     pub(super) saved_cursor: Option<(Cursor, Attrs)>,
     pub(super) scroll_region: Option<(u16, u16)>,
+    pub(super) origin_mode: bool,
 }
 
 #[derive(Debug)]
