@@ -24,7 +24,7 @@ fn scrollback_cap_one_never_exceeds() {
     }
     assert_eq!(t.scrollback.len(), 1);
     // The single retained line should be recent
-    let line = t.scrollback.get(0).expect("one line retained");
+    let line = t.scrollback.get_text(0).expect("one line retained");
     assert!(line.starts_with("L"), "line should start with L prefix");
 }
 
@@ -38,7 +38,7 @@ fn scrollback_fifo_ordering() {
     // Verify FIFO ordering: lines should be in ascending order
     let mut prev_num = None;
     for i in 0..t.scrollback.len() {
-        let line = t.scrollback.get(i).unwrap();
+        let line = t.scrollback.get_text(i).unwrap();
         if let Some(num_str) = line.strip_prefix("Line ")
             && let Ok(num) = num_str.trim().parse::<u32>()
         {
@@ -77,7 +77,7 @@ fn scrollback_preserves_unicode_content() {
     // First lines should be in scrollback (grid only shows last 3 rows)
     let mut found = Vec::new();
     for i in 0..t.scrollback.len() {
-        found.push(t.scrollback.get(i).unwrap().to_string());
+        found.push(t.scrollback.get_text(i).unwrap());
     }
     // At least the first few lines should be in scrollback
     assert!(!found.is_empty(), "scrollback should have Unicode content");
@@ -104,7 +104,7 @@ fn scrollback_preserves_trimmed_content() {
     feed_bytes(&mut t, b"Fourth\r\n");
     // Scrollback lines should be trimmed
     if !t.scrollback.is_empty() {
-        let line = t.scrollback.get(0).unwrap();
+        let line = t.scrollback.get_text(0).unwrap();
         assert_eq!(
             line,
             line.trim_end(),
@@ -122,13 +122,13 @@ fn interleaved_push_and_read() {
         feed_bytes(&mut t, format!("Event {:04}\r\n", i).as_bytes());
         // Read scrollback during push cycle
         if i % 50 == 0 && !t.scrollback.is_empty() {
-            let first = t.scrollback.get(0).unwrap();
+            let first = t.scrollback.get_text(0).unwrap();
             assert!(
                 first.starts_with("Event"),
                 "scrollback content must be valid during interleaved access"
             );
             let last_idx = t.scrollback.len() - 1;
-            let last = t.scrollback.get(last_idx).unwrap();
+            let last = t.scrollback.get_text(last_idx).unwrap();
             assert!(
                 last.starts_with("Event"),
                 "last scrollback line must be valid"
@@ -147,7 +147,8 @@ fn scrollback_iter_during_churn() {
     let count = t.scrollback.iter().count();
     assert_eq!(count, t.scrollback.len());
     // All items should be valid strings
-    for line in t.scrollback.iter() {
+    for i in 0..t.scrollback.len() {
+        let line = t.scrollback.get_text(i).unwrap();
         assert!(line.starts_with("Item"), "each line should be valid");
     }
 }
@@ -189,7 +190,7 @@ fn scrollback_handles_empty_lines() {
 
     // Should handle empty lines without issues
     for i in 0..t.scrollback.len() {
-        let _line = t.scrollback.get(i).unwrap();
+        let _line = t.scrollback.get_text(i).unwrap();
         // No panic = success
     }
 }

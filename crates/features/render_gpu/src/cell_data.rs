@@ -3,9 +3,9 @@
 
 use super::{
     ATTR_BLINK, ATTR_BOLD, ATTR_CONTINUATION, ATTR_DIM, ATTR_DOUBLE_UNDERLINE, ATTR_HIDDEN,
-    ATTR_INVERSE, ATTR_ITALIC, ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE,
+    ATTR_INVERSE, ATTR_ITALIC, ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE, Attrs,
     CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD, CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR, CELL_HEIGHT,
-    CELL_WIDTH, CellInstance, Color, DEFAULT_BG, DEFAULT_FG, GpuBackend,
+    CELL_WIDTH, Cell, CellInstance, Color, DEFAULT_BG, DEFAULT_FG, GpuBackend,
     INITIAL_CELL_BUFFER_CAPACITY, TerminalState, color_to_u32,
 };
 use crate::atlas::ensure_glyph_in_atlas;
@@ -185,11 +185,11 @@ impl GpuBackend {
         }
     }
 
-    /// Write a scrollback text line into `cell_instances` at `display_row`.
-    /// Scrollback lines have no cell attributes — all chars use default fg/bg.
+    /// Write a scrollback cell row into `cell_instances` at `display_row`,
+    /// preserving full visual attributes (colors, bold, italic, etc.).
     pub(super) fn write_scrollback_row_instances(
         &mut self,
-        line: &str,
+        cells: &[Cell],
         display_row: usize,
         cols: usize,
     ) {
@@ -204,12 +204,12 @@ impl GpuBackend {
         };
         self.cell_instances[row_offset..row_offset + cols].fill(blank);
 
-        for (col, ch) in line.chars().take(cols).enumerate() {
-            if ch == ' ' {
+        for (col, cell) in cells.iter().take(cols).enumerate() {
+            if cell.ch == ' ' && cell.attrs == Attrs::default() {
                 continue;
             }
             let slot = ensure_glyph_in_atlas(
-                ch,
+                cell.ch,
                 &mut self.glyph_cache,
                 &mut self.char_to_slot,
                 &mut self.slot_to_char,
@@ -219,11 +219,23 @@ impl GpuBackend {
                 &self.atlas_texture,
                 &self.queue,
             );
+            let flags = pack_cell_flags(slot, &cell.attrs);
+            let fg = color_to_u32(cell.attrs.fg, DEFAULT_FG);
+            let bg = color_to_u32(cell.attrs.bg, DEFAULT_BG);
+            let ul = if cell.attrs.underline() || cell.attrs.double_underline() {
+                if cell.attrs.underline_color == Color::Default {
+                    fg
+                } else {
+                    color_to_u32(cell.attrs.underline_color, DEFAULT_FG)
+                }
+            } else {
+                0
+            };
             self.cell_instances[row_offset + col] = CellInstance {
-                atlas_and_flags: slot as u32,
-                fg_color: default_fg,
-                bg_color: default_bg,
-                underline_color: 0,
+                atlas_and_flags: flags,
+                fg_color: fg,
+                bg_color: bg,
+                underline_color: ul,
             };
         }
     }

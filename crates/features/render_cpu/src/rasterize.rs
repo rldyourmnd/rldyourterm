@@ -186,13 +186,17 @@ pub fn render_terminal_buffer(
 
         if row_idx < sb_rows_on_screen {
             let sb_line_idx = terminal.scrollback.len() - effective_offset + row_idx;
-            if let Some(line) = terminal.scrollback.get(sb_line_idx) {
-                for (col, ch) in line.chars().take(visible_cols).enumerate() {
-                    if ch == ' ' {
+            if let Some(cells) = terminal.scrollback.get(sb_line_idx) {
+                for (col, cell) in cells.iter().take(visible_cols).enumerate() {
+                    if cell.ch == ' ' && cell.attrs == Attrs::default() {
                         continue;
                     }
+                    let (fg, bg) = resolve_cell_colors(&cell.attrs);
                     let x = col * CELL_WIDTH;
-                    let glyph = glyph_cache.get(ch);
+                    if bg != DEFAULT_BG_U32 {
+                        draw_cell_bg(buffer, width, height, x, base_y, bg);
+                    }
+                    let glyph = glyph_cache.get(cell.ch);
                     draw_glyph_blended(
                         buffer,
                         width,
@@ -200,8 +204,8 @@ pub fn render_terminal_buffer(
                         x,
                         base_y,
                         glyph,
-                        DEFAULT_FG_U32,
-                        false,
+                        fg,
+                        cell.attrs.bold(),
                     );
                 }
             }

@@ -23,7 +23,7 @@ fn grid_1x1_wrap_and_scroll() {
     // 'A' should scroll to scrollback, 'B' on screen
     assert_eq!(row(&t, 0), "B");
     assert_eq!(t.scrollback.len(), 1);
-    assert_eq!(t.scrollback.get(0), Some("A"));
+    assert_eq!(t.scrollback.get_text(0).as_deref(), Some("A"));
 }
 
 #[test]

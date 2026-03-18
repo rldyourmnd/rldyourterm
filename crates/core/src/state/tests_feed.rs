@@ -15,7 +15,7 @@ fn feed_wraps_and_scrolls_into_scrollback() {
 
     assert_eq!(state.grid.row_string(0).expect("row 0"), "def");
     assert_eq!(state.grid.row_string(1).expect("row 1"), "ghi");
-    assert_eq!(state.scrollback.iter().collect::<Vec<_>>(), vec!["abc"]);
+    assert_eq!(state.scrollback.get_text(0).as_deref(), Some("abc"));
     assert!(state.cursor.wrap_pending);
     assert_eq!(
         events
@@ -29,10 +29,8 @@ fn feed_wraps_and_scrolls_into_scrollback() {
     let events2 = state.feed(b"j");
     assert_eq!(state.grid.row_string(0).expect("row 0 after j"), "ghi");
     assert_eq!(state.grid.row_string(1).expect("row 1 after j"), "j  ");
-    assert_eq!(
-        state.scrollback.iter().collect::<Vec<_>>(),
-        vec!["abc", "def"]
-    );
+    assert_eq!(state.scrollback.get_text(0).as_deref(), Some("abc"));
+    assert_eq!(state.scrollback.get_text(1).as_deref(), Some("def"));
     assert!(!state.cursor.wrap_pending);
     assert_eq!(
         events2
@@ -52,7 +50,7 @@ fn scrollback_trim_event_is_emitted_at_cap_boundary() {
     let events = state.feed(b"abcde");
 
     assert_eq!(state.scrollback.len(), 1);
-    assert_eq!(state.scrollback.get(0), Some("cd"));
+    assert_eq!(state.scrollback.get_text(0).as_deref(), Some("cd"));
     assert!(
         events
             .iter()
@@ -129,10 +127,13 @@ fn feed_into_matches_feed_behavior() {
     assert_eq!(via_feed.cursor, via_feed_into.cursor);
     assert_eq!(via_feed.pen, via_feed_into.pen);
     assert_eq!(via_feed.window_title(), via_feed_into.window_title());
-    assert_eq!(
-        via_feed.scrollback.iter().collect::<Vec<_>>(),
-        via_feed_into.scrollback.iter().collect::<Vec<_>>()
-    );
+    assert_eq!(via_feed.scrollback.len(), via_feed_into.scrollback.len());
+    for i in 0..via_feed.scrollback.len() {
+        assert_eq!(
+            via_feed.scrollback.get_text(i),
+            via_feed_into.scrollback.get_text(i)
+        );
+    }
     assert_eq!(
         via_feed.grid.row_string(0).expect("row 0"),
         via_feed_into.grid.row_string(0).expect("row 0")

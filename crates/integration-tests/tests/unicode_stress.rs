@@ -402,7 +402,7 @@ fn scrollback_preserves_unicode_content() {
     // Collect all text from scrollback and grid
     let mut all_text = String::new();
     for i in 0..t.scrollback.len() {
-        all_text.push_str(t.scrollback.get(i).unwrap());
+        all_text.push_str(&t.scrollback.get_text(i).unwrap());
         all_text.push('\n');
     }
     for r in 0..t.grid.height() {
@@ -436,7 +436,7 @@ fn scrollback_cjk_line_length() {
     // Find the CJK line in scrollback
     let mut found = false;
     for i in 0..t.scrollback.len() {
-        let sb_line = t.scrollback.get(i).unwrap();
+        let sb_line = t.scrollback.get_text(i).unwrap();
         if sb_line.contains('\u{4E00}') {
             // Scrollback stores characters, not display columns, so length
             // should be 10 characters (not 20 columns)
@@ -471,7 +471,7 @@ fn scrollback_mixed_width_lines() {
 
     let mut all_sb = String::new();
     for i in 0..t.scrollback.len() {
-        all_sb.push_str(t.scrollback.get(i).unwrap());
+        all_sb.push_str(&t.scrollback.get_text(i).unwrap());
         all_sb.push('\n');
     }
     for line in &lines {

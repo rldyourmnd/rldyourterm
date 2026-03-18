@@ -11,7 +11,7 @@
 use super::{DEFAULT_BG_U32, DEFAULT_FG_U32, render_terminal_buffer, rgb_to_u32};
 use rldyourterm_font::GlyphCache;
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, DEFAULT_SCROLLBACK_CAP, TerminalState,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_SCROLLBACK_CAP, TerminalState,
 };
 
 // ---------------------------------------------------------------------------
@@ -20,6 +20,16 @@ use rldyourterm_services::terminal::{
 
 fn state_with_default_scrollback(width: u16, height: u16) -> TerminalState {
     TerminalState::new(width, height, DEFAULT_SCROLLBACK_CAP)
+}
+
+fn cells_from_str(s: &str) -> Vec<Cell> {
+    s.chars()
+        .map(|ch| Cell {
+            ch,
+            attrs: Attrs::default(),
+            width: 1,
+        })
+        .collect()
 }
 
 /// Pixel value used to detect untouched regions of the framebuffer.
@@ -633,8 +643,8 @@ fn scrollback_rows_render_with_default_fg() {
     state.cursor.visible = false;
 
     // Push text into scrollback.
-    state.scrollback.push("ABCDE".to_string());
-    state.scrollback.push("FGHIJ".to_string());
+    state.scrollback.push_from_cells(&cells_from_str("ABCDE"));
+    state.scrollback.push_from_cells(&cells_from_str("FGHIJ"));
 
     let mut ctx = RenderCtx::new(cols, rows);
     // Render with viewport_offset=2 so the top 2 rows come from scrollback.
@@ -665,8 +675,8 @@ fn scrollback_offset_shifts_visible_content() {
     let mut state = state_with_default_scrollback(cols as u16, rows as u16);
     state.cursor.visible = false;
 
-    state.scrollback.push("HELLO".to_string());
-    state.scrollback.push("WORLD".to_string());
+    state.scrollback.push_from_cells(&cells_from_str("HELLO"));
+    state.scrollback.push_from_cells(&cells_from_str("WORLD"));
 
     // Render without scrollback (offset = 0).
     let mut ctx_no_scroll = RenderCtx::new(cols, rows);

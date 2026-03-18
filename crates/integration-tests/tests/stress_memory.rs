@@ -17,7 +17,7 @@ fn scrollback_churn_at_cap() {
     assert_eq!(t.scrollback.len(), 100);
     // Oldest surviving line should be from near end of sequence
     // (100000 - 24 grid rows - 100 scrollback = line 99876 at earliest)
-    let first = t.scrollback.get(0).expect("scrollback not empty");
+    let first = t.scrollback.get_text(0).expect("scrollback not empty");
     assert!(
         !first.contains("Line 000000"),
         "very first line must have been evicted by scrollback cap"
@@ -98,7 +98,7 @@ fn resize_shrink_expand_preserves_content() {
     }
     if !found_hello {
         for i in 0..t.scrollback.len() {
-            if let Some(line) = t.scrollback.get(i)
+            if let Some(line) = t.scrollback.get_text(i)
                 && line.contains("Hello")
             {
                 found_hello = true;
