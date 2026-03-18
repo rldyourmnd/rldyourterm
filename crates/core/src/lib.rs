@@ -4,8 +4,11 @@
 mod cursor;
 pub mod error;
 mod events;
+pub use events::{CoreEvent, DisplayClearMode, IngestDegradeReason, LineClearMode};
+
 mod grid;
 mod parser;
+pub use parser::ShellMarkerKind;
 mod render_mode;
 mod scrollback;
 mod state;

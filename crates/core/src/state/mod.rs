@@ -311,4 +311,11 @@ impl TerminalState {
         }
         self.feed_events_scratch = events;
     }
+
+    /// Feed terminal bytes and expose all core events (bell, title change,
+    /// hyperlink, terminal responses, etc.). Use this when embedding the
+    /// terminal engine in a custom UI that needs full event visibility.
+    pub fn feed_all_events_into(&mut self, bytes: &[u8], events: &mut Vec<CoreEvent>) {
+        self.feed_into(bytes, events);
+    }
 }
