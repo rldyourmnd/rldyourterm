@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Cargo performance: maximize parallelism and use sparse registry protocol.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(nproc)}"
+export CARGO_REGISTRIES_CRATES_IO_PROTOCOL="${CARGO_REGISTRIES_CRATES_IO_PROTOCOL:-sparse}"
+export CARGO_NET_RETRY="${CARGO_NET_RETRY:-5}"
+export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
+
+ci_step_start=""
+ci_step() {
+  if [[ -n "$ci_step_start" ]]; then
+    local elapsed=$(( $(date +%s) - ci_step_start ))
+    echo "JENKINS_CI_TIMING step_end elapsed=${elapsed}s"
+  fi
+  ci_step_start=$(date +%s)
+  echo "JENKINS_CI_TIMING step_start name=$1"
+}
+
 usage() {
   cat <<'USAGE'
 usage: run_pr_ci.sh <ci|codeql|scorecard|extended> [report-root]
@@ -175,41 +191,50 @@ run_ci_suite() {
 
   mkdir -p "$ci_root"
 
+  ci_step "validate-metadata"
   verify_main_branch_protection_contract
-
   validate_semantic_pr_title "$pr_title" "$ci_root/semantic-pr-title.txt"
-
   bash -n ops/jenkins/deploy_remote.sh
   bash -n ops/jenkins/controller/support/run_pr_ci.sh
   bash -n scripts/ci/run_jenkins_pr_ci.sh
   python3 -m py_compile ops/jenkins/router/router.py
   python3 -m json.tool < ops/jenkins/router/repositories.json >/dev/null
-
   if compgen -G "ops/jenkins/router/test_*.py" >/dev/null; then
     python3 -m unittest discover -s ops/jenkins/router -p 'test_*.py'
   fi
-
   bash scripts/ci/validate_cflite_toolchain_pin.sh
 
+  # Phase 1: No-compile gates (sequential but fast, ~10s total)
+  # cargo commands share ~/.cargo lock file and cannot run concurrently.
+  ci_step "fmt"
   CARGO_TARGET_DIR="$target_dir" cargo fmt --all -- --check
-  CARGO_TARGET_DIR="$target_dir" cargo check --workspace --all-targets --locked
-  CARGO_TARGET_DIR="$target_dir" cargo test --workspace --locked
+  ci_step "audit"
+  CARGO_TARGET_DIR="$target_dir" cargo audit
+  ci_step "deny"
+  CARGO_TARGET_DIR="$target_dir" cargo deny check bans licenses advisories sources
+
+  # Phase 2: Compile gates (sequential, shared incremental cache)
+  # clippy is a superset of check - eliminates one full compilation pass.
+  ci_step "clippy"
   CARGO_TARGET_DIR="$target_dir" cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  ci_step "test"
+  CARGO_TARGET_DIR="$target_dir" cargo test --workspace --locked
+  ci_step "msrv"
   CARGO_TARGET_DIR="$target_dir" cargo +1.92.0 check --workspace --all-targets --locked
 
+  # Phase 3: Integration gates
+  ci_step "system-suite"
   CARGO_TARGET_DIR="$target_dir" \
     bash scripts/ci/run_terminal_system_suite.sh \
     "$system_suite_report" \
     --benchmark-report "$benchmark_report" \
     --governance-mode ci
-
-  CARGO_TARGET_DIR="$target_dir" cargo audit
-  CARGO_TARGET_DIR="$target_dir" cargo deny check bans licenses advisories sources
-
+  ci_step "matrix"
   CARGO_TARGET_DIR="$target_dir" bash scripts/mvp/run_matrix.sh 3
-
+  ci_step "fuzz"
   CARGO_TARGET_DIR="$target_dir" \
     cargo +"$fuzz_toolchain" fuzz run parser_feed -- -max_total_time="$fuzz_seconds"
+  ci_step "done"
 }
 
 run_codeql_suite() {
