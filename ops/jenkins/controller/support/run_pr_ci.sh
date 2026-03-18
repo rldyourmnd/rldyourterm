@@ -204,23 +204,14 @@ run_ci_suite() {
   fi
   bash scripts/ci/validate_cflite_toolchain_pin.sh
 
-  # Phase 1: No-compile gates (parallel, ~5s total)
-  ci_step "parallel-gates"
-  local gate_pids=()
-  CARGO_TARGET_DIR="$target_dir" cargo fmt --all -- --check &
-  gate_pids+=($!)
-  CARGO_TARGET_DIR="$target_dir" cargo audit &
-  gate_pids+=($!)
-  CARGO_TARGET_DIR="$target_dir" cargo deny check bans licenses advisories sources &
-  gate_pids+=($!)
-  local gate_failed=0
-  for pid in "${gate_pids[@]}"; do
-    if ! wait "$pid"; then gate_failed=1; fi
-  done
-  if [[ "$gate_failed" -ne 0 ]]; then
-    echo "one or more parallel gates (fmt/audit/deny) failed" >&2
-    exit 1
-  fi
+  # Phase 1: No-compile gates (sequential but fast, ~10s total)
+  # cargo commands share ~/.cargo lock file and cannot run concurrently.
+  ci_step "fmt"
+  CARGO_TARGET_DIR="$target_dir" cargo fmt --all -- --check
+  ci_step "audit"
+  CARGO_TARGET_DIR="$target_dir" cargo audit
+  ci_step "deny"
+  CARGO_TARGET_DIR="$target_dir" cargo deny check bans licenses advisories sources
 
   # Phase 2: Compile gates (sequential, shared incremental cache)
   # clippy is a superset of check - eliminates one full compilation pass.
