@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 Danil Silantyev (rldyourmnd), NDDev OpenNetwork
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 pub(crate) fn xterm_modifier_param(shift: bool, alt: bool, ctrl: bool) -> u8 {
     1 + u8::from(shift) + (u8::from(alt) << 1) + (u8::from(ctrl) << 2)
