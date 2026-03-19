@@ -3,6 +3,15 @@
 
 use super::*;
 
+pub(super) fn restore_live_view_after_output(
+    interaction: &mut InteractionState,
+    terminal: &mut TerminalState,
+) {
+    if interaction.reset_viewport() {
+        terminal.grid.mark_all_dirty();
+    }
+}
+
 impl GuiRuntimeApp {
     fn dispatch_terminal_responses(
         &mut self,
@@ -115,9 +124,7 @@ impl GuiRuntimeApp {
         if !self.frame.redraw_pending || self.frame.redraw_in_flight {
             return;
         }
-        if (self.window.window_control.is_some() || self.window.window.is_some())
-            && self.request_window_redraw()
-        {
+        if self.window.has_window() && self.request_window_redraw() {
             self.frame.redraw_pending = false;
             self.frame.redraw_in_flight = true;
         }
@@ -125,7 +132,7 @@ impl GuiRuntimeApp {
 
     fn apply_output_bytes(&mut self, data: &[u8], event_loop: &ActiveEventLoop) -> bool {
         trace!(bytes = data.len(), "pty output received");
-        self.interaction.viewport_offset = 0;
+        restore_live_view_after_output(&mut self.interaction.state, &mut self.terminal);
         let mut response_buffer = std::mem::take(&mut self.response_buffer_scratch);
         for chunk in terminal_feed_chunks(data) {
             response_buffer.feed_terminal(&mut self.terminal, chunk);
@@ -164,7 +171,7 @@ impl GuiRuntimeApp {
 
     fn dispatch_pending_bell(&mut self) {
         if self.terminal.take_pending_bell()
-            && let Some(window) = self.window.window.as_ref()
+            && let Some(window) = self.window.window_ref()
         {
             window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
             trace!("bell: requested window attention");

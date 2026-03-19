@@ -29,14 +29,7 @@ use self::terminal_io::{
     mark_pty_boundary_recovered, write_runtime_palette_line,
 };
 use crate::runtime_shared::display::{fatal_boundary_reason_token, session_boundary_token};
-use crate::runtime_shared::input::{
-    encode_crossterm_key_event, is_local_shutdown_key_crossterm,
-    is_runtime_palette_shortcut_crossterm, runtime_key_event_from_crossterm,
-};
 use crate::runtime_shared::io::{is_disconnect_error, write_all_and_flush};
-use crate::runtime_shared::palette::{
-    RuntimePaletteView, handle_runtime_palette_key_input, toggle_runtime_palette,
-};
 use crate::runtime_shared::pty_boundary::{
     BoundaryFailureOutcome, PtyReadFailureResolution, apply_pty_boundary_failure,
     fatal_pty_boundary_failure, mark_pty_boundary_recovered as shared_mark_pty_boundary_recovered,
@@ -53,6 +46,12 @@ use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
+use rldyourterm_interaction::{
+    RuntimePaletteView, TerminalModeFlags, encode_crossterm_key_event,
+    handle_runtime_palette_key_input, is_local_shutdown_key_crossterm,
+    is_runtime_palette_shortcut_crossterm, runtime_key_event_from_crossterm,
+    toggle_runtime_palette,
+};
 use rldyourterm_services::render_mode::RenderMode;
 use rldyourterm_services::session::{SessionBoundary, SessionController};
 use rldyourterm_settings::{SettingsCommand, SettingsService};
@@ -310,7 +309,7 @@ pub fn run_interactive_pty(
                     continue;
                 }
 
-                let modes = crate::runtime_shared::input::TerminalModeFlags::default();
+                let modes = TerminalModeFlags::default();
                 if let Some(bytes) = encode_crossterm_key_event(key_event, modes) {
                     if let Err(error) = write_all_and_flush(&mut *writer, &bytes) {
                         match handle_pty_io_failure(

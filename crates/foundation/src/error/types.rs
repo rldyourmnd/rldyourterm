@@ -166,6 +166,8 @@ impl PtyFailureCode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowOperation {
+    CreateWindow,
+    InitializeSurface,
     RequestRedraw,
     SetTitle,
     QueryMonitorTiming,
@@ -175,6 +177,8 @@ pub enum WindowOperation {
 impl WindowOperation {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CreateWindow => "create-window",
+            Self::InitializeSurface => "initialize-surface",
             Self::RequestRedraw => "request-redraw",
             Self::SetTitle => "set-title",
             Self::QueryMonitorTiming => "query-monitor-timing",

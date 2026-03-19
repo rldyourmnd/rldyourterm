@@ -25,6 +25,8 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use self::lifecycle::restore_live_view_after_output;
 use self::output::{
     OutputChunk, OutputQueueBackpressure, output_drain_budget, output_drain_budget_exhausted,
     recycle_output_chunk_buffer, should_flush_output_batch, spawn_reader_pump, spawn_wait_pump,
@@ -34,6 +36,8 @@ use self::output::{
 use self::output::{
     OutputDrainBudget, OutputDrainPressure, OutputQueueSnapshot, take_output_chunk_buffer,
 };
+#[cfg(test)]
+use self::rendering::deferred_gpu_failure_kind;
 #[cfg(test)]
 use self::terminal_io::{
     cap_paste_text, dispatch_runtime_palette_command, read_clipboard_text_for_paste,
@@ -51,14 +55,6 @@ use crate::gui_runtime_backend::{
 };
 #[cfg(test)]
 use crate::gui_runtime_backend::{DeferredGpuInitState, RenderWaitPolicy, render_wait_policy};
-use crate::runtime_shared::input::{
-    encode_winit_key_event as shared_encode_winit_key_event, is_local_shutdown_key_winit,
-    is_runtime_palette_shortcut_winit, runtime_key_from_winit_borrowed,
-};
-use crate::runtime_shared::palette::{
-    RuntimePaletteView, handle_runtime_palette_key_input,
-    runtime_palette_status_line as shared_runtime_palette_status_line, toggle_runtime_palette,
-};
 use crate::runtime_shared::pty_boundary::{PtyReadFailureResolution, runtime_boundary_notice};
 use crate::runtime_shared::shutdown::{
     JoinThreadOutcome, SHUTDOWN_JOIN_POLL_INTERVAL, SHUTDOWN_JOIN_TIMEOUT,
@@ -74,35 +70,35 @@ use rldyourterm_font::GlyphCache;
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation::api::window::{
-    MonitorTiming, WindowConfig as FoundationWindowConfig, WindowControl, WindowFactory,
+    MonitorTiming, WindowConfig as FoundationWindowConfig, WindowControl,
 };
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
-use rldyourterm_foundation_platform::window::PlatformWindowFactory;
+use rldyourterm_foundation_platform::window::{PlatformSoftbufferSurface, PlatformWindowHost};
+use rldyourterm_interaction::{
+    InteractionState, RuntimePaletteView, TerminalModeFlags,
+    encode_winit_key_event as shared_encode_winit_key_event, handle_runtime_palette_key_input,
+    is_local_shutdown_key_winit, is_runtime_palette_shortcut_winit,
+    runtime_key_from_winit_borrowed,
+    runtime_palette_status_line as shared_runtime_palette_status_line, toggle_runtime_palette,
+};
 use rldyourterm_render_cpu::render_terminal_buffer;
 use rldyourterm_render_gpu::{GpuRenderer, SELECTION_NONE};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransitionOutcome};
-use rldyourterm_services::terminal::{
-    CELL_HEIGHT, CELL_WIDTH, MouseFormat, MouseMode, TerminalState,
-};
+use rldyourterm_services::terminal::{CELL_HEIGHT, CELL_WIDTH, MouseMode, TerminalState};
 use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_ui::{
     DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome,
     UiCommandReceipt, UiRuntime, UiRuntimeCommand,
 };
-use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use tracing::{debug, info, trace, warn};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-use winit::platform::startup_notify::{
-    EventLoopExtStartupNotify, WindowAttributesExtStartupNotify,
-};
 use winit::window::{Icon, Window, WindowId};
 
 /// Embedded application icon (decoded at runtime from PNG).
@@ -374,15 +370,59 @@ struct GuiRuntimeControlPlane {
 }
 
 struct GuiRuntimeWindowPlane {
-    window: Option<Arc<Window>>,
-    window_control: Option<Box<dyn WindowControl>>,
-    window_id: Option<WindowId>,
-    context: Option<SoftbufferContext<Arc<Window>>>,
-    surface: Option<SoftbufferSurface<Arc<Window>, Arc<Window>>>,
+    host: Option<PlatformWindowHost>,
     window_size: PhysicalSize<u32>,
     last_softbuffer_size: Option<PhysicalSize<u32>>,
     viewport_geometry: ViewportGeometry,
     last_window_title: String,
+}
+
+impl GuiRuntimeWindowPlane {
+    fn has_window(&self) -> bool {
+        self.host.is_some()
+    }
+
+    fn window_ref(&self) -> Option<&Arc<Window>> {
+        self.host.as_ref().map(PlatformWindowHost::window)
+    }
+
+    fn cloned_window(&self) -> Option<Arc<Window>> {
+        self.host.as_ref().map(PlatformWindowHost::cloned_window)
+    }
+
+    fn window_id(&self) -> Option<WindowId> {
+        self.host.as_ref().map(PlatformWindowHost::window_id)
+    }
+
+    fn window_control(&self) -> Option<&dyn WindowControl> {
+        self.host.as_ref().map(PlatformWindowHost::control)
+    }
+
+    fn has_cpu_surface(&self) -> bool {
+        self.host
+            .as_ref()
+            .is_some_and(PlatformWindowHost::has_cpu_surface)
+    }
+
+    fn ensure_cpu_surface(&mut self) -> Result<()> {
+        let host = self
+            .host
+            .as_mut()
+            .ok_or_else(|| anyhow!("no window host for softbuffer initialization"))?;
+        host.ensure_cpu_surface()
+            .context("failed to initialize CPU surface lane")
+    }
+
+    fn drop_cpu_surface(&mut self) {
+        if let Some(host) = self.host.as_mut() {
+            host.drop_cpu_surface_lane();
+        }
+        self.last_softbuffer_size = None;
+    }
+
+    fn surface_mut(&mut self) -> Option<&mut PlatformSoftbufferSurface> {
+        self.host.as_mut().and_then(|host| host.surface_mut())
+    }
 }
 
 struct GuiRuntimeFramePlane {
@@ -399,13 +439,7 @@ struct GuiRuntimeFramePlane {
 
 struct GuiRuntimeInteractionPlane {
     modifiers: ModifiersState,
-    palette_open: bool,
-    viewport_offset: usize,
-    mouse_cell_col: u16,
-    mouse_cell_row: u16,
-    mouse_buttons: u8,
-    selection_anchor: Option<(u16, u16)>,
-    selection_end: Option<(u16, u16)>,
+    state: InteractionState,
 }
 
 impl GuiRuntimeApp {
@@ -472,11 +506,7 @@ impl GuiRuntimeApp {
             gpu_cache_dir: app_handler::resolve_gpu_cache_dir(),
             started_at: Instant::now(),
             window: GuiRuntimeWindowPlane {
-                window: None,
-                window_control: None,
-                window_id: None,
-                context: None,
-                surface: None,
+                host: None,
                 window_size: PhysicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT),
                 last_softbuffer_size: None,
                 viewport_geometry: ViewportGeometry {
@@ -510,13 +540,7 @@ impl GuiRuntimeApp {
             },
             interaction: GuiRuntimeInteractionPlane {
                 modifiers: ModifiersState::default(),
-                palette_open: false,
-                viewport_offset: 0,
-                mouse_cell_col: 0,
-                mouse_cell_row: 0,
-                mouse_buttons: 0,
-                selection_anchor: None,
-                selection_end: None,
+                state: InteractionState::default(),
             },
             child_exit_pending: false,
             child_exit_drain_started_at: None,
@@ -534,24 +558,14 @@ impl GuiRuntimeApp {
     }
 
     fn selection_flat_range(&self) -> (u32, u32) {
-        match (
-            self.interaction.selection_anchor,
-            self.interaction.selection_end,
-        ) {
-            (Some((ar, ac)), Some((er, ec))) => {
-                let cols = self.terminal.grid.width() as u32;
-                let start = ar as u32 * cols + ac as u32;
-                let end = er as u32 * cols + ec as u32;
-                (start.min(end), start.max(end))
-            }
-            _ => (SELECTION_NONE, SELECTION_NONE),
-        }
+        self.interaction
+            .state
+            .selection_flat_range(self.terminal.grid.width().into())
+            .unwrap_or((SELECTION_NONE, SELECTION_NONE))
     }
 
     fn clear_selection(&mut self) {
-        if self.interaction.selection_anchor.is_some() {
-            self.interaction.selection_anchor = None;
-            self.interaction.selection_end = None;
+        if self.interaction.state.clear_selection() {
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();
         }
@@ -568,9 +582,9 @@ fn is_runtime_palette_shortcut_key(key: Key<&str>, modifiers: ModifiersState) ->
 
 #[cfg(test)]
 fn encode_winit_key_event(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
-    let modes = crate::runtime_shared::input::TerminalModeFlags::default();
-    crate::runtime_shared::input::runtime_key_event_from_winit(key, modifiers)
-        .and_then(|ev| crate::runtime_shared::input::encode_runtime_key_event(ev, modes))
+    let modes = TerminalModeFlags::default();
+    rldyourterm_interaction::runtime_key_event_from_winit(key, modifiers)
+        .and_then(|event| rldyourterm_interaction::encode_runtime_key_event(event, modes))
 }
 
 #[cfg(test)]

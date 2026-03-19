@@ -46,6 +46,7 @@ layer_by_package = {
     "rldyourterm-render-cpu": "features",
     "rldyourterm-render-gpu": "features",
     "rldyourterm-font": "features",
+    "rldyourterm-interaction": "features",
     "rldyourterm-settings": "features",
     "rldyourterm-shell-integration": "features",
     "rldyourterm-diagnostics": "features",

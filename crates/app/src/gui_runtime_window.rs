@@ -13,78 +13,31 @@ pub(super) struct ViewportGeometry {
 
 impl GuiRuntimeApp {
     pub(super) fn bootstrap_window(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if self.window.window.is_some() {
+        if self.window.has_window() {
             return Ok(());
         }
 
-        // `mut` needed on Linux/FreeBSD for platform-specific window attributes,
-        // but triggers unused_mut warning on macOS where those blocks don't compile.
-        #[allow(unused_mut)]
-        let mut attributes = Window::default_attributes()
-            .with_title("rldyourterm")
-            .with_inner_size(LogicalSize::new(DEFAULT_GUI_WIDTH, DEFAULT_GUI_HEIGHT))
-            .with_visible(true)
-            .with_active(true)
-            .with_window_icon(load_app_icon());
-
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            attributes =
-                WindowAttributesExtWayland::with_name(attributes, "rldyourterm", "rldyourterm");
-        }
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            use winit::platform::x11::WindowAttributesExtX11;
-            attributes =
-                WindowAttributesExtX11::with_name(attributes, "rldyourterm", "rldyourterm");
-        }
-
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        if let Some(token) = event_loop.read_token_from_env() {
-            attributes = attributes.with_activation_token(token);
-        }
-
-        let window = Arc::new(
-            event_loop
-                .create_window(attributes)
-                .context("failed to create GUI window")?,
-        );
-        // IME is intentionally disabled for terminal emulators. On Wayland,
-        // enabling IME activates zwp_text_input_v3 alongside wl_keyboard (xkb),
-        // causing every keypress to be delivered twice (KeyboardInput.text + Ime::Commit).
-        // Terminal emulators rely solely on wl_keyboard for input.
-        window.set_ime_allowed(false);
-
-        let window_control = PlatformWindowFactory::from_winit_window(window.clone())
-            .init(FoundationWindowConfig {
+        let host = PlatformWindowHost::create_gui_window(
+            event_loop,
+            FoundationWindowConfig {
                 title: "rldyourterm".to_owned(),
                 width: DEFAULT_GUI_WIDTH,
                 height: DEFAULT_GUI_HEIGHT,
                 min_width: 1,
                 min_height: 1,
                 high_dpi: true,
-            })
-            .context("failed to initialize foundation window control from winit window")?;
-
-        // GPU initialization is deferred so the event loop can process time-sensitive
-        // terminal queries before potentially blocking GPU init. Start with softbuffer
-        // for immediate CPU rendering; the deferred path will drop it before GPU init.
-        let context = SoftbufferContext::new(window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
-        let surface = SoftbufferSurface::new(&context, window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-        self.window.context = Some(context);
-        self.window.surface = Some(surface);
+            },
+            "rldyourterm",
+            load_app_icon(),
+        )
+        .context("failed to initialize platform window host for GUI runtime")?;
         debug!(
             gpu_deferred = self.control.render_backend.deferred_gpu_init_pending(),
             "bootstrap: softbuffer context created, GPU init deferred to event loop"
         );
 
-        self.window.window_size = cap_framebuffer_extent(window.inner_size());
-        self.window.window_id = Some(window.id());
-        self.window.window_control = Some(window_control);
-        self.window.window = Some(window);
+        self.window.window_size = cap_framebuffer_extent(host.window().inner_size());
+        self.window.host = Some(host);
 
         debug!("bootstrap: updating viewport geometry");
         self.update_viewport_geometry(event_loop);
@@ -103,44 +56,30 @@ impl GuiRuntimeApp {
     /// GPU backend before the window itself.
     pub(super) fn release_window_resources(&mut self) {
         debug!(
-            window_exists = self.window.window.is_some(),
+            window_exists = self.window.has_window(),
             gpu_initialized = self.gpu_renderer.is_initialized(),
-            has_surface = self.window.surface.is_some(),
+            has_surface = self.window.has_cpu_surface(),
             "releasing window resources"
         );
-        self.window.surface = None;
-        self.window.last_softbuffer_size = None;
-        self.window.context = None;
+        self.window.drop_cpu_surface();
         self.gpu_renderer = GpuRenderer::default();
-        self.window.window_control = None;
-        self.window.window_id = None;
-        self.window.window = None;
+        self.window.host = None;
         self.frame.redraw_in_flight = false;
         self.sync_deferred_gpu_init_state();
         debug!("window resources released");
     }
 
     pub(super) fn ensure_softbuffer_surface(&mut self) -> Result<()> {
-        if self.window.surface.is_some() {
-            return Ok(());
+        let had_surface = self.window.has_cpu_surface();
+        self.window.ensure_cpu_surface()?;
+        if !had_surface {
+            info!("lazily initialized softbuffer surface for CPU fallback");
         }
-        let window = self
-            .window
-            .window
-            .as_ref()
-            .ok_or_else(|| anyhow!("no window for softbuffer initialization"))?;
-        let context = SoftbufferContext::new(window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer context: {error}"))?;
-        let surface = SoftbufferSurface::new(&context, window.clone())
-            .map_err(|error| anyhow!("failed to create softbuffer surface: {error}"))?;
-        self.window.context = Some(context);
-        self.window.surface = Some(surface);
-        info!("lazily initialized softbuffer surface for CPU fallback");
         Ok(())
     }
 
     pub(super) fn apply_post_draw_visibility_handshake(&self) {
-        if let Some(window) = self.window.window.as_ref() {
+        if let Some(window) = self.window.window_ref() {
             window.set_visible(true);
             window.focus_window();
             let _ = self.request_window_redraw();
@@ -284,7 +223,7 @@ impl GuiRuntimeApp {
         monitor_event: MonitorAffectingWindowEvent,
     ) {
         let sampled_refresh_rate_millihz =
-            sample_monitor_refresh_rate_millihz(self.window.window_control.as_deref());
+            sample_monitor_refresh_rate_millihz(self.window.window_control());
         let command =
             cadence_resync_command_for_monitor_event(monitor_event, sampled_refresh_rate_millihz);
 
@@ -348,7 +287,7 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn request_window_redraw(&self) -> bool {
-        if let Some(window_control) = self.window.window_control.as_ref() {
+        if let Some(window_control) = self.window.window_control() {
             if let Err(error) = window_control.request_redraw() {
                 warn!(
                     error = %error,
@@ -363,7 +302,7 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn set_window_title(&self, title: &str) {
-        if let Some(window_control) = self.window.window_control.as_ref() {
+        if let Some(window_control) = self.window.window_control() {
             if let Err(error) = window_control.set_title(title) {
                 warn!(
                     error = %error,
@@ -376,7 +315,7 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn emit_close_intent(&self) {
-        if let Some(window_control) = self.window.window_control.as_ref()
+        if let Some(window_control) = self.window.window_control()
             && let Err(error) = window_control.close()
         {
             warn!(

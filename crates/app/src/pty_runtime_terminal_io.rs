@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use super::*;
-
 pub(super) fn handle_terminal_event_disconnect(
     pty: &dyn PtyIo,
     exit_code: &mut Option<i32>,
@@ -120,6 +119,6 @@ pub(super) fn write_runtime_palette_line(line: &str) {
 pub(super) fn dispatch_runtime_palette_command(
     settings: &mut SettingsService,
     input: &str,
-) -> crate::runtime_shared::palette::RuntimePaletteDispatchResult {
-    crate::runtime_shared::palette::dispatch_runtime_palette_command(settings, input, None)
+) -> rldyourterm_interaction::RuntimePaletteDispatchResult {
+    rldyourterm_interaction::dispatch_runtime_palette_command(settings, input, None)
 }

@@ -6,7 +6,7 @@ use super::*;
 impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         debug!(
-            window_exists = self.window.window.is_some(),
+            window_exists = self.window.has_window(),
             "ApplicationHandler::resumed fired"
         );
         if let Err(error) = self.bootstrap_window(event_loop) {
@@ -99,7 +99,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        if Some(window_id) != self.window.window_id {
+        if Some(window_id) != self.window.window_id() {
             return;
         }
 
@@ -131,7 +131,7 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 );
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                if let Some(window) = self.window.window.as_ref() {
+                if let Some(window) = self.window.window_ref() {
                     self.apply_window_extent_change(
                         event_loop,
                         window.inner_size(),

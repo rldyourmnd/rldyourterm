@@ -7,7 +7,7 @@ use super::{
     frame_budget_millis, is_stdout_disconnect_error, join_thread_with_timeout,
     should_flush_read_pump, tty_stdio_requirement_message,
 };
-use crate::runtime_shared::input::{
+use rldyourterm_interaction::{
     TerminalModeFlags, encode_crossterm_key_event,
     is_runtime_palette_shortcut_crossterm as is_runtime_palette_shortcut,
 };

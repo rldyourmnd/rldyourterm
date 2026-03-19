@@ -3,18 +3,21 @@
 
 use super::super::{
     DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling, MonitorAffectingWindowEvent,
-    cadence_resync_command_for_monitor_event, dispatch_gpu_failure_command,
-    dispatch_runtime_palette_command, emit_gpu_auto_fallback_observability,
-    is_runtime_palette_shortcut_key, resolve_cell_colors, sample_monitor_refresh_rate_millihz,
+    cadence_resync_command_for_monitor_event, deferred_gpu_failure_kind,
+    dispatch_gpu_failure_command, dispatch_runtime_palette_command,
+    emit_gpu_auto_fallback_observability, is_runtime_palette_shortcut_key, resolve_cell_colors,
+    restore_live_view_after_output, sample_monitor_refresh_rate_millihz,
 };
 use super::{StubWindowControl, StubWindowControlScenario, test_ui_runtime};
 use crate::runtime_shared::pty_boundary::{
     PtyBoundaryPolicyDecision, classify_pty_boundary_failure,
 };
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind};
+use rldyourterm_interaction::InteractionState;
+use rldyourterm_render_gpu::GpuRenderError;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
-use rldyourterm_services::terminal::{ANSI_PALETTE, Attrs, Color, color_to_u32};
+use rldyourterm_services::terminal::{ANSI_PALETTE, Attrs, Color, TerminalState, color_to_u32};
 use rldyourterm_settings::SettingsService;
 use rldyourterm_ui::UiRuntimeCommand;
 use winit::keyboard::{Key, ModifiersState};
@@ -119,6 +122,31 @@ fn forced_gpu_mode_reports_explicit_gpu_failure() {
             .expect("gpu failure decision");
     assert_eq!(decision, GpuFailureHandling::FatalForcedGpu);
     assert_eq!(ui_runtime.active_render_path(), ActiveRenderPath::Gpu);
+}
+
+#[test]
+fn deferred_gpu_init_uses_renderer_failure_kind_mapping() {
+    assert_eq!(
+        deferred_gpu_failure_kind(&GpuRenderError::BackendUnavailable),
+        GpuFailureKind::BackendUnavailable
+    );
+    assert_eq!(
+        deferred_gpu_failure_kind(&GpuRenderError::SubmitFailed),
+        GpuFailureKind::SubmitError
+    );
+}
+
+#[test]
+fn restore_live_view_after_output_marks_all_rows_dirty_when_leaving_scrollback() {
+    let mut interaction = InteractionState::default();
+    let mut terminal = TerminalState::new(4, 3, 5);
+    terminal.grid.clear_dirty_rows();
+    interaction.set_viewport_offset(2);
+
+    restore_live_view_after_output(&mut interaction, &mut terminal);
+
+    assert_eq!(interaction.viewport_offset(), 0);
+    assert!(terminal.grid.dirty_rows().iter().all(|dirty| *dirty));
 }
 
 #[test]

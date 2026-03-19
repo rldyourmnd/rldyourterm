@@ -5,12 +5,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use winit::event::KeyEvent as WinitKeyEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::runtime_shared::key_encoding::{
+use crate::key_encoding::{
     cursor_key, encode_ctrl_letter, fkey_ss3_modified, tilde_modified, xterm_modifier_param,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeKey {
+pub enum RuntimeKey {
     Character(char),
     Enter,
     Tab,
@@ -30,7 +30,7 @@ pub(crate) enum RuntimeKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RuntimeKeyModifiers {
+pub struct RuntimeKeyModifiers {
     pub shift: bool,
     pub alt: bool,
     pub control: bool,
@@ -62,12 +62,12 @@ impl RuntimeKeyModifiers {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RuntimeKeyEvent {
+pub struct RuntimeKeyEvent {
     pub key: RuntimeKey,
     pub modifiers: RuntimeKeyModifiers,
 }
 
-pub(crate) fn runtime_key_event_from_crossterm(key_event: KeyEvent) -> Option<RuntimeKeyEvent> {
+pub fn runtime_key_event_from_crossterm(key_event: KeyEvent) -> Option<RuntimeKeyEvent> {
     let mut modifiers = RuntimeKeyModifiers::from_crossterm(key_event.modifiers);
     let key = match key_event.code {
         KeyCode::Char(ch) => RuntimeKey::Character(ch),
@@ -89,14 +89,17 @@ pub(crate) fn runtime_key_event_from_crossterm(key_event: KeyEvent) -> Option<Ru
         KeyCode::Insert => RuntimeKey::Insert,
         KeyCode::PageUp => RuntimeKey::PageUp,
         KeyCode::PageDown => RuntimeKey::PageDown,
-        KeyCode::F(index @ 1..=24) => RuntimeKey::F(index),
+        // Legacy xterm/function-key mapping in this runtime is defined only for F1-F20.
+        // Reject higher crossterm function keys up front instead of accepting and
+        // silently dropping them during encoding.
+        KeyCode::F(index @ 1..=20) => RuntimeKey::F(index),
         _ => return None,
     };
 
     Some(RuntimeKeyEvent { key, modifiers })
 }
 
-pub(crate) fn runtime_key_event_from_winit(
+pub fn runtime_key_event_from_winit(
     key: &Key,
     modifiers: ModifiersState,
 ) -> Option<RuntimeKeyEvent> {
@@ -111,11 +114,11 @@ pub(crate) fn runtime_key_from_crossterm(key_event: KeyEvent) -> Option<RuntimeK
     runtime_key_event_from_crossterm(key_event).map(|event| event.key)
 }
 
-pub(crate) fn runtime_key_from_winit_borrowed(key: Key<&str>) -> Option<RuntimeKey> {
+pub fn runtime_key_from_winit_borrowed(key: Key<&str>) -> Option<RuntimeKey> {
     runtime_key_from_winit_ref(key)
 }
 
-pub(crate) fn is_runtime_palette_shortcut(key_event: RuntimeKeyEvent) -> bool {
+pub fn is_runtime_palette_shortcut(key_event: RuntimeKeyEvent) -> bool {
     key_event.modifiers.shift
         && (key_event.modifiers.control || key_event.modifiers.super_key)
         && matches!(
@@ -124,11 +127,11 @@ pub(crate) fn is_runtime_palette_shortcut(key_event: RuntimeKeyEvent) -> bool {
         )
 }
 
-pub(crate) fn is_runtime_palette_shortcut_crossterm(key_event: KeyEvent) -> bool {
+pub fn is_runtime_palette_shortcut_crossterm(key_event: KeyEvent) -> bool {
     runtime_key_event_from_crossterm(key_event).is_some_and(is_runtime_palette_shortcut)
 }
 
-pub(crate) fn is_runtime_palette_shortcut_winit(key: Key<&str>, modifiers: ModifiersState) -> bool {
+pub fn is_runtime_palette_shortcut_winit(key: Key<&str>, modifiers: ModifiersState) -> bool {
     runtime_key_from_winit_borrowed(key)
         .map(|key| RuntimeKeyEvent {
             key,
@@ -137,7 +140,7 @@ pub(crate) fn is_runtime_palette_shortcut_winit(key: Key<&str>, modifiers: Modif
         .is_some_and(is_runtime_palette_shortcut)
 }
 
-pub(crate) fn is_local_shutdown_key(key_event: RuntimeKeyEvent) -> bool {
+pub fn is_local_shutdown_key(key_event: RuntimeKeyEvent) -> bool {
     key_event.modifiers.control
         && matches!(
             key_event.key,
@@ -145,24 +148,21 @@ pub(crate) fn is_local_shutdown_key(key_event: RuntimeKeyEvent) -> bool {
         )
 }
 
-pub(crate) fn is_local_shutdown_key_crossterm(key_event: KeyEvent) -> bool {
+pub fn is_local_shutdown_key_crossterm(key_event: KeyEvent) -> bool {
     runtime_key_event_from_crossterm(key_event).is_some_and(is_local_shutdown_key)
 }
 
-pub(crate) fn is_local_shutdown_key_winit(
-    event: &WinitKeyEvent,
-    modifiers: ModifiersState,
-) -> bool {
+pub fn is_local_shutdown_key_winit(event: &WinitKeyEvent, modifiers: ModifiersState) -> bool {
     runtime_key_event_from_winit(&event.logical_key, modifiers).is_some_and(is_local_shutdown_key)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TerminalModeFlags {
+pub struct TerminalModeFlags {
     pub application_cursor_keys: bool,
     pub kitty_keyboard_flags: u16,
 }
 
-pub(crate) fn encode_runtime_key_event(
+pub fn encode_runtime_key_event(
     key_event: RuntimeKeyEvent,
     modes: TerminalModeFlags,
 ) -> Option<Vec<u8>> {
@@ -237,11 +237,6 @@ fn encode_legacy_key_event(
     }
 }
 
-/// Kitty keyboard protocol mode 1 (disambiguate) CSI u encoding.
-///
-/// Regular printable keys are sent as `CSI codepoint ; modifiers u`.
-/// Special keys (arrows, function keys, etc.) fall through to legacy encoding
-/// for maximum compatibility in mode 1.
 fn encode_kitty_key_event(key_event: RuntimeKeyEvent, modes: TerminalModeFlags) -> Option<Vec<u8>> {
     let modifiers = key_event.modifiers;
     let kitty_mod = kitty_modifier_param(modifiers);
@@ -253,7 +248,6 @@ fn encode_kitty_key_event(key_event: RuntimeKeyEvent, modes: TerminalModeFlags) 
         RuntimeKey::Backspace => Some(kitty_csi_u(127, kitty_mod, has_mod)),
         RuntimeKey::Escape => Some(kitty_csi_u(27, kitty_mod, has_mod)),
         RuntimeKey::Character(ch) => Some(kitty_csi_u(u32::from(ch), kitty_mod, has_mod)),
-        // Special keys fall through to legacy encoding for mode 1 compatibility
         RuntimeKey::Up
         | RuntimeKey::Down
         | RuntimeKey::Right
@@ -268,8 +262,6 @@ fn encode_kitty_key_event(key_event: RuntimeKeyEvent, modes: TerminalModeFlags) 
     }
 }
 
-/// Kitty keyboard protocol modifier encoding:
-/// `1 + shift + (alt << 1) + (ctrl << 2) + (super << 3)`
 fn kitty_modifier_param(modifiers: RuntimeKeyModifiers) -> u8 {
     1 + u8::from(modifiers.shift)
         + (u8::from(modifiers.alt) << 1)
@@ -277,8 +269,6 @@ fn kitty_modifier_param(modifiers: RuntimeKeyModifiers) -> u8 {
         + (u8::from(modifiers.super_key) << 3)
 }
 
-/// Emit `CSI codepoint ; modifiers u` (kitty keyboard format).
-/// When no modifiers are active, omits the modifier parameter.
 fn kitty_csi_u(codepoint: u32, mod_param: u8, has_mod: bool) -> Vec<u8> {
     if has_mod {
         format!("\x1b[{codepoint};{mod_param}u").into_bytes()
@@ -287,7 +277,7 @@ fn kitty_csi_u(codepoint: u32, mod_param: u8, has_mod: bool) -> Vec<u8> {
     }
 }
 
-pub(crate) fn encode_crossterm_key_event(
+pub fn encode_crossterm_key_event(
     key_event: KeyEvent,
     modes: TerminalModeFlags,
 ) -> Option<Vec<u8>> {
@@ -295,14 +285,12 @@ pub(crate) fn encode_crossterm_key_event(
     encode_runtime_key_event(key_event, modes)
 }
 
-pub(crate) fn encode_winit_key_event(
+pub fn encode_winit_key_event(
     event: &WinitKeyEvent,
     modifiers: ModifiersState,
     modes: TerminalModeFlags,
 ) -> Option<Vec<u8>> {
     let modifiers = RuntimeKeyModifiers::from_winit(modifiers);
-    // When kitty keyboard mode is active, skip the text bytes fast path
-    // so that all printable keys are routed through CSI u encoding.
     if modes.kitty_keyboard_flags == 0
         && let Some(bytes) = encode_winit_text_bytes(event.text.as_deref(), modifiers)
     {
@@ -311,17 +299,16 @@ pub(crate) fn encode_winit_key_event(
     runtime_key_from_winit(&event.logical_key)
         .map(|key| RuntimeKeyEvent { key, modifiers })
         .or_else(|| {
-            // Fallback: extract first char from text for kitty CSI u encoding
             event
                 .text
                 .as_deref()
-                .and_then(|t| t.chars().next())
+                .and_then(|text| text.chars().next())
                 .map(|ch| RuntimeKeyEvent {
                     key: RuntimeKey::Character(ch),
                     modifiers,
                 })
         })
-        .and_then(|ev| encode_runtime_key_event(ev, modes))
+        .and_then(|event| encode_runtime_key_event(event, modes))
 }
 
 fn encode_winit_text_bytes(text: Option<&str>, modifiers: RuntimeKeyModifiers) -> Option<Vec<u8>> {
@@ -392,16 +379,17 @@ fn runtime_key_from_winit_ref(key: Key<&str>) -> Option<RuntimeKey> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RuntimeKeyModifiers, TerminalModeFlags, encode_crossterm_key_event,
-        encode_winit_text_bytes, is_runtime_palette_shortcut_winit, runtime_key_from_crossterm,
+        RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, TerminalModeFlags,
+        encode_crossterm_key_event, encode_runtime_key_event, encode_winit_text_bytes,
+        is_runtime_palette_shortcut_winit, runtime_key_from_crossterm,
         runtime_key_from_winit_borrowed,
     };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
     fn encode_key(key_event: KeyEvent) -> Option<Vec<u8>> {
         encode_crossterm_key_event(key_event, TerminalModeFlags::default())
     }
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
     #[test]
     fn encode_winit_text_bytes_prefers_plain_text_without_modifiers() {
@@ -449,11 +437,11 @@ mod tests {
     fn borrowed_winit_key_maps_characters_and_escape() {
         assert_eq!(
             runtime_key_from_winit_borrowed(Key::Character(&SmolStr::new("p"))),
-            Some(super::RuntimeKey::Character('p'))
+            Some(RuntimeKey::Character('p'))
         );
         assert_eq!(
             runtime_key_from_winit_borrowed(Key::Named(NamedKey::Escape)),
-            Some(super::RuntimeKey::Escape)
+            Some(RuntimeKey::Escape)
         );
     }
 
@@ -461,7 +449,15 @@ mod tests {
     fn crossterm_key_maps_runtime_key() {
         assert_eq!(
             runtime_key_from_crossterm(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-            Some(super::RuntimeKey::Up)
+            Some(RuntimeKey::Up)
+        );
+    }
+
+    #[test]
+    fn crossterm_f21_is_rejected_when_no_encoding_exists() {
+        assert_eq!(
+            runtime_key_from_crossterm(KeyEvent::new(KeyCode::F(21), KeyModifiers::NONE)),
+            None
         );
     }
 
@@ -486,7 +482,6 @@ mod tests {
 
     #[test]
     fn application_cursor_keys_sends_ss3_for_arrows() {
-        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
         let modes = TerminalModeFlags {
             application_cursor_keys: true,
             ..Default::default()
@@ -536,7 +531,6 @@ mod tests {
 
     #[test]
     fn application_cursor_keys_uses_csi_when_modifier_present() {
-        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
         let modes = TerminalModeFlags {
             application_cursor_keys: true,
             ..Default::default()
@@ -557,99 +551,118 @@ mod tests {
         );
     }
 
-    // --- Kitty keyboard protocol encoding ---
-
-    fn kitty_modes(flags: u16) -> TerminalModeFlags {
-        TerminalModeFlags {
-            application_cursor_keys: false,
-            kitty_keyboard_flags: flags,
-        }
-    }
-
-    fn no_mods() -> super::RuntimeKeyModifiers {
-        super::RuntimeKeyModifiers {
-            shift: false,
-            alt: false,
-            control: false,
-            super_key: false,
-        }
-    }
-
     #[test]
     fn kitty_mode_encodes_regular_keys_as_csi_u() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Character('a'),
-            modifiers: no_mods(),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
         };
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[97u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_encodes_enter_as_csi_13_u() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Enter,
-            modifiers: no_mods(),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
         };
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[13u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_encodes_tab_as_csi_9_u() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Tab,
-            modifiers: no_mods(),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
         };
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[9u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_encodes_backspace_as_csi_127_u() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Backspace,
-            modifiers: no_mods(),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
         };
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[127u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_encodes_escape_as_csi_27_u() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Escape,
-            modifiers: no_mods(),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
         };
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[27u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_encodes_ctrl_a_with_modifier() {
-        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Character('a'),
             modifiers: RuntimeKeyModifiers {
                 shift: false,
@@ -658,18 +671,19 @@ mod tests {
                 super_key: false,
             },
         };
-        // ctrl modifier = 1 + (1 << 2) = 5
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[97;5u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_encodes_shift_tab_with_modifier() {
-        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Tab,
             modifiers: RuntimeKeyModifiers {
                 shift: true,
@@ -678,46 +692,56 @@ mod tests {
                 super_key: false,
             },
         };
-        // shift modifier = 1 + 1 = 2
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[9;2u".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_arrows_use_legacy_encoding() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
-            key: RuntimeKey::Up,
-            modifiers: no_mods(),
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
         };
-        // Arrows fall through to legacy in mode 1
+        let key_event = RuntimeKeyEvent {
+            key: RuntimeKey::Up,
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
+        };
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
+            encode_runtime_key_event(key_event, modes),
             Some(b"\x1b[A".to_vec())
         );
     }
 
     #[test]
     fn kitty_mode_disabled_uses_legacy() {
-        use super::{RuntimeKey, RuntimeKeyEvent, encode_runtime_key_event};
-        let modes = kitty_modes(0);
-        let ev = RuntimeKeyEvent {
-            key: RuntimeKey::Enter,
-            modifiers: no_mods(),
+        let modes = TerminalModeFlags::default();
+        let key_event = RuntimeKeyEvent {
+            key: RuntimeKey::Character('a'),
+            modifiers: RuntimeKeyModifiers {
+                shift: false,
+                alt: false,
+                control: false,
+                super_key: false,
+            },
         };
-        // With kitty_keyboard_flags = 0, should use legacy encoding
-        assert_eq!(encode_runtime_key_event(ev, modes), Some(vec![b'\r']));
+        assert_eq!(encode_runtime_key_event(key_event, modes), Some(vec![b'a']));
     }
 
     #[test]
     fn kitty_mode_super_modifier_encoded() {
-        use super::{RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, encode_runtime_key_event};
-        let modes = kitty_modes(1);
-        let ev = RuntimeKeyEvent {
-            key: RuntimeKey::Character('x'),
+        let modes = TerminalModeFlags {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 1,
+        };
+        let key_event = RuntimeKeyEvent {
+            key: RuntimeKey::Character('a'),
             modifiers: RuntimeKeyModifiers {
                 shift: false,
                 alt: false,
@@ -725,10 +749,9 @@ mod tests {
                 super_key: true,
             },
         };
-        // super modifier = 1 + (1 << 3) = 9
         assert_eq!(
-            encode_runtime_key_event(ev, modes),
-            Some(b"\x1b[120;9u".to_vec())
+            encode_runtime_key_event(key_event, modes),
+            Some(b"\x1b[97;9u".to_vec())
         );
     }
 }

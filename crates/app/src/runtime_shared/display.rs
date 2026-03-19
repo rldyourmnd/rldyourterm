@@ -12,10 +12,6 @@ pub(crate) fn render_mode_token(mode: RenderMode) -> &'static str {
     }
 }
 
-pub(crate) fn on_off_token(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
-}
-
 pub(crate) fn session_boundary_token(boundary: SessionBoundary) -> &'static str {
     match boundary {
         SessionBoundary::StartupSpawn => "startup-spawn",
@@ -44,12 +40,6 @@ mod tests {
         assert_eq!(render_mode_token(RenderMode::Cpu), "cpu");
         assert_eq!(render_mode_token(RenderMode::Gpu), "gpu");
         assert_eq!(render_mode_token(RenderMode::Auto), "auto");
-    }
-
-    #[test]
-    fn on_off_token_values() {
-        assert_eq!(on_off_token(true), "on");
-        assert_eq!(on_off_token(false), "off");
     }
 
     #[test]

@@ -1955,6 +1955,7 @@ dependencies = [
  "rldyourterm-font",
  "rldyourterm-foundation",
  "rldyourterm-foundation-platform",
+ "rldyourterm-interaction",
  "rldyourterm-render-cpu",
  "rldyourterm-render-gpu",
  "rldyourterm-services",
@@ -2012,6 +2013,7 @@ dependencies = [
  "arboard",
  "portable-pty",
  "rldyourterm-foundation",
+ "softbuffer",
  "tracing",
  "winit",
 ]
@@ -2021,6 +2023,17 @@ name = "rldyourterm-integration-tests"
 version = "0.1.0"
 dependencies = [
  "rldyourterm-core",
+]
+
+[[package]]
+name = "rldyourterm-interaction"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "rldyourterm-services",
+ "rldyourterm-settings",
+ "tracing",
+ "winit",
 ]
 
 [[package]]

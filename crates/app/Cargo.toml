@@ -21,6 +21,7 @@ rldyourterm-foundation-platform.workspace = true
 rldyourterm-services.workspace = true
 rldyourterm-render-cpu.workspace = true
 rldyourterm-render-gpu.workspace = true
+rldyourterm-interaction.workspace = true
 rldyourterm-settings.workspace = true
 rldyourterm-shell-integration.workspace = true
 rldyourterm-diagnostics.workspace = true

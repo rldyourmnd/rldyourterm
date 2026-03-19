@@ -5,29 +5,28 @@ use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
 use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
 use tracing::warn;
 
-use crate::runtime_shared::display::{on_off_token, render_mode_token};
-use crate::runtime_shared::input::RuntimeKey;
+use crate::RuntimeKey;
 
-pub(crate) const RUNTIME_PALETTE_HELP_LINE: &str =
+pub const RUNTIME_PALETTE_HELP_LINE: &str =
     "[palette] 1:mode cpu 2:mode gpu 3:mode auto d:diagnostics toggle i:info Esc:close";
-pub(crate) const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
+pub const RUNTIME_PALETTE_CLOSED_LINE: &str = "[palette] closed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimePaletteAction {
+pub enum RuntimePaletteAction {
     ApplyCommand(&'static str),
     ShowInfo,
     Close,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimePaletteDispatchResult {
+pub struct RuntimePaletteDispatchResult {
     pub command: Option<SettingsCommand>,
     pub message: String,
     pub updated_mode: Option<RenderMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimePaletteDecision {
+pub struct RuntimePaletteDecision {
     pub consumed: bool,
     pub next_open: bool,
     pub notice: Option<String>,
@@ -35,13 +34,13 @@ pub(crate) struct RuntimePaletteDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RuntimePaletteView {
+pub struct RuntimePaletteView {
     pub mode: RenderMode,
     pub diagnostics_enabled: bool,
     pub active_render_path: Option<ActiveRenderPath>,
 }
 
-pub(crate) fn toggle_runtime_palette(open: bool) -> RuntimePaletteDecision {
+pub fn toggle_runtime_palette(open: bool) -> RuntimePaletteDecision {
     let next_open = !open;
     RuntimePaletteDecision {
         consumed: true,
@@ -55,7 +54,7 @@ pub(crate) fn toggle_runtime_palette(open: bool) -> RuntimePaletteDecision {
     }
 }
 
-pub(crate) fn handle_runtime_palette_key_input(
+pub fn handle_runtime_palette_key_input(
     palette_open: bool,
     key: Option<RuntimeKey>,
     settings: &mut SettingsService,
@@ -114,7 +113,7 @@ pub(crate) fn handle_runtime_palette_key_input(
     }
 }
 
-pub(crate) fn runtime_palette_action_for_key(
+fn runtime_palette_action_for_key(
     key: RuntimeKey,
     diagnostics_enabled: bool,
 ) -> Option<RuntimePaletteAction> {
@@ -137,7 +136,7 @@ pub(crate) fn runtime_palette_action_for_key(
     }
 }
 
-pub(crate) fn dispatch_runtime_palette_command(
+pub fn dispatch_runtime_palette_command(
     settings: &mut SettingsService,
     input: &str,
     active_render_path: Option<ActiveRenderPath>,
@@ -172,7 +171,7 @@ pub(crate) fn dispatch_runtime_palette_command(
     }
 }
 
-pub(crate) fn runtime_palette_info_line(view: RuntimePaletteView) -> String {
+pub fn runtime_palette_info_line(view: RuntimePaletteView) -> String {
     match view.active_render_path {
         Some(active_render_path) => format!(
             "[palette] info mode={} active-path={} diagnostics={}",
@@ -188,7 +187,7 @@ pub(crate) fn runtime_palette_info_line(view: RuntimePaletteView) -> String {
     }
 }
 
-pub(crate) fn runtime_palette_dispatch_result(
+fn runtime_palette_dispatch_result(
     command_for_ui: Option<SettingsCommand>,
     command: SettingsCommand,
     mode: RenderMode,
@@ -205,7 +204,7 @@ pub(crate) fn runtime_palette_dispatch_result(
     }
 }
 
-pub(crate) fn runtime_palette_status_line(
+pub fn runtime_palette_status_line(
     command: SettingsCommand,
     mode: RenderMode,
     diagnostics_enabled: bool,
@@ -247,11 +246,23 @@ pub(crate) fn runtime_palette_status_line(
     }
 }
 
-pub(crate) fn active_render_path_token(active_render_path: ActiveRenderPath) -> &'static str {
+fn active_render_path_token(active_render_path: ActiveRenderPath) -> &'static str {
     match active_render_path {
         ActiveRenderPath::Cpu => "cpu",
         ActiveRenderPath::Gpu => "gpu",
     }
+}
+
+fn render_mode_token(mode: RenderMode) -> &'static str {
+    match mode {
+        RenderMode::Cpu => "cpu",
+        RenderMode::Gpu => "gpu",
+        RenderMode::Auto => "auto",
+    }
+}
+
+fn on_off_token(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
 }
 
 #[cfg(test)]
@@ -260,7 +271,7 @@ mod tests {
         RUNTIME_PALETTE_CLOSED_LINE, RUNTIME_PALETTE_HELP_LINE, RuntimePaletteView,
         handle_runtime_palette_key_input, toggle_runtime_palette,
     };
-    use crate::runtime_shared::input::RuntimeKey;
+    use crate::RuntimeKey;
     use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
     use rldyourterm_settings::SettingsService;
 

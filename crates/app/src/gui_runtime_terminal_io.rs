@@ -5,8 +5,8 @@ use super::*;
 
 impl GuiRuntimeApp {
     pub(super) fn toggle_palette(&mut self) {
-        let decision = toggle_runtime_palette(self.interaction.palette_open);
-        self.interaction.palette_open = decision.next_open;
+        let decision = toggle_runtime_palette(self.interaction.state.palette_open());
+        self.interaction.state.set_palette_open(decision.next_open);
         if let Some(notice) = decision.notice {
             self.emit_runtime_notice(&notice);
         }
@@ -15,7 +15,7 @@ impl GuiRuntimeApp {
     pub(super) fn handle_palette_action(&mut self, event: &WinitKeyEvent) -> Result<bool> {
         let diagnostics_enabled = self.control.settings.state().debug_mode;
         let decision = handle_runtime_palette_key_input(
-            self.interaction.palette_open,
+            self.interaction.state.palette_open(),
             runtime_key_from_winit_borrowed(event.logical_key.as_ref()),
             &mut self.control.settings,
             RuntimePaletteView {
@@ -27,7 +27,7 @@ impl GuiRuntimeApp {
         if !decision.consumed {
             return Ok(false);
         }
-        self.interaction.palette_open = decision.next_open;
+        self.interaction.state.set_palette_open(decision.next_open);
 
         if let Some(dispatch) = decision.dispatch {
             let result_line = if let Some(command) = dispatch.command {
@@ -102,16 +102,16 @@ impl GuiRuntimeApp {
                 Key::Named(NamedKey::PageUp) => {
                     let page_size = self.terminal.grid.height() as usize / 2;
                     let max_offset = self.terminal.scrollback.len();
-                    self.interaction.viewport_offset =
-                        (self.interaction.viewport_offset + page_size).min(max_offset);
+                    self.interaction
+                        .state
+                        .scroll_viewport_page_up(page_size, max_offset);
                     self.terminal.grid.mark_all_dirty();
                     self.queue_redraw();
                     return;
                 }
                 Key::Named(NamedKey::PageDown) => {
                     let page_size = self.terminal.grid.height() as usize / 2;
-                    self.interaction.viewport_offset =
-                        self.interaction.viewport_offset.saturating_sub(page_size);
+                    self.interaction.state.scroll_viewport_page_down(page_size);
                     self.terminal.grid.mark_all_dirty();
                     self.queue_redraw();
                     return;
@@ -128,7 +128,7 @@ impl GuiRuntimeApp {
         // Clear text selection on any key press that produces PTY input.
         self.clear_selection();
 
-        let modes = crate::runtime_shared::input::TerminalModeFlags {
+        let modes = TerminalModeFlags {
             application_cursor_keys: self.terminal.application_cursor_keys_enabled(),
             kitty_keyboard_flags: self.terminal.kitty_keyboard_flags(),
         };
@@ -450,7 +450,7 @@ pub(super) fn dispatch_runtime_palette_command(
     settings: &mut SettingsService,
     input: &str,
 ) -> Result<String> {
-    let mut result = crate::runtime_shared::palette::dispatch_runtime_palette_command(
+    let mut result = rldyourterm_interaction::dispatch_runtime_palette_command(
         settings,
         input,
         Some(ui_runtime.active_render_path()),

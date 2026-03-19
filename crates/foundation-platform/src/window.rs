@@ -11,9 +11,22 @@ use rldyourterm_foundation::error::{
     FoundationError, FoundationResult, Recoverability, WindowFailureCode, WindowOperation,
 };
 use rldyourterm_foundation::window::{MonitorTimingReading, WindowHealth};
+use softbuffer::{Context as SoftbufferContext, Surface as SoftbufferSurface};
 use winit::dpi::{LogicalSize, PhysicalSize, Size};
+use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
-use winit::window::Window;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use winit::platform::startup_notify::{
+    EventLoopExtStartupNotify, WindowAttributesExtStartupNotify,
+};
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use winit::platform::wayland::WindowAttributesExtWayland;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use winit::platform::x11::WindowAttributesExtX11;
+use winit::window::{Icon, Window, WindowAttributes, WindowId};
+
+pub type PlatformSoftbufferContext = SoftbufferContext<Arc<Window>>;
+pub type PlatformSoftbufferSurface = SoftbufferSurface<Arc<Window>, Arc<Window>>;
 
 #[derive(Debug, Default)]
 struct WindowRuntimeState {
@@ -30,6 +43,22 @@ struct PlatformWindowInner {
 
 pub struct PlatformWindowControl {
     inner: Mutex<PlatformWindowInner>,
+}
+
+pub struct PlatformWindowHost {
+    window: Arc<Window>,
+    control: Box<dyn WindowControl>,
+    surface: Option<PlatformSoftbufferSurface>,
+    context: Option<PlatformSoftbufferContext>,
+}
+
+impl fmt::Debug for PlatformWindowHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlatformWindowHost")
+            .field("window_id", &self.window.id())
+            .field("has_cpu_surface", &self.surface.is_some())
+            .finish()
+    }
 }
 
 impl fmt::Debug for PlatformWindowControl {
@@ -239,6 +268,101 @@ impl PlatformWindowControl {
     }
 }
 
+impl PlatformWindowHost {
+    pub fn create_gui_window(
+        event_loop: &ActiveEventLoop,
+        config: WindowConfig,
+        application_id: &str,
+        icon: Option<Icon>,
+    ) -> FoundationResult<Self> {
+        let attributes = build_gui_window_attributes(event_loop, &config, application_id, icon);
+        let window = Arc::new(event_loop.create_window(attributes).map_err(|error| {
+            FoundationError::window(
+                WindowOperation::CreateWindow,
+                WindowFailureCode::EventLoopUnavailable,
+                Recoverability::Fatal,
+                format!("failed to create GUI window: {error}"),
+                None,
+            )
+        })?);
+        window.set_ime_allowed(false);
+
+        let control = PlatformWindowFactory::from_winit_window(window.clone()).init(config)?;
+        let (context, surface) = Self::create_cpu_surface_lane(&window)?;
+
+        Ok(Self {
+            window,
+            control,
+            surface: Some(surface),
+            context: Some(context),
+        })
+    }
+
+    pub fn window(&self) -> &Arc<Window> {
+        &self.window
+    }
+
+    pub fn cloned_window(&self) -> Arc<Window> {
+        Arc::clone(&self.window)
+    }
+
+    pub fn window_id(&self) -> WindowId {
+        self.window.id()
+    }
+
+    pub fn control(&self) -> &dyn WindowControl {
+        self.control.as_ref()
+    }
+
+    pub fn has_cpu_surface(&self) -> bool {
+        self.surface.is_some()
+    }
+
+    pub fn ensure_cpu_surface(&mut self) -> FoundationResult<()> {
+        if self.surface.is_some() {
+            return Ok(());
+        }
+
+        let (context, surface) = Self::create_cpu_surface_lane(&self.window)?;
+        self.surface = Some(surface);
+        self.context = Some(context);
+        Ok(())
+    }
+
+    pub fn drop_cpu_surface_lane(&mut self) {
+        self.surface = None;
+        self.context = None;
+    }
+
+    pub fn surface_mut(&mut self) -> Option<&mut PlatformSoftbufferSurface> {
+        self.surface.as_mut()
+    }
+
+    fn create_cpu_surface_lane(
+        window: &Arc<Window>,
+    ) -> FoundationResult<(PlatformSoftbufferContext, PlatformSoftbufferSurface)> {
+        let context = SoftbufferContext::new(window.clone()).map_err(|error| {
+            FoundationError::window(
+                WindowOperation::InitializeSurface,
+                WindowFailureCode::Unsupported,
+                Recoverability::Degrade,
+                format!("failed to create softbuffer context: {error}"),
+                None,
+            )
+        })?;
+        let surface = SoftbufferSurface::new(&context, window.clone()).map_err(|error| {
+            FoundationError::window(
+                WindowOperation::InitializeSurface,
+                WindowFailureCode::Unsupported,
+                Recoverability::Degrade,
+                format!("failed to create softbuffer surface: {error}"),
+                None,
+            )
+        })?;
+        Ok((context, surface))
+    }
+}
+
 impl WindowControl for PlatformWindowControl {
     fn request_redraw(&self) -> FoundationResult<()> {
         let inner = self.lock_inner(WindowOperation::RequestRedraw)?;
@@ -308,6 +432,38 @@ impl WindowFactory for PlatformWindowFactory {
         control.apply_config(&config)?;
         Ok(Box::new(control))
     }
+}
+
+fn build_gui_window_attributes(
+    event_loop: &ActiveEventLoop,
+    config: &WindowConfig,
+    application_id: &str,
+    icon: Option<Icon>,
+) -> WindowAttributes {
+    #[allow(unused_mut)]
+    let mut attributes = Window::default_attributes()
+        .with_title(config.title.clone())
+        .with_visible(true)
+        .with_active(true);
+
+    if let Some(size) = window_size(config.width, config.height, config.high_dpi) {
+        attributes = attributes.with_inner_size(size);
+    }
+    if let Some(icon) = icon {
+        attributes = attributes.with_window_icon(Some(icon));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        attributes =
+            WindowAttributesExtWayland::with_name(attributes, application_id, application_id);
+        attributes = WindowAttributesExtX11::with_name(attributes, application_id, application_id);
+        if let Some(token) = event_loop.read_token_from_env() {
+            attributes = attributes.with_activation_token(token);
+        }
+    }
+
+    attributes
 }
 
 fn window_size(width: u32, height: u32, high_dpi: bool) -> Option<Size> {

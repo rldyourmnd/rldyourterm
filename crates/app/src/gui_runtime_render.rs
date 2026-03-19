@@ -16,6 +16,12 @@ struct GpuFailureRouteContext {
     emit_fatal_diagnostics: bool,
 }
 
+pub(super) fn deferred_gpu_failure_kind(
+    error: &rldyourterm_render_gpu::GpuRenderError,
+) -> GpuFailureKind {
+    error.failure_kind()
+}
+
 impl GuiRuntimeApp {
     pub(super) fn persist_gpu_pipeline_cache(&mut self) {
         if let Some(cache_dir) = &self.gpu_cache_dir {
@@ -34,15 +40,13 @@ impl GuiRuntimeApp {
             return;
         }
 
-        let Some(window) = self.window.window.clone() else {
+        let Some(window) = self.window.cloned_window() else {
             return;
         };
         let size = cap_framebuffer_extent(window.inner_size());
 
         debug!("deferred GPU init: dropping softbuffer for Wayland surface exclusivity");
-        self.window.surface = None;
-        self.window.last_softbuffer_size = None;
-        self.window.context = None;
+        self.window.drop_cpu_surface();
 
         let attempt = self.control.render_backend.begin_deferred_attempt();
         debug!("deferred GPU init: attempting GPU initialization");
@@ -89,7 +93,7 @@ impl GuiRuntimeApp {
                     .elapsed()
                     .as_millis()
                     .min(u128::from(u64::MAX)) as u64;
-                let failure_kind = GpuFailureKind::DeviceLost;
+                let failure_kind = deferred_gpu_failure_kind(&error);
                 let fatal_message = format!(
                     "forced GPU mode initialization failed after {} attempts: {:?}",
                     attempt, error
@@ -271,7 +275,7 @@ impl GuiRuntimeApp {
                 dirty_rows,
                 scroll_count,
                 self.frame.blink_visible,
-                self.interaction.viewport_offset,
+                self.interaction.state.viewport_offset(),
                 sel_start,
                 sel_end,
             ) {
@@ -367,23 +371,22 @@ impl GuiRuntimeApp {
         self.ensure_softbuffer_surface()
             .context("failed to initialize softbuffer for CPU render")?;
 
-        let surface = self
-            .window
-            .surface
-            .as_mut()
-            .ok_or_else(|| anyhow!("softbuffer surface is not initialized"))?;
-
         let nz_width = NonZeroU32::new(width).ok_or_else(|| anyhow!("zero width is invalid"))?;
         let nz_height = NonZeroU32::new(height).ok_or_else(|| anyhow!("zero height is invalid"))?;
         let target_size = PhysicalSize::new(width, height);
         if self.window.last_softbuffer_size != Some(target_size) {
-            surface
+            self.window
+                .surface_mut()
+                .ok_or_else(|| anyhow!("softbuffer surface is not initialized"))?
                 .resize(nz_width, nz_height)
                 .map_err(|error| anyhow!("failed to resize softbuffer surface: {error}"))?;
             self.window.last_softbuffer_size = Some(target_size);
         }
 
-        let mut buffer = surface
+        let mut buffer = self
+            .window
+            .surface_mut()
+            .ok_or_else(|| anyhow!("softbuffer surface is not initialized"))?
             .buffer_mut()
             .map_err(|error| anyhow!("failed to acquire softbuffer frame: {error}"))?;
         let framebuffer_age = buffer.age();
@@ -400,7 +403,7 @@ impl GuiRuntimeApp {
             &mut self.frame.repaint_rows_scratch,
             &mut self.frame.persisted_cpu_damage_rows_scratch,
             self.frame.blink_visible,
-            self.interaction.viewport_offset,
+            self.interaction.state.viewport_offset(),
             sel_start,
             sel_end,
         );

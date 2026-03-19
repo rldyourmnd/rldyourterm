@@ -1,14 +1,13 @@
 [package]
-name = "rldyourterm-foundation-platform"
+name = "rldyourterm-interaction"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-portable-pty.workspace = true
+crossterm.workspace = true
 winit.workspace = true
-softbuffer.workspace = true
-arboard.workspace = true
 tracing.workspace = true
-rldyourterm-foundation.workspace = true
+rldyourterm-services.workspace = true
+rldyourterm-settings.workspace = true
