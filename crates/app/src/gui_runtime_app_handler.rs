@@ -147,6 +147,8 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                 ..
             } if !is_synthetic => self.handle_keyboard_input(&event, event_loop),
             WindowEvent::Ime(Ime::Commit(text)) => self.handle_text_commit(&text, event_loop),
+            WindowEvent::Ime(Ime::Preedit(text, _)) => self.handle_text_preedit(&text),
+            WindowEvent::Ime(Ime::Disabled) => self.handle_ime_disabled(),
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.interaction.modifiers = modifiers.state();
             }

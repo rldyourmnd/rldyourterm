@@ -12,6 +12,10 @@ pub(super) fn restore_live_view_after_output(
     }
 }
 
+pub(super) fn should_restore_live_view_after_output(interaction: &InteractionState) -> bool {
+    !interaction.search_active()
+}
+
 impl GuiRuntimeApp {
     fn dispatch_terminal_responses(
         &mut self,
@@ -132,7 +136,9 @@ impl GuiRuntimeApp {
 
     fn apply_output_bytes(&mut self, data: &[u8], event_loop: &ActiveEventLoop) -> bool {
         trace!(bytes = data.len(), "pty output received");
-        restore_live_view_after_output(&mut self.interaction.state, &mut self.terminal);
+        if should_restore_live_view_after_output(&self.interaction.state) {
+            restore_live_view_after_output(&mut self.interaction.state, &mut self.terminal);
+        }
         let mut response_buffer = std::mem::take(&mut self.response_buffer_scratch);
         for chunk in terminal_feed_chunks(data) {
             response_buffer.feed_terminal(&mut self.terminal, chunk);
@@ -142,6 +148,7 @@ impl GuiRuntimeApp {
             }
         }
         self.response_buffer_scratch = response_buffer;
+        self.refresh_search_results(false);
         self.dispatch_pending_clipboard();
         self.dispatch_pending_bell();
         true
@@ -306,12 +313,7 @@ impl GuiRuntimeApp {
             let _ = self.event_proxy.send_event(GuiEvent::OutputReady);
         }
 
-        let title = self.terminal.window_title();
-        if !title.is_empty() && title != self.window.last_window_title {
-            self.set_window_title(title);
-            self.window.last_window_title.clear();
-            self.window.last_window_title.push_str(title);
-        }
+        self.sync_window_title();
 
         if let Err(error) = self.mark_pty_boundary_recovered(SessionBoundary::PtyRead) {
             self.fatal_error = Some(error);

@@ -64,6 +64,124 @@ impl GuiRuntimeApp {
         Ok(true)
     }
 
+    fn set_search_ime_allowed(&self, allowed: bool) {
+        if let Some(window) = self.window.window_ref() {
+            window.set_ime_allowed(allowed);
+        }
+    }
+
+    fn enter_search_mode(&mut self) {
+        self.clear_selection();
+        self.interaction.state.set_palette_open(false);
+        let state_changed = self.interaction.state.enter_search_mode();
+        self.set_search_ime_allowed(true);
+        self.sync_window_title();
+        if state_changed {
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+        }
+    }
+
+    fn exit_search_mode(&mut self) {
+        let state_changed = self.interaction.state.exit_search_mode();
+        self.set_search_ime_allowed(false);
+        self.sync_window_title();
+        if state_changed {
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+        }
+    }
+
+    pub(super) fn refresh_search_results(&mut self, reset_active_match: bool) {
+        if !self.interaction.state.search_active() {
+            return;
+        }
+
+        let query = self.interaction.state.search_query().to_owned();
+        let (matches, error) = if query.is_empty() {
+            (Vec::new(), None)
+        } else {
+            match self.terminal.search(&query) {
+                Ok(matches) => (matches, None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            }
+        };
+
+        let mut state_changed =
+            self.interaction
+                .state
+                .set_search_results(matches, error, reset_active_match);
+        state_changed |= self
+            .interaction
+            .state
+            .align_viewport_to_active_search_match(self.terminal.scrollback.len());
+        self.sync_window_title();
+        if state_changed {
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+        }
+    }
+
+    fn move_search_match(&mut self, reverse: bool) {
+        let mut state_changed = if reverse {
+            self.interaction.state.retreat_search_match()
+        } else {
+            self.interaction.state.advance_search_match()
+        };
+        state_changed |= self
+            .interaction
+            .state
+            .align_viewport_to_active_search_match(self.terminal.scrollback.len());
+        self.sync_window_title();
+        if state_changed {
+            self.terminal.grid.mark_all_dirty();
+            self.queue_redraw();
+        }
+    }
+
+    fn handle_search_keyboard_input(&mut self, event: &WinitKeyEvent) {
+        if event.state != ElementState::Pressed {
+            return;
+        }
+
+        if is_paste_shortcut(&event.logical_key, self.interaction.modifiers) {
+            let Some(text) = read_clipboard_text_for_paste(self.clipboard.as_ref()) else {
+                return;
+            };
+            let text = cap_paste_text(&text);
+            if self.interaction.state.append_search_text(text) {
+                self.refresh_search_results(true);
+            }
+            return;
+        }
+
+        match event.logical_key.as_ref() {
+            Key::Named(NamedKey::Escape) => self.exit_search_mode(),
+            Key::Named(NamedKey::Enter) => {
+                self.move_search_match(self.interaction.modifiers.shift_key())
+            }
+            Key::Named(NamedKey::Backspace) => {
+                let title_changed = self.interaction.state.set_search_preedit(None);
+                if self.interaction.state.pop_search_text() {
+                    self.refresh_search_results(true);
+                } else if title_changed {
+                    self.sync_window_title();
+                }
+            }
+            Key::Character(text)
+                if !self.interaction.modifiers.control_key()
+                    && !self.interaction.modifiers.super_key()
+                    && !text.is_empty() =>
+            {
+                self.interaction.state.set_search_preedit(None);
+                if self.interaction.state.append_search_text(text) {
+                    self.refresh_search_results(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn handle_keyboard_input(
         &mut self,
         event: &WinitKeyEvent,
@@ -75,6 +193,19 @@ impl GuiRuntimeApp {
             self.emit_close_intent();
             self.exit_code.get_or_insert(0);
             event_loop.exit();
+            return;
+        }
+
+        if press_like && is_search_shortcut(event.logical_key.as_ref(), self.interaction.modifiers)
+        {
+            if !self.interaction.state.search_active() {
+                self.enter_search_mode();
+            }
+            return;
+        }
+
+        if self.interaction.state.search_active() {
+            self.handle_search_keyboard_input(event);
             return;
         }
 
@@ -149,6 +280,16 @@ impl GuiRuntimeApp {
     }
 
     pub(super) fn handle_text_commit(&mut self, text: &str, event_loop: &ActiveEventLoop) {
+        if self.interaction.state.search_active() {
+            self.interaction.state.set_search_preedit(None);
+            if self.interaction.state.append_search_text(text) {
+                self.refresh_search_results(true);
+            } else {
+                self.sync_window_title();
+            }
+            return;
+        }
+
         warn!(
             len = text.len(),
             "IME commit received unexpectedly (IME should be disabled)"
@@ -162,6 +303,24 @@ impl GuiRuntimeApp {
             event_loop,
             "failed to write IME text to PTY",
         );
+    }
+
+    pub(super) fn handle_text_preedit(&mut self, text: &str) {
+        if !self.interaction.state.search_active() {
+            return;
+        }
+        if self.interaction.state.set_search_preedit(Some(text)) {
+            self.sync_window_title();
+        }
+    }
+
+    pub(super) fn handle_ime_disabled(&mut self) {
+        if !self.interaction.state.search_active() {
+            return;
+        }
+        if self.interaction.state.set_search_preedit(None) {
+            self.sync_window_title();
+        }
     }
 
     pub(super) fn handle_pty_io_error(
@@ -503,6 +662,15 @@ fn is_paste_shortcut(key: &Key, modifiers: ModifiersState) -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         modifiers.control_key() && modifiers.shift_key()
+    }
+}
+
+fn is_search_shortcut(key: Key<&str>, modifiers: ModifiersState) -> bool {
+    match key {
+        Key::Character(text) => {
+            modifiers.control_key() && modifiers.shift_key() && text.eq_ignore_ascii_case("f")
+        }
+        _ => false,
     }
 }
 

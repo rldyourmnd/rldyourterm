@@ -27,4 +27,4 @@ pub use rldyourterm_core::{
     RuntimeKey, RuntimeKeyEvent, RuntimeKeyEventKind, RuntimeKeyModifiers, TerminalModeFlags,
     encode_runtime_key_event,
 };
-pub use state::{GridPoint, InteractionState, PointerState, SelectionRange};
+pub use state::{GridPoint, InteractionState, PointerState, SearchState, SelectionRange};

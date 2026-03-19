@@ -5,8 +5,9 @@ use super::super::{
     DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling, MonitorAffectingWindowEvent,
     cadence_resync_command_for_monitor_event, deferred_gpu_failure_kind,
     dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-    emit_gpu_auto_fallback_observability, is_runtime_palette_shortcut_key, resolve_cell_colors,
-    restore_live_view_after_output, sample_monitor_refresh_rate_millihz,
+    emit_gpu_auto_fallback_observability, format_search_window_title,
+    is_runtime_palette_shortcut_key, resolve_cell_colors, restore_live_view_after_output,
+    sample_monitor_refresh_rate_millihz, should_restore_live_view_after_output,
 };
 use super::{StubWindowControl, StubWindowControlScenario, test_ui_runtime};
 use crate::runtime_shared::pty_boundary::{
@@ -17,7 +18,9 @@ use rldyourterm_interaction::InteractionState;
 use rldyourterm_render_gpu::GpuRenderError;
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, SessionController};
-use rldyourterm_services::terminal::{ANSI_PALETTE, Attrs, Color, TerminalState, color_to_u32};
+use rldyourterm_services::terminal::{
+    ANSI_PALETTE, Attrs, Color, SearchMatch, TerminalState, color_to_u32,
+};
 use rldyourterm_settings::SettingsService;
 use rldyourterm_ui::UiRuntimeCommand;
 use winit::keyboard::{Key, ModifiersState};
@@ -147,6 +150,50 @@ fn restore_live_view_after_output_marks_all_rows_dirty_when_leaving_scrollback()
 
     assert_eq!(interaction.viewport_offset(), 0);
     assert!(terminal.grid.dirty_rows().iter().all(|dirty| *dirty));
+}
+
+#[test]
+fn search_mode_prevents_live_view_restore_on_output() {
+    let mut interaction = InteractionState::default();
+    interaction.set_viewport_offset(2);
+    interaction.enter_search_mode();
+
+    assert!(!should_restore_live_view_after_output(&interaction));
+}
+
+#[test]
+fn search_window_title_reports_active_match_and_invalid_regex() {
+    let mut interaction = InteractionState::default();
+    interaction.enter_search_mode();
+    interaction.append_search_text("foo");
+    interaction.set_search_results(
+        vec![
+            SearchMatch {
+                line_index: 4,
+                start_col: 1,
+                end_col: 4,
+                text: "foo".to_owned(),
+            },
+            SearchMatch {
+                line_index: 7,
+                start_col: 2,
+                end_col: 5,
+                text: "foo".to_owned(),
+            },
+        ],
+        None,
+        true,
+    );
+    assert_eq!(
+        format_search_window_title("shell", interaction.search()),
+        "Search: foo - 1/2 | shell"
+    );
+
+    interaction.set_search_results(Vec::new(), Some("regex parse error".to_owned()), true);
+    assert_eq!(
+        format_search_window_title("shell", interaction.search()),
+        "Search: foo - invalid regex | shell"
+    );
 }
 
 #[test]

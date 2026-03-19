@@ -269,7 +269,7 @@ impl GuiRuntimeApp {
         if self.is_gpu_lane_ready() {
             let dirty_rows = self.terminal.grid.dirty_rows();
             let scroll_count = self.terminal.grid.scroll_count();
-            let (sel_start, sel_end) = self.selection_flat_range();
+            let (sel_start, sel_end) = self.current_highlight_flat_range();
             match self.gpu_renderer.render_frame(
                 &self.terminal,
                 dirty_rows,
@@ -364,7 +364,7 @@ impl GuiRuntimeApp {
             return Ok(());
         }
 
-        let (sel_start, sel_end) = self.selection_flat_range();
+        let (sel_start, sel_end) = self.current_highlight_flat_range();
 
         // Lazily create softbuffer surface on first CPU render (e.g. after GPU fallback).
         // Cannot create at bootstrap when GPU surface already owns the Wayland buffer queue.

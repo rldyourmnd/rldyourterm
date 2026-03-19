@@ -20,14 +20,14 @@ impl GuiRuntimeApp {
         let host = PlatformWindowHost::create_gui_window(
             event_loop,
             FoundationWindowConfig {
-                title: "rldyourterm".to_owned(),
+                title: DEFAULT_WINDOW_TITLE.to_owned(),
                 width: DEFAULT_GUI_WIDTH,
                 height: DEFAULT_GUI_HEIGHT,
                 min_width: 1,
                 min_height: 1,
                 high_dpi: true,
             },
-            "rldyourterm",
+            DEFAULT_WINDOW_TITLE,
             load_app_icon(),
         )
         .context("failed to initialize platform window host for GUI runtime")?;
@@ -38,6 +38,8 @@ impl GuiRuntimeApp {
 
         self.window.window_size = cap_framebuffer_extent(host.window().inner_size());
         self.window.host = Some(host);
+        self.window.last_window_title.clear();
+        self.window.last_window_title.push_str(DEFAULT_WINDOW_TITLE);
 
         debug!("bootstrap: updating viewport geometry");
         self.update_viewport_geometry(event_loop);
@@ -316,6 +318,30 @@ impl GuiRuntimeApp {
         warn!("window control unavailable while setting title");
     }
 
+    pub(super) fn sync_window_title(&mut self) {
+        let title = self.resolved_window_title();
+        if title == self.window.last_window_title {
+            return;
+        }
+        self.set_window_title(&title);
+        self.window.last_window_title.clear();
+        self.window.last_window_title.push_str(&title);
+    }
+
+    fn resolved_window_title(&self) -> String {
+        let terminal_title = self.terminal.window_title();
+        let base_title = if terminal_title.is_empty() {
+            DEFAULT_WINDOW_TITLE
+        } else {
+            terminal_title
+        };
+        if self.interaction.state.search_active() {
+            format_search_window_title(base_title, self.interaction.state.search())
+        } else {
+            base_title.to_owned()
+        }
+    }
+
     pub(super) fn emit_close_intent(&self) {
         if let Some(window_control) = self.window.window_control()
             && let Err(error) = window_control.close()
@@ -371,6 +397,41 @@ fn monitor_affecting_event_token(event: MonitorAffectingWindowEvent) -> &'static
         MonitorAffectingWindowEvent::Resized => "resized",
         MonitorAffectingWindowEvent::ScaleFactorChanged => "scale-factor-changed",
     }
+}
+
+pub(super) fn format_search_window_title(
+    base_title: &str,
+    search: &rldyourterm_interaction::SearchState,
+) -> String {
+    let mut title = String::from("Search");
+    if !search.query().is_empty() {
+        title.push_str(": ");
+        title.push_str(search.query());
+    }
+    if let Some(preedit) = search.preedit() {
+        if search.query().is_empty() {
+            title.push_str(": ");
+        } else {
+            title.push(' ');
+        }
+        title.push('[');
+        title.push_str(preedit);
+        title.push(']');
+    }
+    if let Some(_error) = search.error() {
+        title.push_str(" - invalid regex");
+    } else if !search.query().is_empty() {
+        let match_count = search.matches().len();
+        if match_count == 0 {
+            title.push_str(" - 0 matches");
+        } else {
+            let active_index = search.active_match_index().unwrap_or(0) + 1;
+            title.push_str(&format!(" - {active_index}/{match_count}"));
+        }
+    }
+    title.push_str(" | ");
+    title.push_str(base_title);
+    title
 }
 
 pub(super) fn cap_terminal_geometry(raw_cols: usize, raw_rows: usize) -> (u16, u16) {

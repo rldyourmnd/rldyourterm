@@ -26,7 +26,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
-use self::lifecycle::restore_live_view_after_output;
+use self::lifecycle::{restore_live_view_after_output, should_restore_live_view_after_output};
 use self::output::{
     OutputChunk, OutputQueueBackpressure, output_drain_budget, output_drain_budget_exhausted,
     recycle_output_chunk_buffer, should_flush_output_batch, spawn_reader_pump, spawn_wait_pump,
@@ -45,7 +45,7 @@ use self::terminal_io::{
 use self::windowing::{ViewportGeometry, cap_framebuffer_extent};
 #[cfg(test)]
 use self::windowing::{
-    cadence_resync_command_for_monitor_event, cap_terminal_geometry,
+    cadence_resync_command_for_monitor_event, cap_terminal_geometry, format_search_window_title,
     sample_monitor_refresh_rate_millihz, viewport_geometry_changed,
 };
 use crate::gui_runtime_backend::{
@@ -105,6 +105,7 @@ use winit::window::{Icon, Window, WindowId};
 /// Embedded application icon (decoded at runtime from PNG).
 static LOGO_PNG: &[u8] = include_bytes!("../../../LOGO.png");
 
+const DEFAULT_WINDOW_TITLE: &str = "rldyourterm";
 const DEFAULT_GUI_WIDTH: u32 = 1280;
 const DEFAULT_GUI_HEIGHT: u32 = 800;
 use rldyourterm_ui::DEFAULT_SCROLLBACK_CAP;
@@ -558,10 +559,18 @@ impl GuiRuntimeApp {
         self.frame.redraw_pending = true;
     }
 
-    fn selection_flat_range(&self) -> (u32, u32) {
+    fn current_highlight_flat_range(&self) -> (u32, u32) {
+        let cols = self.terminal.grid.width() as usize;
         self.interaction
             .state
-            .selection_flat_range(self.terminal.grid.width().into())
+            .selection_flat_range(cols)
+            .or_else(|| {
+                self.interaction.state.search_flat_range(
+                    cols,
+                    self.terminal.scrollback.len(),
+                    self.terminal.grid.height() as usize,
+                )
+            })
             .unwrap_or((SELECTION_NONE, SELECTION_NONE))
     }
 

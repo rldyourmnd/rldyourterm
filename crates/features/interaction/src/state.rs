@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
+use rldyourterm_core::SearchMatch;
 use winit::dpi::PhysicalPosition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -151,16 +152,166 @@ impl PointerState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SearchState {
+    active: bool,
+    query: String,
+    preedit: Option<String>,
+    matches: Vec<SearchMatch>,
+    active_match: Option<usize>,
+    error: Option<String>,
+}
+
+impl SearchState {
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn preedit(&self) -> Option<&str> {
+        self.preedit.as_deref()
+    }
+
+    pub fn matches(&self) -> &[SearchMatch] {
+        &self.matches
+    }
+
+    pub fn active_match_index(&self) -> Option<usize> {
+        self.active_match
+    }
+
+    pub fn active_match(&self) -> Option<&SearchMatch> {
+        self.active_match.and_then(|index| self.matches.get(index))
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn enter(&mut self) -> bool {
+        let changed = !self.active
+            || !self.query.is_empty()
+            || self.preedit.is_some()
+            || !self.matches.is_empty()
+            || self.active_match.is_some()
+            || self.error.is_some();
+        self.active = true;
+        self.clear_runtime_state();
+        changed
+    }
+
+    pub fn exit(&mut self) -> bool {
+        let changed = self.active
+            || !self.query.is_empty()
+            || self.preedit.is_some()
+            || !self.matches.is_empty()
+            || self.active_match.is_some()
+            || self.error.is_some();
+        self.active = false;
+        self.clear_runtime_state();
+        changed
+    }
+
+    pub fn push_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        self.preedit = None;
+        self.query.push_str(text);
+        true
+    }
+
+    pub fn pop_char(&mut self) -> bool {
+        let Some((index, _)) = self.query.char_indices().next_back() else {
+            return false;
+        };
+        self.query.truncate(index);
+        true
+    }
+
+    pub fn set_preedit(&mut self, text: Option<&str>) -> bool {
+        let next = text.filter(|text| !text.is_empty()).map(str::to_owned);
+        if self.preedit == next {
+            return false;
+        }
+        self.preedit = next;
+        true
+    }
+
+    pub fn set_matches(
+        &mut self,
+        matches: Vec<SearchMatch>,
+        error: Option<String>,
+        reset_active: bool,
+    ) -> bool {
+        let next_active = if error.is_some() || matches.is_empty() {
+            None
+        } else if reset_active {
+            Some(0)
+        } else {
+            Some(self.active_match.unwrap_or(0).min(matches.len() - 1))
+        };
+        if self.matches == matches && self.error == error && self.active_match == next_active {
+            return false;
+        }
+        self.matches = matches;
+        self.error = error;
+        self.active_match = next_active;
+        true
+    }
+
+    pub fn advance_match(&mut self) -> bool {
+        if self.matches.len() <= 1 {
+            return false;
+        }
+        let next = (self.active_match.unwrap_or(0) + 1) % self.matches.len();
+        if self.active_match == Some(next) {
+            return false;
+        }
+        self.active_match = Some(next);
+        true
+    }
+
+    pub fn retreat_match(&mut self) -> bool {
+        if self.matches.len() <= 1 {
+            return false;
+        }
+        let current = self.active_match.unwrap_or(0);
+        let next = if current == 0 {
+            self.matches.len() - 1
+        } else {
+            current - 1
+        };
+        if self.active_match == Some(next) {
+            return false;
+        }
+        self.active_match = Some(next);
+        true
+    }
+
+    fn clear_runtime_state(&mut self) {
+        self.query.clear();
+        self.preedit = None;
+        self.matches.clear();
+        self.active_match = None;
+        self.error = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InteractionState {
     palette_open: bool,
     viewport_offset: usize,
     pointer: PointerState,
     selection: SelectionRange,
+    search: SearchState,
 }
 
 impl InteractionState {
-    pub const fn palette_open(self) -> bool {
+    pub const fn palette_open(&self) -> bool {
         self.palette_open
     }
 
@@ -172,7 +323,7 @@ impl InteractionState {
         true
     }
 
-    pub const fn viewport_offset(self) -> usize {
+    pub const fn viewport_offset(&self) -> usize {
         self.viewport_offset
     }
 
@@ -188,12 +339,103 @@ impl InteractionState {
         self.set_viewport_offset(0)
     }
 
-    pub const fn pointer(self) -> PointerState {
+    pub const fn pointer(&self) -> PointerState {
         self.pointer
     }
 
-    pub const fn selection(self) -> SelectionRange {
+    pub const fn selection(&self) -> SelectionRange {
         self.selection
+    }
+
+    pub fn search(&self) -> &SearchState {
+        &self.search
+    }
+
+    pub fn search_active(&self) -> bool {
+        self.search.is_active()
+    }
+
+    pub fn enter_search_mode(&mut self) -> bool {
+        self.search.enter()
+    }
+
+    pub fn exit_search_mode(&mut self) -> bool {
+        self.search.exit()
+    }
+
+    pub fn search_query(&self) -> &str {
+        self.search.query()
+    }
+
+    pub fn set_search_preedit(&mut self, text: Option<&str>) -> bool {
+        self.search.set_preedit(text)
+    }
+
+    pub fn append_search_text(&mut self, text: &str) -> bool {
+        self.search.push_text(text)
+    }
+
+    pub fn pop_search_text(&mut self) -> bool {
+        self.search.pop_char()
+    }
+
+    pub fn set_search_results(
+        &mut self,
+        matches: Vec<SearchMatch>,
+        error: Option<String>,
+        reset_active: bool,
+    ) -> bool {
+        self.search.set_matches(matches, error, reset_active)
+    }
+
+    pub fn advance_search_match(&mut self) -> bool {
+        self.search.advance_match()
+    }
+
+    pub fn retreat_search_match(&mut self) -> bool {
+        self.search.retreat_match()
+    }
+
+    pub fn align_viewport_to_active_search_match(&mut self, scrollback_len: usize) -> bool {
+        let Some(search_match) = self.search.active_match() else {
+            return false;
+        };
+        let next = if search_match.line_index < scrollback_len {
+            scrollback_len.saturating_sub(search_match.line_index)
+        } else {
+            0
+        };
+        self.set_viewport_offset(next)
+    }
+
+    pub fn search_flat_range(
+        &self,
+        cols: usize,
+        scrollback_len: usize,
+        grid_rows: usize,
+    ) -> Option<(u32, u32)> {
+        let search_match = self.search.active_match()?;
+        if cols == 0
+            || search_match.start_col >= search_match.end_col
+            || search_match.start_col >= cols
+        {
+            return None;
+        }
+
+        let top_line_index = scrollback_len.saturating_sub(self.viewport_offset);
+        let display_row = search_match.line_index.checked_sub(top_line_index)?;
+        if display_row >= grid_rows {
+            return None;
+        }
+
+        let row_offset = display_row.checked_mul(cols)?;
+        let end_col = search_match
+            .end_col
+            .saturating_sub(1)
+            .min(cols.saturating_sub(1));
+        let start = u32::try_from(row_offset.checked_add(search_match.start_col)?).ok()?;
+        let end = u32::try_from(row_offset.checked_add(end_col)?).ok()?;
+        Some((start, end))
     }
 
     pub fn update_pointer_cell(
@@ -256,7 +498,8 @@ impl InteractionState {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridPoint, InteractionState, PointerState, SelectionRange};
+    use super::{GridPoint, InteractionState, PointerState, SearchState, SelectionRange};
+    use rldyourterm_core::SearchMatch;
     use winit::dpi::PhysicalPosition;
 
     #[test]
@@ -308,5 +551,64 @@ mod tests {
         assert!(state.update_pointer_cell(PhysicalPosition::new(40.0, 32.0), 8, 16, 80, 24));
         assert!(state.update_selection_to_pointer());
         assert_eq!(state.selection_flat_range(80), Some((162, 165)));
+    }
+
+    #[test]
+    fn search_state_tracks_query_preedit_matches_and_navigation() {
+        let mut search = SearchState::default();
+        assert!(search.enter());
+        assert!(search.is_active());
+        assert!(search.push_text("foo"));
+        assert_eq!(search.query(), "foo");
+        assert!(search.set_preedit(Some("bar")));
+        assert_eq!(search.preedit(), Some("bar"));
+        assert!(search.set_matches(
+            vec![
+                SearchMatch {
+                    line_index: 5,
+                    start_col: 2,
+                    end_col: 5,
+                    text: "foo".to_owned(),
+                },
+                SearchMatch {
+                    line_index: 9,
+                    start_col: 1,
+                    end_col: 4,
+                    text: "foo".to_owned(),
+                },
+            ],
+            None,
+            true,
+        ));
+        assert_eq!(search.active_match_index(), Some(0));
+        assert!(search.advance_match());
+        assert_eq!(search.active_match_index(), Some(1));
+        assert!(search.retreat_match());
+        assert_eq!(search.active_match_index(), Some(0));
+        assert!(search.pop_char());
+        assert_eq!(search.query(), "fo");
+        assert!(search.exit());
+        assert!(!search.is_active());
+        assert!(search.query().is_empty());
+        assert!(search.matches().is_empty());
+    }
+
+    #[test]
+    fn interaction_state_maps_active_search_match_into_viewport_range() {
+        let mut state = InteractionState::default();
+        assert!(state.enter_search_mode());
+        assert!(state.set_search_results(
+            vec![SearchMatch {
+                line_index: 95,
+                start_col: 3,
+                end_col: 6,
+                text: "foo".to_owned(),
+            }],
+            None,
+            true,
+        ));
+        assert!(state.align_viewport_to_active_search_match(100));
+        assert_eq!(state.viewport_offset(), 5);
+        assert_eq!(state.search_flat_range(80, 100, 24), Some((3, 5)));
     }
 }
