@@ -49,28 +49,77 @@ const SYSTEM_CJK_FALLBACK_FAMILIES: &[&str] = &[
     "WenQuanYi Zen Hei",
     "WenQuanYi Micro Hei",
 ];
+const SYSTEM_EMOJI_FALLBACK_FAMILIES: &[&str] = &[
+    "Noto Emoji",
+    "Noto Color Emoji",
+    "Segoe UI Emoji",
+    "Apple Color Emoji",
+    "Twitter Color Emoji",
+    "Twemoji Mozilla",
+    "EmojiOne Color",
+    "JoyPixels",
+    "Symbola",
+];
+const EMOJI_DISPLAY_PROBES: &[char] = &['😀', '🙂', '👍', '❤', '✅'];
 
-fn system_fallback_fonts() -> &'static [Font] {
-    static SYSTEM_FALLBACK_FONTS: OnceLock<Vec<Font>> = OnceLock::new();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SystemFallbackKind {
+    Cjk,
+    Emoji,
+}
+
+#[derive(Clone)]
+struct SystemFallbackFont {
+    font: Font,
+    kind: SystemFallbackKind,
+}
+
+fn system_fallback_fonts() -> &'static [SystemFallbackFont] {
+    static SYSTEM_FALLBACK_FONTS: OnceLock<Vec<SystemFallbackFont>> = OnceLock::new();
 
     SYSTEM_FALLBACK_FONTS
         .get_or_init(discover_system_fallback_fonts)
         .as_slice()
 }
 
-fn discover_system_fallback_fonts() -> Vec<Font> {
+fn discover_system_fallback_fonts() -> Vec<SystemFallbackFont> {
     let mut database = Database::new();
     database.load_system_fonts();
 
     let mut loaded = Vec::new();
     let mut seen = HashSet::new();
 
-    for family_name in SYSTEM_CJK_FALLBACK_FAMILIES {
+    load_system_fallback_family_group(
+        &database,
+        SYSTEM_CJK_FALLBACK_FAMILIES,
+        SystemFallbackKind::Cjk,
+        &mut loaded,
+        &mut seen,
+    );
+    load_system_fallback_family_group(
+        &database,
+        SYSTEM_EMOJI_FALLBACK_FAMILIES,
+        SystemFallbackKind::Emoji,
+        &mut loaded,
+        &mut seen,
+    );
+
+    loaded
+}
+
+fn load_system_fallback_family_group(
+    database: &Database,
+    families: &[&str],
+    kind: SystemFallbackKind,
+    loaded: &mut Vec<SystemFallbackFont>,
+    seen: &mut HashSet<(usize, String)>,
+) {
+    for family_name in families {
         let face_id = database
             .faces()
             .filter(|face| face.style == Style::Normal)
             .find(|face| {
-                face.monospaced
+                (kind != SystemFallbackKind::Cjk || face.monospaced)
                     && face
                         .families
                         .iter()
@@ -111,11 +160,30 @@ fn discover_system_fallback_fonts() -> Vec<Font> {
 
         let identity = (font.file_hash(), font.name().unwrap_or("").to_owned());
         if seen.insert(identity) {
-            loaded.push(font);
+            loaded.push(SystemFallbackFont { font, kind });
         }
     }
+}
 
-    loaded
+fn displayable_glyph_index(font: &Font, ch: char, px_size: f32) -> Option<u16> {
+    let glyph_index = font.lookup_glyph_index(ch);
+    if glyph_index == 0 {
+        return None;
+    }
+
+    let metrics = font.metrics_indexed(glyph_index, px_size);
+    (metrics.width > 0 && metrics.height > 0).then_some(glyph_index)
+}
+
+fn font_supports_displayable_char(font: &Font, ch: char, px_size: f32) -> bool {
+    displayable_glyph_index(font, ch, px_size).is_some()
+}
+
+fn font_supports_any_displayable_char(font: &Font, probes: &[char], px_size: f32) -> bool {
+    probes
+        .iter()
+        .copied()
+        .any(|ch| font_supports_displayable_char(font, ch, px_size))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -296,14 +364,24 @@ impl GlyphCache {
             .collect::<HashSet<_>>();
         let mut added = 0;
 
-        for font in system_fallback_fonts() {
-            let identity = Self::font_identity(font);
+        for fallback in system_fallback_fonts() {
+            if fallback.kind == SystemFallbackKind::Emoji
+                && !font_supports_any_displayable_char(
+                    &fallback.font,
+                    EMOJI_DISPLAY_PROBES,
+                    self.px_size,
+                )
+            {
+                continue;
+            }
+
+            let identity = Self::font_identity(&fallback.font);
             if !existing.insert(identity) {
                 continue;
             }
-            let ascent_px = Self::compute_ascent(font, self.px_size, self.cell_height);
+            let ascent_px = Self::compute_ascent(&fallback.font, self.px_size, self.cell_height);
             self.fonts.push(FontEntry {
-                font: font.clone(),
+                font: fallback.font.clone(),
                 ascent_px,
             });
             added += 1;
@@ -368,7 +446,8 @@ impl GlyphCache {
             .unwrap_or_else(|| &self.cache[&fallback_key])
     }
 
-    /// Check if any font in the chain contains a real glyph for `ch`.
+    /// Check if any font in the chain can render a non-empty glyph for `ch`
+    /// under the current grayscale raster path.
     #[must_use]
     pub fn has_glyph(&self, ch: char) -> bool {
         if self.try_font8x8_box_block(ch).is_some() {
@@ -380,7 +459,7 @@ impl GlyphCache {
 
         self.fonts
             .iter()
-            .any(|e| e.font.lookup_glyph_index(ch) != 0)
+            .any(|e| font_supports_displayable_char(&e.font, ch, self.px_size))
     }
 
     /// Rasterize a single character into a cell-sized coordinate space.
@@ -414,12 +493,10 @@ impl GlyphCache {
                 .unwrap_or_else(Self::empty_glyph);
         }
 
-        // Try each font in the chain until one has the glyph.
-        for entry in &self.fonts {
-            if entry.font.lookup_glyph_index(ch) == 0 {
-                continue;
-            }
-            return Self::rasterize_with_font(entry, ch, self.px_size);
+        // Try each font in the chain until one can produce a visible glyph under
+        // the current grayscale raster path.
+        if let Some((_, entry, glyph_index)) = self.select_font_for_char(ch) {
+            return Self::rasterize_indexed_with_font(entry, glyph_index, self.px_size);
         }
 
         // No font has the glyph - rasterize with primary font (produces .notdef).
@@ -537,8 +614,8 @@ impl GlyphCache {
             .iter()
             .enumerate()
             .find_map(|(index, entry)| {
-                let glyph_index = entry.font.lookup_glyph_index(ch);
-                (glyph_index != 0).then_some((index, entry, glyph_index))
+                displayable_glyph_index(&entry.font, ch, self.px_size)
+                    .map(|glyph_index| (index, entry, glyph_index))
             })
             .or_else(|| {
                 self.fonts
@@ -698,6 +775,7 @@ fn single_scalar(text: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn cache_rasterizes_ascii() {
@@ -818,6 +896,26 @@ mod tests {
         let added_again = cache.add_system_fallbacks();
         assert_eq!(added_again, 0);
         assert_eq!(cache.fonts.len(), font_count_after_first);
+    }
+
+    #[test]
+    fn bundled_font_reports_displayable_ascii() {
+        let font = Font::from_bytes(FONT_DATA, FontSettings::default()).expect("load bundled font");
+        assert!(font_supports_displayable_char(&font, 'A', 16.0));
+    }
+
+    #[test]
+    fn color_only_emoji_font_is_not_treated_as_displayable_when_available() {
+        let path = Path::new("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf");
+        if !path.exists() {
+            return;
+        }
+
+        let font_data = std::fs::read(path).expect("read Noto Color Emoji");
+        let font =
+            Font::from_bytes(font_data, FontSettings::default()).expect("parse Noto Color Emoji");
+        assert_ne!(font.lookup_glyph_index('😀'), 0);
+        assert!(!font_supports_displayable_char(&font, '😀', 16.0));
     }
 
     #[test]
