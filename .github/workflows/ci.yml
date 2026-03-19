@@ -86,7 +86,7 @@ jobs:
           shared-key: ci-coverage-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
+        uses: taiki-e/install-action@3a911424851a96b72dc168c8dd71fd98ed215d66 # v2.68.36
         with:
           tool: cargo-llvm-cov@0.8.4
       - name: Generate coverage
@@ -151,7 +151,7 @@ jobs:
           save-if: "false"
           linux-packages: ""
       - name: Install cargo-machete
-        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
+        uses: taiki-e/install-action@3a911424851a96b72dc168c8dd71fd98ed215d66 # v2.68.36
         with:
           tool: cargo-machete@0.9.1
       - name: Run dead-weight checks
@@ -234,7 +234,7 @@ jobs:
           cache-targets: false
           linux-packages: ""
       - name: Install cargo-audit
-        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
+        uses: taiki-e/install-action@3a911424851a96b72dc168c8dd71fd98ed215d66 # v2.68.36
         with:
           tool: cargo-audit@0.22.1
       - name: Run cargo-audit
