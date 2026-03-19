@@ -12,21 +12,28 @@ use crate::report::{
     LiveDisplayWorkloadSummary,
 };
 use anyhow::{Context, Result, bail};
+use rldyourterm_core::{
+    RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, TerminalModeFlags, encode_runtime_key_event,
+};
+use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
+use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_render_cpu::render_terminal_buffer;
 use rldyourterm_render_gpu::{GpuRenderError, GpuRenderer, SurfaceRecoveryPolicy};
 use rldyourterm_services::terminal::{CELL_HEIGHT, CELL_WIDTH, TerminalState};
+use std::io::{ErrorKind, Read, Write};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::data::Workload;
-use crate::fixtures::{canonical_chunk_bytes, feed_bytes_in_chunks, seeded_terminal_state};
+use crate::fixtures::seeded_terminal_state;
 use crate::live_display::scenario_registry::{
     BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenario_names,
     selected_scenarios, suite_manifest,
@@ -46,6 +53,13 @@ enum ScenarioKind {
     InputLatency,
     SteadyRedraw,
     ResizeCycle,
+}
+
+#[derive(Debug, Clone)]
+enum LiveDisplayEvent {
+    PtyOutput(Vec<u8>),
+    PtyClosed,
+    PtyFailure(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +161,65 @@ impl LiveDisplayCpuBufferAgeCounts {
     }
 }
 
+struct InputLatencyPty {
+    pty: Arc<dyn PtyIo>,
+    writer: Option<Box<dyn Write + Send>>,
+    reader_thread: Option<JoinHandle<()>>,
+}
+
+impl InputLatencyPty {
+    fn spawn(event_proxy: EventLoopProxy<LiveDisplayEvent>, size: PtySize) -> Result<Self> {
+        let factory = PlatformPtyFactory;
+        let config = input_latency_spawn_config(size)?;
+        let pty: Arc<dyn PtyIo> = Arc::from(
+            factory
+                .spawn(config)
+                .context("failed to spawn input latency PTY session")?,
+        );
+        let reader = pty
+            .take_reader()
+            .context("failed to acquire input latency PTY reader")?;
+        let writer = pty
+            .take_writer()
+            .context("failed to acquire input latency PTY writer")?;
+        let reader_thread = spawn_input_latency_reader_thread(reader, event_proxy)?;
+
+        Ok(Self {
+            pty,
+            writer: Some(writer),
+            reader_thread: Some(reader_thread),
+        })
+    }
+
+    fn write_payload(&mut self, payload: &[u8]) -> Result<()> {
+        let writer = self
+            .writer
+            .as_mut()
+            .context("input latency PTY writer is unavailable")?;
+        writer
+            .write_all(payload)
+            .context("failed to write input latency payload to PTY")?;
+        writer
+            .flush()
+            .context("failed to flush input latency payload to PTY")?;
+        Ok(())
+    }
+
+    fn close_and_join(&mut self) {
+        self.writer.take();
+        let _ = self.pty.close();
+        if let Some(reader_thread) = self.reader_thread.take() {
+            let _ = reader_thread.join();
+        }
+    }
+}
+
+impl Drop for InputLatencyPty {
+    fn drop(&mut self) {
+        self.close_and_join();
+    }
+}
+
 pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
     if !scenario_belongs_to_suite(cli.scenario) {
         bail!(
@@ -157,7 +230,7 @@ pub fn run_suite(cli: &Cli) -> Result<LiveDisplayBenchmarkSuiteReport> {
 
     let workload = LiveDisplayWorkload::from_cli(cli);
     let scenarios = selected_scenarios(cli.scenario);
-    let mut event_loop = EventLoop::new()?;
+    let mut event_loop = EventLoop::<LiveDisplayEvent>::with_user_event().build()?;
     let mut results = Vec::with_capacity(scenarios.len());
 
     for scenario in scenarios {
@@ -252,7 +325,7 @@ impl LiveDisplayWorkload {
 }
 
 fn run_measured_scenario(
-    event_loop: &mut EventLoop<()>,
+    event_loop: &mut EventLoop<LiveDisplayEvent>,
     scenario: ScenarioArg,
     cli: &Cli,
     workload: &LiveDisplayWorkload,
@@ -260,7 +333,7 @@ fn run_measured_scenario(
     let metadata = descriptor(scenario);
 
     for _ in 0..cli.warmup_iterations {
-        let mut app = LiveDisplayApp::new(scenario, cli, workload);
+        let mut app = LiveDisplayApp::new(scenario, cli, workload, Some(event_loop.create_proxy()));
         event_loop.run_app_on_demand(&mut app)?;
         app.into_result()?;
     }
@@ -282,7 +355,7 @@ fn run_measured_scenario(
     let mut notes = Vec::new();
 
     for _ in 0..cli.iterations {
-        let mut app = LiveDisplayApp::new(scenario, cli, workload);
+        let mut app = LiveDisplayApp::new(scenario, cli, workload, Some(event_loop.create_proxy()));
         event_loop.run_app_on_demand(&mut app)?;
         let outcome = app.into_result()?;
         durations.push(outcome.elapsed);
@@ -374,6 +447,7 @@ struct LiveDisplayApp {
     resize_cycles_target: u32,
     steady_frames_target: u32,
     terminal: TerminalState,
+    event_proxy: Option<EventLoopProxy<LiveDisplayEvent>>,
     window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
     gpu_renderer: Option<GpuRenderer>,
@@ -391,6 +465,8 @@ struct LiveDisplayApp {
     pending_input_started_at: Option<Instant>,
     iteration_started_at: Option<Instant>,
     input_latency_sample: Option<Duration>,
+    input_latency_output_observed: bool,
+    input_latency_payload_len: usize,
     cpu_phase_totals: LiveDisplayCpuPhaseTotals,
     cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts,
     pacing_mode: PacingMode,
@@ -403,14 +479,18 @@ struct LiveDisplayApp {
     last_redraw_requested_at: Option<Instant>,
     last_redraw_completed_at: Option<Instant>,
     display_phase_totals: LiveDisplayPhaseTotals,
-    latency_input: Vec<u8>,
-    input_chunk_bytes: usize,
-    input_responses_scratch: Vec<Vec<u8>>,
+    input_latency_pty: Option<InputLatencyPty>,
+    latency_responses_scratch: Vec<Vec<u8>>,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
 
 impl LiveDisplayApp {
-    fn new(scenario: ScenarioArg, cli: &Cli, workload: &LiveDisplayWorkload) -> Self {
+    fn new(
+        scenario: ScenarioArg,
+        cli: &Cli,
+        workload: &LiveDisplayWorkload,
+        event_proxy: Option<EventLoopProxy<LiveDisplayEvent>>,
+    ) -> Self {
         let (backend, scenario_kind) = match scenario {
             ScenarioArg::StartupFirstFrameGpu => {
                 (DisplayBackend::Gpu, ScenarioKind::StartupFirstFrame)
@@ -432,11 +512,6 @@ impl LiveDisplayApp {
         let benchmark_workload =
             Workload::generate(cli.cols, crate::data::WorkloadScale::from_arg(cli.scale));
         let terminal = seeded_terminal_state(cli, &benchmark_workload);
-        let latency_input = benchmark_workload
-            .delta_batches
-            .get(1)
-            .cloned()
-            .expect("generated benchmark workload must include a latency delta batch");
 
         Self {
             backend,
@@ -446,6 +521,7 @@ impl LiveDisplayApp {
             resize_cycles_target: workload.resize_cycles_per_iteration,
             steady_frames_target: workload.steady_frames_per_iteration,
             terminal,
+            event_proxy,
             window: None,
             window_id: None,
             gpu_renderer: matches!(backend, DisplayBackend::Gpu)
@@ -464,6 +540,8 @@ impl LiveDisplayApp {
             pending_input_started_at: None,
             iteration_started_at: None,
             input_latency_sample: None,
+            input_latency_output_observed: false,
+            input_latency_payload_len: 0,
             cpu_phase_totals: LiveDisplayCpuPhaseTotals::default(),
             cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts::default(),
             pacing_mode: PacingMode::EventDriven,
@@ -476,9 +554,8 @@ impl LiveDisplayApp {
             last_redraw_requested_at: None,
             last_redraw_completed_at: None,
             display_phase_totals: LiveDisplayPhaseTotals::default(),
-            latency_input,
-            input_chunk_bytes: canonical_chunk_bytes(cli.chunk_bytes),
-            input_responses_scratch: Vec::new(),
+            input_latency_pty: None,
+            latency_responses_scratch: Vec::new(),
             result: None,
         }
     }
@@ -621,21 +698,53 @@ impl LiveDisplayApp {
         self.cpu_buffer_age_counts = LiveDisplayCpuBufferAgeCounts::default();
         self.display_phase_totals = LiveDisplayPhaseTotals::default();
         self.pending_input_started_at = None;
+        self.input_latency_output_observed = false;
+        self.input_latency_payload_len = 0;
+        self.latency_responses_scratch.clear();
         self.last_redraw_requested_at = None;
         self.last_redraw_completed_at = None;
         self.input_latency_sample = None;
     }
 
-    fn arm_input_latency_measurement(&mut self) {
+    fn initialize_input_latency_pty(&mut self) -> Result<()> {
+        if !matches!(self.scenario_kind, ScenarioKind::InputLatency)
+            || self.input_latency_pty.is_some()
+        {
+            return Ok(());
+        }
+
+        let event_proxy = self
+            .event_proxy
+            .clone()
+            .context("input latency event proxy is unavailable")?;
+        let size = PtySize {
+            cols: self.terminal.grid.width(),
+            rows: self.terminal.grid.height(),
+            pixel_width: clamp_extent_to_u16(self.requested_extent.width),
+            pixel_height: clamp_extent_to_u16(self.requested_extent.height),
+        };
+        self.input_latency_pty = Some(InputLatencyPty::spawn(event_proxy, size)?);
+        Ok(())
+    }
+
+    fn arm_input_latency_measurement(&mut self) -> Result<()> {
         self.reset_measured_totals();
         let started_at = Instant::now();
-        feed_bytes_in_chunks(
-            &mut self.terminal,
-            &self.latency_input,
-            self.input_chunk_bytes,
-            &mut self.input_responses_scratch,
-        );
+        let latency_input = build_input_latency_payload();
+        self.input_latency_payload_len = latency_input.len();
         self.pending_input_started_at = Some(started_at);
+        self.input_latency_pty
+            .as_mut()
+            .context("input latency PTY session is unavailable")?
+            .write_payload(&latency_input)?;
+        Ok(())
+    }
+
+    fn handle_input_latency_output(&mut self, bytes: Vec<u8>) {
+        self.terminal
+            .feed_terminal_responses_into(&bytes, &mut self.latency_responses_scratch);
+        self.latency_responses_scratch.clear();
+        self.input_latency_output_observed = true;
         self.queue_redraw();
     }
 
@@ -790,7 +899,7 @@ impl LiveDisplayApp {
     }
 }
 
-impl ApplicationHandler for LiveDisplayApp {
+impl ApplicationHandler<LiveDisplayEvent> for LiveDisplayApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.iteration_started_at = Some(Instant::now());
         let window = match event_loop.create_window(self.window_attributes()) {
@@ -864,6 +973,10 @@ impl ApplicationHandler for LiveDisplayApp {
         }
         self.configure_pacing(&window);
         self.window = Some(window.clone());
+        if let Err(error) = self.initialize_input_latency_pty() {
+            self.finish_error(event_loop, error);
+            return;
+        }
         self.queue_redraw();
         self.request_redraw_if_needed(Instant::now());
     }
@@ -873,6 +986,31 @@ impl ApplicationHandler for LiveDisplayApp {
         self.refresh_monitor_pacing_if_needed();
         self.request_redraw_if_needed(now);
         event_loop.set_control_flow(self.control_flow(now));
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: LiveDisplayEvent) {
+        match event {
+            LiveDisplayEvent::PtyOutput(bytes) => self.handle_input_latency_output(bytes),
+            LiveDisplayEvent::PtyClosed => {
+                if matches!(self.scenario_kind, ScenarioKind::InputLatency)
+                    && self.pending_input_started_at.is_some()
+                    && !self.input_latency_output_observed
+                {
+                    self.finish_error(
+                        event_loop,
+                        anyhow::anyhow!(
+                            "input latency PTY closed before the echoed payload reached the terminal"
+                        ),
+                    );
+                }
+            }
+            LiveDisplayEvent::PtyFailure(message) => {
+                self.finish_error(
+                    event_loop,
+                    anyhow::anyhow!("input latency PTY reader failed: {message}"),
+                );
+            }
+        }
     }
 
     fn window_event(
@@ -933,9 +1071,12 @@ impl ApplicationHandler for LiveDisplayApp {
 
                 self.redraws_observed = self.redraws_observed.saturating_add(1);
                 let redraw_completed_at = Instant::now();
-                if let Some(input_started_at) = self.pending_input_started_at.take() {
+                if self.input_latency_output_observed
+                    && let Some(input_started_at) = self.pending_input_started_at.take()
+                {
                     self.input_latency_sample =
                         Some(redraw_completed_at.saturating_duration_since(input_started_at));
+                    self.input_latency_output_observed = false;
                 }
                 self.last_redraw_completed_at = Some(redraw_completed_at);
                 let mut notes = vec![format!(
@@ -950,11 +1091,14 @@ impl ApplicationHandler for LiveDisplayApp {
                     }
                     ScenarioKind::InputLatency => {
                         if let Some(sample) = self.input_latency_sample {
-                            notes.push(format!("input_bytes={}", self.latency_input.len()));
+                            notes.push(format!("input_bytes={}", self.input_latency_payload_len));
+                            notes.push("input_path=runtime-key-pty-echo".to_owned());
                             notes.push(format!("latency_ns={}", sample.as_nanos()));
                             self.finish_success(event_loop, notes);
-                        } else {
-                            self.arm_input_latency_measurement();
+                        } else if self.pending_input_started_at.is_none()
+                            && let Err(error) = self.arm_input_latency_measurement()
+                        {
+                            self.finish_error(event_loop, error);
                         }
                     }
                     ScenarioKind::SteadyRedraw => {
@@ -989,10 +1133,76 @@ impl ApplicationHandler for LiveDisplayApp {
     }
 }
 
+fn clamp_extent_to_u16(value: u32) -> u16 {
+    value.min(u32::from(u16::MAX)) as u16
+}
+
+fn build_input_latency_payload() -> Vec<u8> {
+    encode_runtime_key_event(
+        RuntimeKeyEvent::new(RuntimeKey::Character('x'), RuntimeKeyModifiers::default()),
+        TerminalModeFlags::default(),
+    )
+    .expect("plain character runtime key event must encode for live display input latency")
+}
+
+fn spawn_input_latency_reader_thread(
+    mut reader: Box<dyn Read + Send>,
+    event_proxy: EventLoopProxy<LiveDisplayEvent>,
+) -> Result<JoinHandle<()>> {
+    thread::Builder::new()
+        .name("terminal-benchmark-pty-reader".to_owned())
+        .spawn(move || {
+            let mut buffer = [0u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => {
+                        let _ = event_proxy.send_event(LiveDisplayEvent::PtyClosed);
+                        break;
+                    }
+                    Ok(read) => {
+                        if event_proxy
+                            .send_event(LiveDisplayEvent::PtyOutput(buffer[..read].to_vec()))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        let _ =
+                            event_proxy.send_event(LiveDisplayEvent::PtyFailure(error.to_string()));
+                        break;
+                    }
+                }
+            }
+        })
+        .context("failed to spawn input latency PTY reader thread")
+}
+
+#[cfg(unix)]
+fn input_latency_spawn_config(size: PtySize) -> Result<PtySpawnConfig> {
+    Ok(PtySpawnConfig {
+        shell_command: "/bin/sh".to_owned(),
+        args: vec!["-lc".to_owned(), "stty raw -echo; exec cat".to_owned()],
+        cwd: None,
+        env: Vec::new(),
+        size,
+    })
+}
+
+#[cfg(not(unix))]
+fn input_latency_spawn_config(_size: PtySize) -> Result<PtySpawnConfig> {
+    bail!("live display input latency PTY benchmark currently requires a Unix PTY shell")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::{OutputFormatArg, SuiteArg};
+    use rldyourterm_foundation::api::pty::PtyIo;
+    use rldyourterm_foundation::error::FoundationResult;
+    use std::io;
+    use std::sync::Mutex;
 
     fn sample_cli() -> Cli {
         Cli {
@@ -1013,7 +1223,7 @@ mod tests {
     fn resize_app() -> LiveDisplayApp {
         let cli = sample_cli();
         let workload = LiveDisplayWorkload::from_cli(&cli);
-        LiveDisplayApp::new(ScenarioArg::ResizeCycleCpu, &cli, &workload)
+        LiveDisplayApp::new(ScenarioArg::ResizeCycleCpu, &cli, &workload, None)
     }
 
     fn input_latency_app() -> LiveDisplayApp {
@@ -1022,7 +1232,59 @@ mod tests {
             ..sample_cli()
         };
         let workload = LiveDisplayWorkload::from_cli(&cli);
-        LiveDisplayApp::new(ScenarioArg::InputLatencyCpu, &cli, &workload)
+        LiveDisplayApp::new(ScenarioArg::InputLatencyCpu, &cli, &workload, None)
+    }
+
+    struct SharedBufferWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for SharedBufferWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct DummyPty;
+
+    impl PtyIo for DummyPty {
+        fn take_reader(&self) -> FoundationResult<Box<dyn Read + Send>> {
+            unimplemented!("tests inject the PTY writer directly")
+        }
+
+        fn take_writer(&self) -> FoundationResult<Box<dyn Write + Send>> {
+            unimplemented!("tests inject the PTY writer directly")
+        }
+
+        fn resize(&self, _size: PtySize) -> FoundationResult<()> {
+            Ok(())
+        }
+
+        fn kill(&self) -> FoundationResult<()> {
+            Ok(())
+        }
+
+        fn wait(&self) -> FoundationResult<i32> {
+            Ok(0)
+        }
+
+        fn try_wait(&self) -> FoundationResult<Option<i32>> {
+            Ok(Some(0))
+        }
+
+        fn close(&self) -> FoundationResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn build_input_latency_payload_encodes_plain_character_runtime_key() {
+        assert_eq!(build_input_latency_payload(), b"x");
     }
 
     #[test]
@@ -1073,6 +1335,14 @@ mod tests {
     #[test]
     fn arm_input_latency_measurement_resets_phase_totals_and_schedules_redraw() {
         let mut app = input_latency_app();
+        let written_bytes = Arc::new(Mutex::new(Vec::new()));
+        app.input_latency_pty = Some(InputLatencyPty {
+            pty: Arc::new(DummyPty),
+            writer: Some(Box::new(SharedBufferWriter {
+                bytes: Arc::clone(&written_bytes),
+            })),
+            reader_thread: None,
+        });
         app.redraws_observed = 9;
         app.resize_cycles_observed = 2;
         app.cpu_phase_totals.buffer_acquire = Duration::from_millis(1);
@@ -1084,10 +1354,10 @@ mod tests {
         app.last_redraw_requested_at = Some(Instant::now());
         app.last_redraw_completed_at = Some(Instant::now());
 
-        app.arm_input_latency_measurement();
+        app.arm_input_latency_measurement().unwrap();
 
         assert!(app.pending_input_started_at.is_some());
-        assert!(app.redraw_pending);
+        assert!(!app.redraw_pending);
         assert_eq!(app.redraws_observed, 0);
         assert_eq!(app.resize_cycles_observed, 0);
         assert_eq!(app.cpu_phase_totals.buffer_acquire, Duration::ZERO);
@@ -1096,6 +1366,8 @@ mod tests {
         assert!(app.display_phase_totals.frame_gap.is_empty());
         assert!(app.last_redraw_requested_at.is_none());
         assert!(app.last_redraw_completed_at.is_none());
+        assert_eq!(app.input_latency_payload_len, 1);
+        assert_eq!(written_bytes.lock().unwrap().as_slice(), b"x");
     }
 
     #[test]
@@ -1105,7 +1377,7 @@ mod tests {
             ..sample_cli()
         };
         let workload = LiveDisplayWorkload::from_cli(&cli);
-        let mut app = LiveDisplayApp::new(ScenarioArg::SteadyRedrawCpu, &cli, &workload);
+        let mut app = LiveDisplayApp::new(ScenarioArg::SteadyRedrawCpu, &cli, &workload, None);
 
         app.apply_monitor_pacing(Some(59_982), Some("HDMI-1".to_string()), Some(2.0));
 
@@ -1122,7 +1394,7 @@ mod tests {
             ..sample_cli()
         };
         let workload = LiveDisplayWorkload::from_cli(&cli);
-        let mut app = LiveDisplayApp::new(ScenarioArg::InputLatencyCpu, &cli, &workload);
+        let mut app = LiveDisplayApp::new(ScenarioArg::InputLatencyCpu, &cli, &workload, None);
 
         app.apply_monitor_pacing(Some(59_982), Some("HDMI-1".to_string()), Some(2.0));
 
@@ -1137,7 +1409,7 @@ mod tests {
             ..sample_cli()
         };
         let workload = LiveDisplayWorkload::from_cli(&cli);
-        let mut app = LiveDisplayApp::new(ScenarioArg::SteadyRedrawCpu, &cli, &workload);
+        let mut app = LiveDisplayApp::new(ScenarioArg::SteadyRedrawCpu, &cli, &workload, None);
         app.apply_monitor_pacing(Some(59_982), Some("HDMI-1".to_string()), Some(2.0));
 
         app.refresh_monitor_pacing_if_needed();

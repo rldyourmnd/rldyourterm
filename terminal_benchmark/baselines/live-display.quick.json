@@ -5,7 +5,7 @@
   "scale": "quick",
   "comparison_mode": "advisory",
   "environment_scope": "controlled-display-session",
-  "generated_at_utc": "2026-03-19T14:26:37+00:00",
+  "generated_at_utc": "2026-03-19T14:54:47+00:00",
   "scenario_selection": "all",
   "defaults": {
     "max_mean_nanos_ratio": 3.0,
@@ -32,65 +32,65 @@
   "scenarios": {
     "startup-first-frame-gpu": {
       "baseline_metrics": {
-        "mean_nanos": 1005630023,
-        "p95_nanos": 1005630023,
-        "primary_units_per_second": 0.9944014967023315
+        "mean_nanos": 1514511756,
+        "p95_nanos": 1514511756,
+        "primary_units_per_second": 0.6602787968058532
       },
       "thresholds": {}
     },
     "startup-first-frame-cpu": {
       "baseline_metrics": {
-        "mean_nanos": 115218825,
-        "p95_nanos": 115218825,
-        "primary_units_per_second": 8.679137285074727
+        "mean_nanos": 171296546,
+        "p95_nanos": 171296546,
+        "primary_units_per_second": 5.83782932786047
       },
       "thresholds": {}
     },
     "input-latency-gpu": {
       "baseline_metrics": {
-        "mean_nanos": 3981726,
-        "p95_nanos": 3981726,
-        "primary_units_per_second": 251.14736674497445
+        "mean_nanos": 4620106,
+        "p95_nanos": 4620106,
+        "primary_units_per_second": 216.44525039035904
       },
       "thresholds": {}
     },
     "input-latency-cpu": {
       "baseline_metrics": {
-        "mean_nanos": 31953149,
-        "p95_nanos": 31953149,
-        "primary_units_per_second": 31.29582001448433
+        "mean_nanos": 34909504,
+        "p95_nanos": 34909504,
+        "primary_units_per_second": 28.64549436165005
       },
       "thresholds": {}
     },
     "steady-redraw-gpu": {
       "baseline_metrics": {
-        "mean_nanos": 965816725,
-        "p95_nanos": 965816725,
-        "primary_units_per_second": 12.424717536342104
+        "mean_nanos": 1163306160,
+        "p95_nanos": 1163306160,
+        "primary_units_per_second": 10.31542719588109
       },
       "thresholds": {}
     },
     "steady-redraw-cpu": {
       "baseline_metrics": {
-        "mean_nanos": 451728677,
-        "p95_nanos": 451728677,
-        "primary_units_per_second": 26.56461856637895
+        "mean_nanos": 579523767,
+        "p95_nanos": 579523767,
+        "primary_units_per_second": 20.706657230159813
       },
       "thresholds": {}
     },
     "resize-cycle-gpu": {
       "baseline_metrics": {
-        "mean_nanos": 1026101823,
-        "p95_nanos": 1026101823,
-        "primary_units_per_second": 3.8982486049047784
+        "mean_nanos": 1510873034,
+        "p95_nanos": 1510873034,
+        "primary_units_per_second": 2.6474759360884854
       },
       "thresholds": {}
     },
     "resize-cycle-cpu": {
       "baseline_metrics": {
-        "mean_nanos": 373538599,
-        "p95_nanos": 373538599,
-        "primary_units_per_second": 10.708398036262913
+        "mean_nanos": 448582661,
+        "p95_nanos": 448582661,
+        "primary_units_per_second": 8.916974167220431
       },
       "thresholds": {}
     }
