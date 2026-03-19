@@ -173,7 +173,7 @@ fn shrink_expand_roundtrip_preserves_text() {
     // Content should be preserved (might be on different row due to scrollback overflow)
     let mut all_text = String::new();
     for i in 0..t.scrollback.len() {
-        all_text.push_str(t.scrollback.get(i).unwrap());
+        all_text.push_str(&t.scrollback.get_text(i).unwrap());
     }
     for r in 0..5 {
         all_text.push_str(&row(&t, r));
@@ -217,7 +217,7 @@ fn multiple_resize_cycles() {
     // Content should still be recoverable
     let mut all = String::new();
     for i in 0..t.scrollback.len() {
-        all.push_str(t.scrollback.get(i).unwrap());
+        all.push_str(&t.scrollback.get_text(i).unwrap());
         all.push('\n');
     }
     for r in 0..t.grid.height() {

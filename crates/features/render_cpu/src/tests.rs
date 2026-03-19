@@ -7,11 +7,21 @@ use super::{
 };
 use rldyourterm_font::GlyphCache;
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, DEFAULT_SCROLLBACK_CAP, TerminalState,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_SCROLLBACK_CAP, TerminalState,
 };
 
 fn state_with_default_scrollback(width: u16, height: u16) -> TerminalState {
     TerminalState::new(width, height, DEFAULT_SCROLLBACK_CAP)
+}
+
+fn cells_from_str(s: &str) -> Vec<Cell> {
+    s.chars()
+        .map(|ch| Cell {
+            ch,
+            attrs: Attrs::default(),
+            width: 1,
+        })
+        .collect()
 }
 
 #[test]
@@ -95,7 +105,9 @@ fn delta_render_tracks_dirty_rows_in_stable_order() {
 fn scrollback_visibility_is_bounded_by_renderer_cap() {
     let mut state = TerminalState::new(1, 1, 100_000);
     for idx in 0..7 {
-        state.scrollback.push(format!("line-{idx}"));
+        state
+            .scrollback
+            .push_from_cells(&cells_from_str(&format!("line-{idx}")));
     }
 
     let renderer = CpuRenderer::new(CpuRendererConfig { scrollback_cap: 5 });

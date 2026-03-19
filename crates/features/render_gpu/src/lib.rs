@@ -14,7 +14,8 @@ use rldyourterm_services::render_mode::GpuFailureKind;
 #[cfg(test)]
 use rldyourterm_services::terminal::ANSI_PALETTE;
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Color, DEFAULT_BG, DEFAULT_FG, TerminalState, color_to_u32,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_BG, DEFAULT_FG, TerminalState,
+    color_to_u32,
 };
 use std::collections::HashMap;
 use std::error::Error;
