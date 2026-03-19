@@ -24,7 +24,7 @@ use std::fmt;
 use std::path::Path;
 use tracing::{debug, info};
 
-use atlas::{ATLAS_GLYPH_COLS, ATLAS_GLYPH_ROWS, ATLAS_SLOTS, build_glyph_atlas};
+use atlas::{ATLAS_GLYPH_COLS, ATLAS_GLYPH_ROWS, ATLAS_SLOTS, AtlasLru, build_glyph_atlas};
 #[cfg(test)]
 use atlas::{ATLAS_GLYPH_HEIGHT, ATLAS_GLYPH_WIDTH, ATLAS_SIZE, write_glyph_to_atlas};
 use cell_data::{
@@ -178,8 +178,7 @@ struct GpuBackend {
     glyph_cache: GlyphCache,
     glyph_to_slot: HashMap<GlyphKey, u16>,
     slot_to_glyph: Vec<Option<GlyphKey>>,
-    slot_last_used: Vec<u64>,
-    frame_counter: u64,
+    atlas_lru: AtlasLru,
     next_atlas_slot: u16,
     surface_state: SurfaceRuntimeState,
     underutilized_frame_streak: u16,

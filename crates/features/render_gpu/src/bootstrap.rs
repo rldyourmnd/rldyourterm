@@ -90,7 +90,7 @@ impl GpuRenderer {
             texture: atlas_texture,
             glyph_to_slot,
             slot_to_glyph,
-            slot_last_used,
+            lru: atlas_lru,
             next_slot: next_atlas_slot,
         } = build_glyph_atlas(&device, &queue, &mut glyph_cache);
 
@@ -327,8 +327,7 @@ impl GpuRenderer {
             glyph_cache,
             glyph_to_slot,
             slot_to_glyph,
-            slot_last_used,
-            frame_counter: 0,
+            atlas_lru,
             next_atlas_slot,
             surface_state: SurfaceRuntimeState::default(),
             underutilized_frame_streak: 0,

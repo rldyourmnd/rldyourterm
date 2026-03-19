@@ -44,8 +44,84 @@ pub(crate) struct AtlasBuildResult {
     pub texture: wgpu::Texture,
     pub glyph_to_slot: HashMap<GlyphKey, u16>,
     pub slot_to_glyph: Vec<Option<GlyphKey>>,
-    pub slot_last_used: Vec<u64>,
+    pub lru: AtlasLru,
     pub next_slot: u16,
+}
+
+pub(crate) struct AtlasLru {
+    head: Option<u16>,
+    tail: Option<u16>,
+    prev: Vec<Option<u16>>,
+    next: Vec<Option<u16>>,
+    linked: Vec<bool>,
+}
+
+impl AtlasLru {
+    pub(crate) fn new(slot_count: usize) -> Self {
+        Self {
+            head: None,
+            tail: None,
+            prev: vec![None; slot_count],
+            next: vec![None; slot_count],
+            linked: vec![false; slot_count],
+        }
+    }
+
+    pub(crate) fn touch(&mut self, slot: u16) {
+        if slot == 0 {
+            return;
+        }
+
+        if self.linked[slot as usize] {
+            self.unlink(slot);
+        }
+        self.link_front(slot);
+    }
+
+    pub(crate) fn evict_lru(&mut self) -> Option<u16> {
+        let slot = self.tail?;
+        self.unlink(slot);
+        Some(slot)
+    }
+
+    fn link_front(&mut self, slot: u16) {
+        let slot_index = slot as usize;
+        let old_head = self.head;
+
+        self.prev[slot_index] = None;
+        self.next[slot_index] = old_head;
+        self.linked[slot_index] = true;
+
+        if let Some(old_head) = old_head {
+            self.prev[old_head as usize] = Some(slot);
+        } else {
+            self.tail = Some(slot);
+        }
+
+        self.head = Some(slot);
+    }
+
+    fn unlink(&mut self, slot: u16) {
+        let slot_index = slot as usize;
+        let prev = self.prev[slot_index];
+        let next = self.next[slot_index];
+
+        if let Some(prev) = prev {
+            self.next[prev as usize] = next;
+        } else {
+            self.head = next;
+        }
+
+        if let Some(next) = next {
+            self.prev[next as usize] = prev;
+        } else {
+            self.tail = prev;
+        }
+
+        self.prev[slot_index] = None;
+        self.next[slot_index] = None;
+        self.linked[slot_index] = false;
+    }
 }
 
 pub(crate) fn build_glyph_atlas(
@@ -56,7 +132,7 @@ pub(crate) fn build_glyph_atlas(
     let mut atlas_data = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
     let mut glyph_to_slot: HashMap<GlyphKey, u16> = HashMap::new();
     let mut slot_to_glyph: Vec<Option<GlyphKey>> = vec![None; ATLAS_SLOTS];
-    let slot_last_used: Vec<u64> = vec![0; ATLAS_SLOTS];
+    let mut lru = AtlasLru::new(ATLAS_SLOTS);
 
     glyph_to_slot.insert(GlyphKey::from(' '), 0);
     slot_to_glyph[0] = Some(GlyphKey::from(' '));
@@ -81,6 +157,7 @@ pub(crate) fn build_glyph_atlas(
                 write_glyph_to_atlas(&mut atlas_data, next_slot, &cell_buf);
                 glyph_to_slot.insert(glyph_key.clone(), next_slot);
                 slot_to_glyph[next_slot as usize] = Some(glyph_key);
+                lru.touch(next_slot);
                 next_slot += 1;
             }
         }
@@ -125,7 +202,7 @@ pub(crate) fn build_glyph_atlas(
         texture,
         glyph_to_slot,
         slot_to_glyph,
-        slot_last_used,
+        lru,
         next_slot,
     }
 }
@@ -173,14 +250,13 @@ pub(crate) fn ensure_glyph_in_atlas(
     glyph_cache: &mut GlyphCache,
     glyph_to_slot: &mut HashMap<GlyphKey, u16>,
     slot_to_glyph: &mut [Option<GlyphKey>],
-    slot_last_used: &mut [u64],
-    frame_counter: u64,
+    lru: &mut AtlasLru,
     next_slot: &mut u16,
     atlas_texture: &wgpu::Texture,
     queue: &wgpu::Queue,
 ) -> u16 {
     if let Some(&slot) = glyph_to_slot.get(&glyph_key) {
-        slot_last_used[slot as usize] = frame_counter;
+        lru.touch(slot);
         return slot;
     }
 
@@ -189,10 +265,7 @@ pub(crate) fn ensure_glyph_in_atlas(
         *next_slot = s + 1;
         s
     } else {
-        // LRU eviction: find the slot with the smallest last_used (skip slot 0 = blank)
-        let evict_slot = (1..ATLAS_SLOTS)
-            .min_by_key(|&i| slot_last_used[i])
-            .unwrap_or(1) as u16;
+        let evict_slot = lru.evict_lru().unwrap_or(1);
 
         if let Some(old_glyph_key) = slot_to_glyph[evict_slot as usize].take() {
             glyph_to_slot.remove(&old_glyph_key);
@@ -209,6 +282,56 @@ pub(crate) fn ensure_glyph_in_atlas(
     upload_glyph_to_atlas(queue, atlas_texture, slot, &cell_buf);
     glyph_to_slot.insert(glyph_key.clone(), slot);
     slot_to_glyph[slot as usize] = Some(glyph_key);
-    slot_last_used[slot as usize] = frame_counter;
+    lru.touch(slot);
     slot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AtlasLru;
+
+    fn lru_order(lru: &AtlasLru) -> Vec<u16> {
+        let mut slots = Vec::new();
+        let mut cursor = lru.head;
+        while let Some(slot) = cursor {
+            slots.push(slot);
+            cursor = lru.next[slot as usize];
+        }
+        slots
+    }
+
+    #[test]
+    fn touch_moves_slot_to_mru_head() {
+        let mut lru = AtlasLru::new(8);
+        lru.touch(1);
+        lru.touch(2);
+        lru.touch(3);
+
+        lru.touch(1);
+
+        assert_eq!(lru_order(&lru), vec![1, 3, 2]);
+        assert_eq!(lru.evict_lru(), Some(2));
+    }
+
+    #[test]
+    fn evict_lru_returns_oldest_non_blank_slot() {
+        let mut lru = AtlasLru::new(8);
+        lru.touch(1);
+        lru.touch(2);
+        lru.touch(3);
+
+        assert_eq!(lru.evict_lru(), Some(1));
+        assert_eq!(lru_order(&lru), vec![3, 2]);
+    }
+
+    #[test]
+    fn reserved_blank_slot_is_never_linked_or_evicted() {
+        let mut lru = AtlasLru::new(4);
+        lru.touch(0);
+        lru.touch(1);
+
+        assert_eq!(lru_order(&lru), vec![1]);
+        assert_eq!(lru.evict_lru(), Some(1));
+        assert_eq!(lru.evict_lru(), None);
+    }
 }

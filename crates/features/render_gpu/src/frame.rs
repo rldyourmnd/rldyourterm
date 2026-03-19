@@ -53,8 +53,6 @@ impl GpuRenderer {
             .as_mut()
             .ok_or(GpuRenderError::BackendUnavailable)?;
 
-        backend.frame_counter = backend.frame_counter.wrapping_add(1);
-
         let grid_cols = terminal.grid.width() as usize;
         let grid_rows = terminal.grid.height() as usize;
         let cell_count = grid_cols * grid_rows;
