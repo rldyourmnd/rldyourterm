@@ -6,8 +6,9 @@ use super::super::{
     cadence_resync_command_for_monitor_event, deferred_gpu_failure_kind,
     dispatch_gpu_failure_command, dispatch_runtime_palette_command,
     emit_gpu_auto_fallback_observability, format_search_overlay_text, format_search_window_title,
-    is_runtime_palette_shortcut_key, resolve_cell_colors, restore_live_view_after_output,
-    sample_monitor_refresh_rate_millihz, should_restore_live_view_after_output,
+    is_runtime_palette_shortcut_key, resolve_cell_colors, resolve_effective_theme_preset,
+    restore_live_view_after_output, runtime_theme_status_line, sample_monitor_refresh_rate_millihz,
+    should_restore_live_view_after_output, window_theme_override_for_selection,
 };
 use super::{StubWindowControl, StubWindowControlScenario, test_ui_runtime};
 use crate::runtime_shared::pty_boundary::{
@@ -24,6 +25,7 @@ use rldyourterm_services::terminal::{
 use rldyourterm_settings::{SettingsService, ThemePreset, theme_for_preset};
 use rldyourterm_ui::UiRuntimeCommand;
 use winit::keyboard::{Key, ModifiersState};
+use winit::window::Theme as WindowTheme;
 
 #[test]
 fn detects_palette_shortcut_with_ctrl_or_cmd_shift_p() {
@@ -108,6 +110,92 @@ fn palette_dispatch_applies_theme_to_live_terminal() {
         )
     );
     assert_eq!(message, "[palette] theme=dracula active-path=gpu");
+}
+
+#[test]
+fn palette_dispatch_reports_system_theme_resolution_without_window_context() {
+    let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+    let mut terminal = TerminalState::new(10, 4, 5);
+    let mut settings = SettingsService::default();
+    let theme = theme_for_preset(ThemePreset::Dark);
+
+    let message = dispatch_runtime_palette_command(
+        &mut ui_runtime,
+        &mut terminal,
+        &mut settings,
+        "theme set system",
+    )
+    .expect("dispatch theme set system");
+
+    assert_eq!(settings.state().theme, ThemePreset::System);
+    assert_eq!(terminal.palette_color(1), theme.palette[1]);
+    assert_eq!(
+        terminal.resolve_cell_colors(&Attrs::default()),
+        (
+            color_to_u32(Color::Default, theme.default_fg),
+            color_to_u32(Color::Default, theme.default_bg),
+        )
+    );
+    assert_eq!(
+        message,
+        "[palette] theme=system resolved=dark active-path=gpu"
+    );
+}
+
+#[test]
+fn system_theme_resolution_prefers_reported_window_theme() {
+    assert_eq!(
+        resolve_effective_theme_preset(ThemePreset::System, Some(WindowTheme::Light)),
+        ThemePreset::Light
+    );
+    assert_eq!(
+        resolve_effective_theme_preset(ThemePreset::System, Some(WindowTheme::Dark)),
+        ThemePreset::Dark
+    );
+    assert_eq!(
+        resolve_effective_theme_preset(ThemePreset::System, None),
+        ThemePreset::Dark
+    );
+}
+
+#[test]
+fn window_theme_override_matches_selection_policy() {
+    assert_eq!(
+        window_theme_override_for_selection(ThemePreset::System),
+        None
+    );
+    assert_eq!(
+        window_theme_override_for_selection(ThemePreset::Light),
+        Some(WindowTheme::Light)
+    );
+    assert_eq!(
+        window_theme_override_for_selection(ThemePreset::Monochrome),
+        Some(WindowTheme::Light)
+    );
+    assert_eq!(
+        window_theme_override_for_selection(ThemePreset::Dracula),
+        Some(WindowTheme::Dark)
+    );
+}
+
+#[test]
+fn runtime_theme_status_line_reports_resolved_system_theme() {
+    assert_eq!(
+        runtime_theme_status_line(
+            ThemePreset::System,
+            ThemePreset::Light,
+            ActiveRenderPath::Gpu
+        ),
+        "[palette] theme=system resolved=light active-path=gpu"
+    );
+    assert_eq!(
+        runtime_theme_status_line(
+            ThemePreset::Dracula,
+            ThemePreset::Dracula,
+            ActiveRenderPath::Cpu
+        ),
+        "[palette] theme=dracula active-path=cpu"
+    );
 }
 
 #[test]

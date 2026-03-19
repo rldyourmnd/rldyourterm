@@ -40,6 +40,7 @@ impl GuiRuntimeApp {
         self.window.host = Some(host);
         self.window.last_window_title.clear();
         self.window.last_window_title.push_str(DEFAULT_WINDOW_TITLE);
+        let _ = self.sync_theme_selection(None);
 
         debug!("bootstrap: updating viewport geometry");
         self.update_viewport_geometry(event_loop);
@@ -371,6 +372,74 @@ pub(super) fn sample_monitor_refresh_rate_millihz(
             );
             None
         }
+    }
+}
+
+pub(super) fn resolve_effective_theme_preset(
+    selection: ThemePreset,
+    window_theme: Option<WindowTheme>,
+) -> ThemePreset {
+    match selection {
+        ThemePreset::System => match window_theme {
+            Some(WindowTheme::Light) => ThemePreset::Light,
+            Some(WindowTheme::Dark) | None => ThemePreset::Dark,
+        },
+        preset => preset,
+    }
+}
+
+pub(super) fn window_theme_override_for_selection(selection: ThemePreset) -> Option<WindowTheme> {
+    match selection {
+        ThemePreset::System => None,
+        ThemePreset::Monochrome | ThemePreset::Light => Some(WindowTheme::Light),
+        ThemePreset::Cuberpunk
+        | ThemePreset::Aurora
+        | ThemePreset::Dark
+        | ThemePreset::Solarized
+        | ThemePreset::Dracula
+        | ThemePreset::Catppuccin => Some(WindowTheme::Dark),
+    }
+}
+
+pub(super) fn runtime_theme_status_line(
+    requested: ThemePreset,
+    effective: ThemePreset,
+    active_render_path: ActiveRenderPath,
+) -> String {
+    if requested == effective {
+        format!(
+            "[palette] theme={} active-path={}",
+            theme_preset_token(requested),
+            active_render_path_token(active_render_path),
+        )
+    } else {
+        format!(
+            "[palette] theme={} resolved={} active-path={}",
+            theme_preset_token(requested),
+            theme_preset_token(effective),
+            active_render_path_token(active_render_path),
+        )
+    }
+}
+
+fn theme_preset_token(theme: ThemePreset) -> &'static str {
+    match theme {
+        ThemePreset::System => "system",
+        ThemePreset::Cuberpunk => "cuberpunk",
+        ThemePreset::Aurora => "aurora",
+        ThemePreset::Monochrome => "monochrome",
+        ThemePreset::Dark => "dark",
+        ThemePreset::Light => "light",
+        ThemePreset::Solarized => "solarized",
+        ThemePreset::Dracula => "dracula",
+        ThemePreset::Catppuccin => "catppuccin",
+    }
+}
+
+fn active_render_path_token(active_render_path: ActiveRenderPath) -> &'static str {
+    match active_render_path {
+        ActiveRenderPath::Cpu => "cpu",
+        ActiveRenderPath::Gpu => "gpu",
     }
 }
 

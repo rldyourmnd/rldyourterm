@@ -31,6 +31,7 @@ impl GuiRuntimeApp {
 
         if let Some(dispatch) = decision.dispatch {
             let result_line = if let Some(command) = dispatch.command {
+                let mut applied_theme = None;
                 if let Some(receipt) = apply_palette_settings_command_to_ui_runtime(
                     &mut self.control.ui_runtime,
                     &mut self.terminal,
@@ -47,16 +48,26 @@ impl GuiRuntimeApp {
                         "failed to emit typed palette runtime command diagnostics"
                     );
                 }
-                if matches!(command, SettingsCommand::SetTheme(_)) {
+                if let SettingsCommand::SetTheme(theme) = command {
+                    let effective = self.sync_theme_selection(None);
+                    applied_theme = Some((theme, effective));
                     self.queue_redraw();
                 }
                 self.sync_deferred_gpu_init_state();
-                shared_runtime_palette_status_line(
-                    command,
-                    self.control.settings.state().mode,
-                    self.control.settings.state().debug_mode,
-                    Some(self.control.ui_runtime.active_render_path()),
-                )
+                if let Some((requested, effective)) = applied_theme {
+                    runtime_theme_status_line(
+                        requested,
+                        effective,
+                        self.control.ui_runtime.active_render_path(),
+                    )
+                } else {
+                    shared_runtime_palette_status_line(
+                        command,
+                        self.control.settings.state().mode,
+                        self.control.settings.state().debug_mode,
+                        Some(self.control.ui_runtime.active_render_path()),
+                    )
+                }
             } else {
                 dispatch.message
             };
@@ -628,12 +639,18 @@ pub(super) fn dispatch_runtime_palette_command(
     );
     if let Some(command) = result.command {
         let _ = apply_palette_settings_command_to_ui_runtime(ui_runtime, terminal, command)?;
-        result.message = shared_runtime_palette_status_line(
-            command,
-            settings.state().mode,
-            settings.state().debug_mode,
-            Some(ui_runtime.active_render_path()),
-        );
+        result.message = if let SettingsCommand::SetTheme(theme) = command {
+            let effective = resolve_effective_theme_preset(theme, None);
+            terminal.apply_theme(&theme_for_preset(effective));
+            runtime_theme_status_line(theme, effective, ui_runtime.active_render_path())
+        } else {
+            shared_runtime_palette_status_line(
+                command,
+                settings.state().mode,
+                settings.state().debug_mode,
+                Some(ui_runtime.active_render_path()),
+            )
+        };
     }
     Ok(result.message)
 }
@@ -649,7 +666,9 @@ pub(super) fn apply_palette_settings_command_to_ui_runtime(
             .context("failed to dispatch UiRuntimeCommand::SetRenderMode from runtime palette")?;
         return Ok(Some(receipt));
     }
-    if let SettingsCommand::SetTheme(theme) = command {
+    if let SettingsCommand::SetTheme(theme) = command
+        && theme != ThemePreset::System
+    {
         terminal.apply_theme(&theme_for_preset(theme));
     }
     Ok(None)

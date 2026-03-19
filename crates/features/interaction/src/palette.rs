@@ -272,6 +272,7 @@ fn render_mode_token(mode: RenderMode) -> &'static str {
 
 fn theme_preset_token(theme: ThemePreset) -> &'static str {
     match theme {
+        ThemePreset::System => "system",
         ThemePreset::Cuberpunk => "cuberpunk",
         ThemePreset::Aurora => "aurora",
         ThemePreset::Monochrome => "monochrome",

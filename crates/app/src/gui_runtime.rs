@@ -43,7 +43,10 @@ use self::terminal_io::{
     cap_paste_text, dispatch_runtime_palette_command, read_clipboard_text_for_paste,
 };
 use self::windowing::format_search_overlay_text;
-use self::windowing::{ViewportGeometry, cap_framebuffer_extent};
+use self::windowing::{
+    ViewportGeometry, cap_framebuffer_extent, resolve_effective_theme_preset,
+    runtime_theme_status_line, window_theme_override_for_selection,
+};
 #[cfg(test)]
 use self::windowing::{
     cadence_resync_command_for_monitor_event, cap_terminal_geometry, format_search_window_title,
@@ -90,7 +93,9 @@ use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransi
 use rldyourterm_services::terminal::{
     Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, MouseMode, TerminalState,
 };
-use rldyourterm_settings::{SettingsCommand, SettingsService, SettingsState, theme_for_preset};
+use rldyourterm_settings::{
+    SettingsCommand, SettingsService, SettingsState, ThemePreset, theme_for_preset,
+};
 use rldyourterm_ui::{
     DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome,
     UiCommandReceipt, UiRuntime, UiRuntimeCommand,
@@ -104,7 +109,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-use winit::window::{Icon, Window, WindowId};
+use winit::window::{Icon, Theme as WindowTheme, Window, WindowId};
 
 /// Embedded application icon (decoded at runtime from PNG).
 static LOGO_PNG: &[u8] = include_bytes!("../../../LOGO.png");
@@ -505,7 +510,8 @@ impl GuiRuntimeApp {
             DEFAULT_TERMINAL_ROWS,
             DEFAULT_SCROLLBACK_CAP,
         );
-        terminal.apply_theme(&theme_for_preset(settings.state().theme));
+        let initial_theme = resolve_effective_theme_preset(settings.state().theme, None);
+        terminal.apply_theme(&theme_for_preset(initial_theme));
 
         Ok(Self {
             event_proxy,
@@ -571,6 +577,19 @@ impl GuiRuntimeApp {
             exit_code: None,
             fatal_error: None,
         })
+    }
+
+    fn sync_theme_selection(&mut self, observed_window_theme: Option<WindowTheme>) -> ThemePreset {
+        let selection = self.control.settings.state().theme;
+        let window_theme = if let Some(window) = self.window.window_ref() {
+            window.set_theme(window_theme_override_for_selection(selection));
+            observed_window_theme.or_else(|| window.theme())
+        } else {
+            observed_window_theme
+        };
+        let effective = resolve_effective_theme_preset(selection, window_theme);
+        self.terminal.apply_theme(&theme_for_preset(effective));
+        effective
     }
 
     fn queue_redraw(&mut self) {

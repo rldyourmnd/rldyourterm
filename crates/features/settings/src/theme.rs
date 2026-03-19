@@ -79,6 +79,16 @@ const CATPPUCCIN_ANSI: [u32; 16] = [
 
 pub fn theme_for_preset(preset: ThemePreset) -> TerminalTheme {
     match preset {
+        // System-follow mode is resolved against the live window theme in the
+        // GUI runtime. Use the dark preset as a deterministic fallback when no
+        // platform theme information is available.
+        ThemePreset::System => preset_theme(
+            DARK_DEFAULT_FG,
+            DARK_DEFAULT_BG,
+            DARK_CURSOR_BG,
+            DARK_SELECTION_BG,
+            DARK_ANSI,
+        ),
         ThemePreset::Cuberpunk => preset_theme(
             CUBERPUNK_DEFAULT_FG,
             CUBERPUNK_DEFAULT_BG,

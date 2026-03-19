@@ -116,6 +116,10 @@ fn parser_accepts_mode_and_shell_commands() {
         SettingsCommand::SetMode(RenderMode::Gpu)
     );
     assert_eq!(
+        parse_palette_command("theme set system").unwrap(),
+        SettingsCommand::SetTheme(ThemePreset::System)
+    );
+    assert_eq!(
         parse_palette_command("theme set cuberpunk").unwrap(),
         SettingsCommand::SetTheme(ThemePreset::Cuberpunk)
     );
@@ -161,7 +165,7 @@ fn parser_rejects_invalid_theme_value() {
         SettingsCommandParseError::InvalidValue {
             field: "theme",
             value: "neon".to_string(),
-            expected: "cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin",
+            expected: "system|cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin",
         }
     );
 }
@@ -195,6 +199,10 @@ fn theme_preset_contracts_expose_concrete_palette_data() {
     assert_eq!(catppuccin.cursor_bg, (0xf5, 0xe0, 0xdc));
     assert_eq!(catppuccin.palette[12], 0x0089b4fa);
     assert_eq!(catppuccin.palette[16], 0x00000000);
+
+    let system = theme_for_preset(ThemePreset::System);
+    assert_eq!(system.default_fg, dark.default_fg);
+    assert_eq!(system.default_bg, dark.default_bg);
 }
 
 #[test]

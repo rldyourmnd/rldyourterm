@@ -205,6 +205,7 @@ pub enum RenderCadencePolicyKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemePresetKind {
+    System,
     Cuberpunk,
     Aurora,
     Monochrome,
@@ -647,6 +648,7 @@ impl From<RenderCadencePolicy> for RenderCadencePolicyKind {
 impl From<ThemePreset> for ThemePresetKind {
     fn from(value: ThemePreset) -> Self {
         match value {
+            ThemePreset::System => Self::System,
             ThemePreset::Cuberpunk => Self::Cuberpunk,
             ThemePreset::Aurora => Self::Aurora,
             ThemePreset::Monochrome => Self::Monochrome,
@@ -778,6 +780,7 @@ fn settings_shell_input(target: ShellTarget) -> &'static str {
 
 fn theme_input(theme: ThemePreset) -> &'static str {
     match theme {
+        ThemePreset::System => "system",
         ThemePreset::Cuberpunk => "cuberpunk",
         ThemePreset::Aurora => "aurora",
         ThemePreset::Monochrome => "monochrome",

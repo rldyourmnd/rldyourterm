@@ -172,6 +172,12 @@ impl ApplicationHandler<GuiEvent> for GuiRuntimeApp {
                     );
                 }
             }
+            WindowEvent::ThemeChanged(theme) => {
+                if self.control.settings.state().theme == ThemePreset::System {
+                    let _ = self.sync_theme_selection(Some(theme));
+                    self.queue_redraw();
+                }
+            }
             WindowEvent::Occluded(occluded) => {
                 debug!(occluded, "window occlusion changed");
             }
