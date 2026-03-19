@@ -18,7 +18,7 @@ mod state;
 pub use cursor::Cursor;
 pub use grid::{
     ANSI_PALETTE, Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, CellText, Color, DEFAULT_BG, DEFAULT_FG,
-    Grid, UnderlineStyle, color_to_u32,
+    Grid, TerminalTheme, UnderlineStyle, color_to_u32,
 };
 pub use input::{
     RuntimeKey, RuntimeKeyEvent, RuntimeKeyEventKind, RuntimeKeyModifiers, TerminalModeFlags,

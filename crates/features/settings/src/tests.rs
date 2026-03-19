@@ -9,7 +9,7 @@ use crate::{
     RuntimeProfileValidationError, SettingsApplyNoopReason, SettingsApplyOutcome,
     SettingsApplyRejectReason, SettingsCommand, SettingsCommandParseError,
     SettingsPaletteApplyOutcome, SettingsPaletteRejectReason, SettingsService, SettingsState,
-    ShellTarget, ThemePreset, parse_palette_command,
+    ShellTarget, ThemePreset, parse_palette_command, theme_for_preset,
 };
 
 #[test]
@@ -140,6 +140,16 @@ fn parser_rejects_invalid_theme_value() {
             expected: "cuberpunk|aurora|monochrome",
         }
     );
+}
+
+#[test]
+fn theme_preset_contracts_expose_concrete_palette_data() {
+    let theme = theme_for_preset(ThemePreset::Monochrome);
+    assert_eq!(theme.default_fg, (0x22, 0x22, 0x22));
+    assert_eq!(theme.default_bg, (0xf5, 0xf5, 0xf5));
+    assert_eq!(theme.palette[0], 0x00181818);
+    assert_eq!(theme.palette[15], 0x00ffffff);
+    assert_eq!(theme.palette[16], 0x00000000);
 }
 
 #[test]

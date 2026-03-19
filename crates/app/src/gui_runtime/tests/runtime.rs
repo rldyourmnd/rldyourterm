@@ -21,7 +21,7 @@ use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, Sessio
 use rldyourterm_services::terminal::{
     ANSI_PALETTE, Attrs, Color, SearchMatch, TerminalState, color_to_u32,
 };
-use rldyourterm_settings::SettingsService;
+use rldyourterm_settings::{SettingsService, ThemePreset, theme_for_preset};
 use rldyourterm_ui::UiRuntimeCommand;
 use winit::keyboard::{Key, ModifiersState};
 
@@ -49,10 +49,12 @@ fn detects_palette_shortcut_with_ctrl_or_cmd_shift_p() {
 #[test]
 fn palette_dispatch_updates_render_mode_via_runtime_path() {
     let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+    let mut terminal = TerminalState::new(10, 4, 5);
     let mut settings = SettingsService::default();
 
-    let message = dispatch_runtime_palette_command(&mut ui_runtime, &mut settings, "mode cpu")
-        .expect("dispatch mode cpu");
+    let message =
+        dispatch_runtime_palette_command(&mut ui_runtime, &mut terminal, &mut settings, "mode cpu")
+            .expect("dispatch mode cpu");
     assert!(message.contains("mode=cpu"));
     assert_eq!(settings.state().mode, RenderMode::Cpu);
     assert_eq!(ui_runtime.render_mode(), RenderMode::Cpu);
@@ -61,17 +63,51 @@ fn palette_dispatch_updates_render_mode_via_runtime_path() {
 #[test]
 fn palette_dispatch_toggles_diagnostics_state() {
     let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+    let mut terminal = TerminalState::new(10, 4, 5);
     let mut settings = SettingsService::default();
 
-    let on_message = dispatch_runtime_palette_command(&mut ui_runtime, &mut settings, "debug on")
-        .expect("dispatch debug on");
+    let on_message =
+        dispatch_runtime_palette_command(&mut ui_runtime, &mut terminal, &mut settings, "debug on")
+            .expect("dispatch debug on");
     assert!(on_message.contains("diagnostics=on"));
     assert!(settings.state().debug_mode);
 
-    let off_message = dispatch_runtime_palette_command(&mut ui_runtime, &mut settings, "debug off")
-        .expect("dispatch debug off");
+    let off_message = dispatch_runtime_palette_command(
+        &mut ui_runtime,
+        &mut terminal,
+        &mut settings,
+        "debug off",
+    )
+    .expect("dispatch debug off");
     assert!(off_message.contains("diagnostics=off"));
     assert!(!settings.state().debug_mode);
+}
+
+#[test]
+fn palette_dispatch_applies_theme_to_live_terminal() {
+    let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+    let mut terminal = TerminalState::new(10, 4, 5);
+    let mut settings = SettingsService::default();
+    let theme = theme_for_preset(ThemePreset::Aurora);
+
+    let message = dispatch_runtime_palette_command(
+        &mut ui_runtime,
+        &mut terminal,
+        &mut settings,
+        "theme set aurora",
+    )
+    .expect("dispatch theme set aurora");
+
+    assert_eq!(settings.state().theme, ThemePreset::Aurora);
+    assert_eq!(terminal.palette_color(1), theme.palette[1]);
+    assert_eq!(
+        terminal.resolve_cell_colors(&Attrs::default()),
+        (
+            color_to_u32(Color::Default, theme.default_fg),
+            color_to_u32(Color::Default, theme.default_bg),
+        )
+    );
+    assert_eq!(message, "[palette] theme=aurora active-path=gpu");
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use crate::{
     events::CoreEvent,
-    grid::{Attrs, Color, DEFAULT_BG, DEFAULT_FG, UnderlineStyle},
+    grid::{Attrs, Color, UnderlineStyle},
     parser::{ParserAction, StatusStringRequest},
 };
 
@@ -260,12 +260,12 @@ impl TerminalState {
             }
             ParserAction::QueryForegroundColor => {
                 events.push(CoreEvent::TerminalResponse {
-                    data: osc_dynamic_color_response(10, DEFAULT_FG),
+                    data: osc_dynamic_color_response(10, self.default_fg),
                 });
             }
             ParserAction::QueryBackgroundColor => {
                 events.push(CoreEvent::TerminalResponse {
-                    data: osc_dynamic_color_response(11, DEFAULT_BG),
+                    data: osc_dynamic_color_response(11, self.default_bg),
                 });
             }
             ParserAction::RequestStatusString(request) => {

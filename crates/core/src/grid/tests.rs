@@ -123,6 +123,24 @@ fn palette_override_and_reset_roundtrip() {
 }
 
 #[test]
+fn palette_theme_baseline_updates_unmodified_entries_and_preserves_overrides() {
+    let mut palette = Palette::default();
+    palette.set_rgb(2, (0x01, 0x02, 0x03));
+
+    let mut theme_palette = ANSI_PALETTE;
+    theme_palette[1] = 0x00112233;
+    theme_palette[2] = 0x00445566;
+
+    palette.set_base_colors(theme_palette);
+
+    assert_eq!(palette.get(1), 0x00112233);
+    assert_eq!(palette.get(2), 0x00010203);
+
+    palette.reset_color(2);
+    assert_eq!(palette.get(2), 0x00445566);
+}
+
+#[test]
 fn palette_resolve_color_uses_overrides() {
     let mut palette = Palette::default();
     palette.set_rgb(9, (0xde, 0xad, 0xbe));

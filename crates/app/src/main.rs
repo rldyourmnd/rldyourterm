@@ -268,6 +268,7 @@ fn run(cli: Cli) -> Result<RunOutcome> {
             render_mode,
             refresh_rate_millihz,
             cli.window_count,
+            settings.state().clone(),
             clipboard,
         ) {
             Ok(code) => code,

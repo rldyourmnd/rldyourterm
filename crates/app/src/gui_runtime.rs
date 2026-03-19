@@ -90,7 +90,7 @@ use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransi
 use rldyourterm_services::terminal::{
     Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, MouseMode, TerminalState,
 };
-use rldyourterm_settings::{SettingsCommand, SettingsService};
+use rldyourterm_settings::{SettingsCommand, SettingsService, SettingsState, theme_for_preset};
 use rldyourterm_ui::{
     DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome,
     UiCommandReceipt, UiRuntime, UiRuntimeCommand,
@@ -186,6 +186,7 @@ pub(crate) fn run_interactive_gui_pty(
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
     window_count: u8,
+    initial_settings: SettingsState,
     clipboard: Arc<dyn ClipboardAdapter>,
 ) -> Result<i32> {
     if window_count != 1 {
@@ -219,6 +220,7 @@ pub(crate) fn run_interactive_gui_pty(
         initial_mode,
         refresh_rate_millihz,
         window_count,
+        initial_settings,
         output_backpressure,
         clipboard,
     };
@@ -356,6 +358,7 @@ struct GuiRuntimeBootstrap {
     initial_mode: RenderMode,
     refresh_rate_millihz: u32,
     window_count: u8,
+    initial_settings: SettingsState,
     output_backpressure: Arc<OutputQueueBackpressure>,
     clipboard: Arc<dyn ClipboardAdapter>,
 }
@@ -462,6 +465,7 @@ impl GuiRuntimeApp {
             initial_mode,
             refresh_rate_millihz,
             window_count,
+            initial_settings,
             output_backpressure,
             clipboard,
         } = bootstrap;
@@ -493,6 +497,16 @@ impl GuiRuntimeApp {
             }
         }
 
+        let settings = SettingsService::new(initial_settings);
+        debug_assert_eq!(settings.state().mode, initial_mode);
+
+        let mut terminal = TerminalState::new(
+            DEFAULT_TERMINAL_COLS,
+            DEFAULT_TERMINAL_ROWS,
+            DEFAULT_SCROLLBACK_CAP,
+        );
+        terminal.apply_theme(&theme_for_preset(settings.state().theme));
+
         Ok(Self {
             event_proxy,
             pty,
@@ -508,7 +522,7 @@ impl GuiRuntimeApp {
                 diagnostics: DiagnosticsSink::default(),
                 ui_runtime,
                 render_backend: RenderBackendCoordinator::new(initial_mode),
-                settings: SettingsService::default(),
+                settings,
             },
             gpu_renderer: GpuRenderer::default(),
             gpu_cache_dir: app_handler::resolve_gpu_cache_dir(),
@@ -525,11 +539,7 @@ impl GuiRuntimeApp {
                 },
                 last_window_title: String::new(),
             },
-            terminal: TerminalState::new(
-                DEFAULT_TERMINAL_COLS,
-                DEFAULT_TERMINAL_ROWS,
-                DEFAULT_SCROLLBACK_CAP,
-            ),
+            terminal,
             glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
             frame: GuiRuntimeFramePlane {
                 redraw_pending: true,

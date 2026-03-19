@@ -33,6 +33,7 @@ impl GuiRuntimeApp {
             let result_line = if let Some(command) = dispatch.command {
                 if let Some(receipt) = apply_palette_settings_command_to_ui_runtime(
                     &mut self.control.ui_runtime,
+                    &mut self.terminal,
                     command,
                 )? && let Err(error) = self.control.diagnostics.emit_runtime_command_receipt(
                     None,
@@ -45,6 +46,9 @@ impl GuiRuntimeApp {
                         command = ?receipt.command,
                         "failed to emit typed palette runtime command diagnostics"
                     );
+                }
+                if matches!(command, SettingsCommand::SetTheme(_)) {
+                    self.queue_redraw();
                 }
                 self.sync_deferred_gpu_init_state();
                 shared_runtime_palette_status_line(
@@ -613,6 +617,7 @@ impl GuiRuntimeApp {
 #[cfg(test)]
 pub(super) fn dispatch_runtime_palette_command(
     ui_runtime: &mut UiRuntime,
+    terminal: &mut TerminalState,
     settings: &mut SettingsService,
     input: &str,
 ) -> Result<String> {
@@ -622,7 +627,7 @@ pub(super) fn dispatch_runtime_palette_command(
         Some(ui_runtime.active_render_path()),
     );
     if let Some(command) = result.command {
-        let _ = apply_palette_settings_command_to_ui_runtime(ui_runtime, command)?;
+        let _ = apply_palette_settings_command_to_ui_runtime(ui_runtime, terminal, command)?;
         result.message = shared_runtime_palette_status_line(
             command,
             settings.state().mode,
@@ -635,6 +640,7 @@ pub(super) fn dispatch_runtime_palette_command(
 
 pub(super) fn apply_palette_settings_command_to_ui_runtime(
     ui_runtime: &mut UiRuntime,
+    terminal: &mut TerminalState,
     command: SettingsCommand,
 ) -> Result<Option<UiCommandReceipt>> {
     if let SettingsCommand::SetMode(mode) = command {
@@ -642,6 +648,9 @@ pub(super) fn apply_palette_settings_command_to_ui_runtime(
             .handle_command(UiRuntimeCommand::SetRenderMode(mode))
             .context("failed to dispatch UiRuntimeCommand::SetRenderMode from runtime palette")?;
         return Ok(Some(receipt));
+    }
+    if let SettingsCommand::SetTheme(theme) = command {
+        terminal.apply_theme(&theme_for_preset(theme));
     }
     Ok(None)
 }

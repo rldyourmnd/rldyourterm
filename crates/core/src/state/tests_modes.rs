@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use crate::events::{CoreEvent, DisplayClearMode};
-use crate::grid::{Attrs, Color, DEFAULT_BG, DEFAULT_FG, UnderlineStyle};
+use crate::grid::{
+    ANSI_PALETTE, Attrs, Color, DEFAULT_BG, DEFAULT_FG, TerminalTheme, UnderlineStyle,
+};
 
 use super::{MouseFormat, MouseMode, TerminalState};
 
@@ -1264,6 +1266,33 @@ fn query_background_color_emits_response() {
     assert!(events.iter().any(
         |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]11;rgb:1414/1b1b/1f1f\x1b\\")
     ));
+}
+
+#[test]
+fn apply_theme_updates_dynamic_color_queries_and_palette_reset_baseline() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let mut palette = ANSI_PALETTE;
+    palette[1] = 0x00112233;
+    let theme = TerminalTheme {
+        default_fg: (0x12, 0x34, 0x56),
+        default_bg: (0x65, 0x43, 0x21),
+        palette,
+    };
+    state.apply_theme(&theme);
+
+    let dynamic_color_events = state.feed(b"\x1b]10;?\x07\x1b]11;?\x07");
+    assert!(dynamic_color_events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]10;rgb:1212/3434/5656\x1b\\")
+    ));
+    assert!(dynamic_color_events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]11;rgb:6565/4343/2121\x1b\\")
+    ));
+
+    let _ = state.feed(b"\x1b]4;1;rgb:ab/cd/ef\x07");
+    assert_eq!(state.palette_color(1), 0xabcdef);
+
+    let _ = state.feed(b"\x1b]104;1\x07");
+    assert_eq!(state.palette_color(1), theme.palette[1]);
 }
 
 #[test]

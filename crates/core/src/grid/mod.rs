@@ -305,7 +305,15 @@ impl Default for Cell {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
+    base_colors: [u32; 256],
     colors: [u32; 256],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalTheme {
+    pub default_fg: (u8, u8, u8),
+    pub default_bg: (u8, u8, u8),
+    pub palette: [u32; 256],
 }
 
 impl Palette {
@@ -318,12 +326,22 @@ impl Palette {
         self.colors[index as usize] = pack_rgb(rgb.0, rgb.1, rgb.2);
     }
 
+    pub fn set_base_colors(&mut self, base_colors: [u32; 256]) {
+        let previous_base_colors = self.base_colors;
+        for (index, color) in self.colors.iter_mut().enumerate() {
+            if *color == previous_base_colors[index] {
+                *color = base_colors[index];
+            }
+        }
+        self.base_colors = base_colors;
+    }
+
     pub fn reset_color(&mut self, index: u8) {
-        self.colors[index as usize] = ANSI_PALETTE[index as usize];
+        self.colors[index as usize] = self.base_colors[index as usize];
     }
 
     pub fn reset_all(&mut self) {
-        self.colors = ANSI_PALETTE;
+        self.colors = self.base_colors;
     }
 
     #[must_use]
@@ -339,7 +357,18 @@ impl Palette {
 impl Default for Palette {
     fn default() -> Self {
         Self {
+            base_colors: ANSI_PALETTE,
             colors: ANSI_PALETTE,
+        }
+    }
+}
+
+impl Default for TerminalTheme {
+    fn default() -> Self {
+        Self {
+            default_fg: DEFAULT_FG,
+            default_bg: DEFAULT_BG,
+            palette: ANSI_PALETTE,
         }
     }
 }

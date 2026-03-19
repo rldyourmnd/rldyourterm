@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
-use rldyourterm_settings::{SettingsCommand, SettingsPaletteApplyOutcome, SettingsService};
+use rldyourterm_settings::{
+    SettingsCommand, SettingsPaletteApplyOutcome, SettingsService, ThemePreset,
+};
 use tracing::warn;
 
 use crate::RuntimeKey;
@@ -236,10 +238,17 @@ pub fn runtime_palette_status_line(
                 render_mode_token(mode),
             ),
         },
+        SettingsCommand::SetTheme(theme) => match active_render_path {
+            Some(active_render_path) => format!(
+                "[palette] theme={} active-path={}",
+                theme_preset_token(theme),
+                active_render_path_token(active_render_path),
+            ),
+            None => format!("[palette] saved (restart required) input={command:?}"),
+        },
         SettingsCommand::SetShellTarget(_)
         | SettingsCommand::SetShellAutoInit(_)
         | SettingsCommand::SetRenderCadencePolicy(_)
-        | SettingsCommand::SetTheme(_)
         | SettingsCommand::SetRuntimeProfile(_) => {
             format!("[palette] saved (restart required) input={command:?}")
         }
@@ -258,6 +267,14 @@ fn render_mode_token(mode: RenderMode) -> &'static str {
         RenderMode::Cpu => "cpu",
         RenderMode::Gpu => "gpu",
         RenderMode::Auto => "auto",
+    }
+}
+
+fn theme_preset_token(theme: ThemePreset) -> &'static str {
+    match theme {
+        ThemePreset::Cuberpunk => "cuberpunk",
+        ThemePreset::Aurora => "aurora",
+        ThemePreset::Monochrome => "monochrome",
     }
 }
 

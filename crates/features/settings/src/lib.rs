@@ -3,6 +3,7 @@
 
 mod parse;
 mod service;
+mod theme;
 mod types;
 
 #[cfg(test)]
@@ -10,6 +11,7 @@ mod tests;
 
 pub use parse::parse_palette_command;
 pub use service::SettingsService;
+pub use theme::theme_for_preset;
 pub use types::{
     PersistedRenderMode, RUNTIME_PROFILE_SCHEMA_VERSION, RenderCadencePolicy,
     RuntimeProfileApplyOutcome, RuntimeProfilePreset, RuntimeProfileState,

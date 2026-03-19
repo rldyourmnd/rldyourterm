@@ -14,7 +14,7 @@ mod tests_stress;
 use crate::{
     cursor::Cursor,
     events::{CoreEvent, IngestDegradeReason},
-    grid::{Attrs, Cell, Color, DEFAULT_BG, DEFAULT_FG, Grid, Palette},
+    grid::{Attrs, Cell, Color, DEFAULT_BG, DEFAULT_FG, Grid, Palette, TerminalTheme},
     parser::{Parser, ParserAction},
     scrollback::Scrollback,
 };
@@ -102,6 +102,8 @@ pub struct TerminalState {
     pub(super) pending_clipboard: Option<(char, String)>,
     pub(super) pending_bell: bool,
     pub(super) palette: Palette,
+    pub(super) default_fg: (u8, u8, u8),
+    pub(super) default_bg: (u8, u8, u8),
     pub(super) bracketed_paste: bool,
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
@@ -143,6 +145,8 @@ impl TerminalState {
             pending_clipboard: None,
             pending_bell: false,
             palette: Palette::default(),
+            default_fg: DEFAULT_FG,
+            default_bg: DEFAULT_BG,
             bracketed_paste: false,
             application_keypad_mode: false,
             application_cursor_keys: false,
@@ -260,8 +264,8 @@ impl TerminalState {
     }
 
     pub fn resolve_cell_colors(&self, attrs: &Attrs) -> (u32, u32) {
-        let mut fg = self.resolve_color(attrs.fg, DEFAULT_FG);
-        let mut bg = self.resolve_color(attrs.bg, DEFAULT_BG);
+        let mut fg = self.resolve_color(attrs.fg, self.default_fg);
+        let mut bg = self.resolve_color(attrs.bg, self.default_bg);
 
         if attrs.dim() {
             let r = ((fg >> 16) & 0xff) as u8 / 2;
@@ -279,6 +283,16 @@ impl TerminalState {
         }
 
         (fg, bg)
+    }
+
+    pub fn apply_theme(&mut self, theme: &TerminalTheme) {
+        self.default_fg = theme.default_fg;
+        self.default_bg = theme.default_bg;
+        self.palette.set_base_colors(theme.palette);
+        self.grid.mark_all_dirty();
+        if let Some(alternate_screen) = self.alternate_screen.as_mut() {
+            alternate_screen.grid.mark_all_dirty();
+        }
     }
 
     pub(super) fn set_palette_color(&mut self, index: u8, rgb: (u8, u8, u8)) {
