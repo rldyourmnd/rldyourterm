@@ -208,6 +208,11 @@ pub enum ThemePresetKind {
     Cuberpunk,
     Aurora,
     Monochrome,
+    Dark,
+    Light,
+    Solarized,
+    Dracula,
+    Catppuccin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -645,6 +650,11 @@ impl From<ThemePreset> for ThemePresetKind {
             ThemePreset::Cuberpunk => Self::Cuberpunk,
             ThemePreset::Aurora => Self::Aurora,
             ThemePreset::Monochrome => Self::Monochrome,
+            ThemePreset::Dark => Self::Dark,
+            ThemePreset::Light => Self::Light,
+            ThemePreset::Solarized => Self::Solarized,
+            ThemePreset::Dracula => Self::Dracula,
+            ThemePreset::Catppuccin => Self::Catppuccin,
         }
     }
 }
@@ -771,6 +781,11 @@ fn theme_input(theme: ThemePreset) -> &'static str {
         ThemePreset::Cuberpunk => "cuberpunk",
         ThemePreset::Aurora => "aurora",
         ThemePreset::Monochrome => "monochrome",
+        ThemePreset::Dark => "dark",
+        ThemePreset::Light => "light",
+        ThemePreset::Solarized => "solarized",
+        ThemePreset::Dracula => "dracula",
+        ThemePreset::Catppuccin => "catppuccin",
     }
 }
 

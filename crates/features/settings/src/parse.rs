@@ -8,6 +8,9 @@ use crate::{
     ShellTarget, ThemePreset,
 };
 
+const THEME_PRESET_EXPECTED: &str =
+    "cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin";
+
 pub fn parse_palette_command(input: &str) -> Result<SettingsCommand, SettingsCommandParseError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -173,14 +176,14 @@ fn parse_theme_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsComma
     if tokens.len() < 3 {
         return Err(SettingsCommandParseError::MissingArgument {
             command: "theme".to_string(),
-            expected: "set <cuberpunk|aurora|monochrome>",
+            expected: "set <cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin>",
         });
     }
     if normalize_token(tokens[1]) != "set" {
         return Err(SettingsCommandParseError::InvalidValue {
             field: "theme",
             value: normalize_token(tokens[1]),
-            expected: "set <cuberpunk|aurora|monochrome>",
+            expected: "set <cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin>",
         });
     }
     if tokens.len() > 3 {
@@ -194,11 +197,16 @@ fn parse_theme_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsComma
         "cuberpunk" => ThemePreset::Cuberpunk,
         "aurora" => ThemePreset::Aurora,
         "monochrome" => ThemePreset::Monochrome,
+        "dark" => ThemePreset::Dark,
+        "light" => ThemePreset::Light,
+        "solarized" => ThemePreset::Solarized,
+        "dracula" => ThemePreset::Dracula,
+        "catppuccin" => ThemePreset::Catppuccin,
         value => {
             return Err(SettingsCommandParseError::InvalidValue {
                 field: "theme",
                 value: value.to_string(),
-                expected: "cuberpunk|aurora|monochrome",
+                expected: THEME_PRESET_EXPECTED,
             });
         }
     };

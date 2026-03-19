@@ -275,6 +275,11 @@ fn theme_preset_token(theme: ThemePreset) -> &'static str {
         ThemePreset::Cuberpunk => "cuberpunk",
         ThemePreset::Aurora => "aurora",
         ThemePreset::Monochrome => "monochrome",
+        ThemePreset::Dark => "dark",
+        ThemePreset::Light => "light",
+        ThemePreset::Solarized => "solarized",
+        ThemePreset::Dracula => "dracula",
+        ThemePreset::Catppuccin => "catppuccin",
     }
 }
 

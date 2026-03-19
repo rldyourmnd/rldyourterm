@@ -88,17 +88,17 @@ fn palette_dispatch_applies_theme_to_live_terminal() {
     let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
     let mut terminal = TerminalState::new(10, 4, 5);
     let mut settings = SettingsService::default();
-    let theme = theme_for_preset(ThemePreset::Aurora);
+    let theme = theme_for_preset(ThemePreset::Dracula);
 
     let message = dispatch_runtime_palette_command(
         &mut ui_runtime,
         &mut terminal,
         &mut settings,
-        "theme set aurora",
+        "theme set dracula",
     )
-    .expect("dispatch theme set aurora");
+    .expect("dispatch theme set dracula");
 
-    assert_eq!(settings.state().theme, ThemePreset::Aurora);
+    assert_eq!(settings.state().theme, ThemePreset::Dracula);
     assert_eq!(terminal.palette_color(1), theme.palette[1]);
     assert_eq!(
         terminal.resolve_cell_colors(&Attrs::default()),
@@ -107,7 +107,7 @@ fn palette_dispatch_applies_theme_to_live_terminal() {
             color_to_u32(Color::Default, theme.default_bg),
         )
     );
-    assert_eq!(message, "[palette] theme=aurora active-path=gpu");
+    assert_eq!(message, "[palette] theme=dracula active-path=gpu");
 }
 
 #[test]

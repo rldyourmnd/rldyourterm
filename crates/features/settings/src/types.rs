@@ -20,6 +20,11 @@ pub enum ThemePreset {
     Cuberpunk,
     Aurora,
     Monochrome,
+    Dark,
+    Light,
+    Solarized,
+    Dracula,
+    Catppuccin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

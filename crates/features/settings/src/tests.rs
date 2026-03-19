@@ -130,6 +130,30 @@ fn parser_accepts_mode_and_shell_commands() {
 }
 
 #[test]
+fn parser_accepts_requested_theme_presets() {
+    assert_eq!(
+        parse_palette_command("theme set dark").unwrap(),
+        SettingsCommand::SetTheme(ThemePreset::Dark)
+    );
+    assert_eq!(
+        parse_palette_command("theme set light").unwrap(),
+        SettingsCommand::SetTheme(ThemePreset::Light)
+    );
+    assert_eq!(
+        parse_palette_command("theme set solarized").unwrap(),
+        SettingsCommand::SetTheme(ThemePreset::Solarized)
+    );
+    assert_eq!(
+        parse_palette_command("theme set dracula").unwrap(),
+        SettingsCommand::SetTheme(ThemePreset::Dracula)
+    );
+    assert_eq!(
+        parse_palette_command("theme set catppuccin").unwrap(),
+        SettingsCommand::SetTheme(ThemePreset::Catppuccin)
+    );
+}
+
+#[test]
 fn parser_rejects_invalid_theme_value() {
     let err = parse_palette_command("theme set neon").unwrap_err();
     assert_eq!(
@@ -137,23 +161,40 @@ fn parser_rejects_invalid_theme_value() {
         SettingsCommandParseError::InvalidValue {
             field: "theme",
             value: "neon".to_string(),
-            expected: "cuberpunk|aurora|monochrome",
+            expected: "cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin",
         }
     );
 }
 
 #[test]
 fn theme_preset_contracts_expose_concrete_palette_data() {
-    let theme = theme_for_preset(ThemePreset::Monochrome);
-    assert_eq!(theme.default_fg, (0x22, 0x22, 0x22));
-    assert_eq!(theme.default_bg, (0xf5, 0xf5, 0xf5));
-    assert_eq!(theme.cursor_fg, (0xf5, 0xf5, 0xf5));
-    assert_eq!(theme.cursor_bg, (0x22, 0x22, 0x22));
-    assert_eq!(theme.selection_fg, (0x22, 0x22, 0x22));
-    assert_eq!(theme.selection_bg, (0xd0, 0xd0, 0xd0));
-    assert_eq!(theme.palette[0], 0x00181818);
-    assert_eq!(theme.palette[15], 0x00ffffff);
-    assert_eq!(theme.palette[16], 0x00000000);
+    let dark = theme_for_preset(ThemePreset::Dark);
+    assert_eq!(dark.default_fg, (0xdc, 0xdf, 0xe4));
+    assert_eq!(dark.default_bg, (0x28, 0x2c, 0x34));
+    assert_eq!(dark.cursor_fg, (0x28, 0x2c, 0x34));
+    assert_eq!(dark.cursor_bg, (0x61, 0xaf, 0xef));
+    assert_eq!(dark.selection_fg, (0xdc, 0xdf, 0xe4));
+    assert_eq!(dark.selection_bg, (0x3e, 0x44, 0x51));
+    assert_eq!(dark.palette[0], 0x00282c34);
+
+    let solarized = theme_for_preset(ThemePreset::Solarized);
+    assert_eq!(solarized.default_fg, (0x83, 0x94, 0x96));
+    assert_eq!(solarized.default_bg, (0x00, 0x2b, 0x36));
+    assert_eq!(solarized.palette[1], 0x00dc322f);
+    assert_eq!(solarized.palette[13], 0x006c71c4);
+
+    let dracula = theme_for_preset(ThemePreset::Dracula);
+    assert_eq!(dracula.default_fg, (0xf8, 0xf8, 0xf2));
+    assert_eq!(dracula.default_bg, (0x28, 0x2a, 0x36));
+    assert_eq!(dracula.selection_bg, (0x44, 0x47, 0x5a));
+    assert_eq!(dracula.palette[5], 0x00ff79c6);
+
+    let catppuccin = theme_for_preset(ThemePreset::Catppuccin);
+    assert_eq!(catppuccin.default_fg, (0xcd, 0xd6, 0xf4));
+    assert_eq!(catppuccin.default_bg, (0x1e, 0x1e, 0x2e));
+    assert_eq!(catppuccin.cursor_bg, (0xf5, 0xe0, 0xdc));
+    assert_eq!(catppuccin.palette[12], 0x0089b4fa);
+    assert_eq!(catppuccin.palette[16], 0x00000000);
 }
 
 #[test]
@@ -229,7 +270,7 @@ fn runtime_profile_roundtrip_is_typed_and_stable() {
         shell_target: ShellTarget::Fish,
         shell_auto_init: true,
         render_cadence_policy: RenderCadencePolicy::MonitorAuto,
-        theme: ThemePreset::Aurora,
+        theme: ThemePreset::Catppuccin,
         runtime_profile: RuntimeProfilePreset::Throughput,
         debug_mode: true,
     };
