@@ -12,6 +12,7 @@ mod parser;
 pub use parser::ShellMarkerKind;
 mod render_mode;
 mod scrollback;
+mod search;
 mod state;
 
 pub use cursor::Cursor;
@@ -27,4 +28,5 @@ pub use input::{
 pub use parser::Parser;
 pub use render_mode::RenderMode;
 pub use scrollback::{MAX_SCROLLBACK_CAP, Scrollback};
+pub use search::{SearchError, SearchMatch};
 pub use state::{MAX_FEED_BYTES_PER_CALL, MouseFormat, MouseMode, TerminalState};

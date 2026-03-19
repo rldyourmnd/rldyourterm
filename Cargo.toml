@@ -51,6 +51,7 @@ fontdue = "0.9"
 pollster = "0.4"
 unicode-normalization = "0.1"
 unicode-width = "0.2"
+regex = "1.12"
 bytemuck = { version = "1.25", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rldyourterm-foundation = { version = "0.1.0", path = "crates/foundation" }
