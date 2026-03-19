@@ -40,7 +40,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 portable-pty = "0.9"
 winit = "0.30"
-wgpu = "28.0"
+wgpu = "29.0"
 arboard = "3.6"
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
