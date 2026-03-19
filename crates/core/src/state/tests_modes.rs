@@ -120,6 +120,17 @@ fn tab_uses_default_8_column_stops() {
 }
 
 #[test]
+fn cursor_backward_tab_uses_previous_tab_stops() {
+    let mut state = TerminalState::new(40, 1, 5);
+    state.cursor.col = 24;
+    let _ = state.feed(b"\x1b[Z");
+    assert_eq!(state.cursor.col, 16);
+
+    let _ = state.feed(b"\x1b[2Z");
+    assert_eq!(state.cursor.col, 0);
+}
+
+#[test]
 fn wide_char_occupies_two_columns() {
     let mut state = TerminalState::new(10, 1, 5);
     // CJK character U+4E16 ('世') is width 2
@@ -1068,6 +1079,40 @@ fn decrqm_reports_reset_mode() {
             |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?2004;2$y")
         )
     );
+}
+
+#[test]
+fn decrqm_reports_grapheme_cluster_mode_state() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b[?2027$p");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?2027;2$y")
+        )
+    );
+
+    let _ = state.feed(b"\x1b[?2027h");
+    assert!(state.grapheme_cluster_mode);
+    let events = state.feed(b"\x1b[?2027$p");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?2027;1$y")
+        )
+    );
+}
+
+#[test]
+fn alternate_screen_restores_grapheme_cluster_mode() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let _ = state.feed(b"\x1b[?2027h");
+    assert!(state.grapheme_cluster_mode);
+
+    let _ = state.feed(b"\x1b[?1049h");
+    let _ = state.feed(b"\x1b[?2027l");
+    assert!(!state.grapheme_cluster_mode);
+    let _ = state.feed(b"\x1b[?1049l");
+
+    assert!(state.grapheme_cluster_mode);
 }
 
 #[test]

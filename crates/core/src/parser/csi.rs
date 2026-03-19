@@ -110,6 +110,7 @@ impl Parser {
             b'D' => Some(ParserAction::CursorBack(step_param(&parsed))),
             b'E' => Some(ParserAction::CursorNextLine(step_param(&parsed))),
             b'F' => Some(ParserAction::CursorPreviousLine(step_param(&parsed))),
+            b'Z' => Some(ParserAction::CursorBackwardTab(step_param(&parsed))),
             b'H' | b'f' => {
                 let row = position_param(&parsed, 0);
                 let col = position_param(&parsed, 1);
@@ -273,6 +274,8 @@ impl Parser {
             (6, b'l') => Some(ParserAction::SetOriginMode(false)),
             (7, b'h') => Some(ParserAction::AutoWrapMode(true)),
             (7, b'l') => Some(ParserAction::AutoWrapMode(false)),
+            (2027, b'h') => Some(ParserAction::SetGraphemeClusterMode(true)),
+            (2027, b'l') => Some(ParserAction::SetGraphemeClusterMode(false)),
             (25, b'h') => Some(ParserAction::SetCursorVisible(true)),
             (25, b'l') => Some(ParserAction::SetCursorVisible(false)),
             (1049, b'h') => Some(ParserAction::AlternateScreenEnter),

@@ -201,6 +201,28 @@ impl TerminalState {
         self.cursor.col = max_col;
     }
 
+    pub(super) fn apply_cursor_backward_tab(&mut self, count: u16, _events: &mut Vec<CoreEvent>) {
+        if self.grid.is_empty() {
+            return;
+        }
+
+        self.cursor.wrap_pending = false;
+        let mut remaining = count.max(1);
+        while remaining > 0 {
+            let stop = (0..self.cursor.col as usize)
+                .rev()
+                .find(|&col| self.tab_stops.get(col).copied().unwrap_or(false));
+            match stop {
+                Some(col) => self.cursor.col = col as u16,
+                None => {
+                    self.cursor.col = 0;
+                    break;
+                }
+            }
+            remaining -= 1;
+        }
+    }
+
     pub(super) fn apply_cursor_relative(
         &mut self,
         row_delta: i32,

@@ -578,6 +578,35 @@ fn decrqm_reports_mode_status() {
     // Query mode 2004 (bracketed paste)
     let actions = parser.feed(b"\x1b[?2004$p");
     assert_eq!(actions, vec![ParserAction::RequestModeReport(2004)]);
+    // Query mode 2027 (grapheme cluster mode)
+    let actions = parser.feed(b"\x1b[?2027$p");
+    assert_eq!(actions, vec![ParserAction::RequestModeReport(2027)]);
+}
+
+#[test]
+fn parses_grapheme_cluster_mode_toggle() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[?2027h\x1b[?2027l");
+    assert_eq!(
+        actions,
+        vec![
+            ParserAction::SetGraphemeClusterMode(true),
+            ParserAction::SetGraphemeClusterMode(false),
+        ]
+    );
+}
+
+#[test]
+fn parses_cursor_backward_tab() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[Z\x1b[3Z");
+    assert_eq!(
+        actions,
+        vec![
+            ParserAction::CursorBackwardTab(1),
+            ParserAction::CursorBackwardTab(3),
+        ]
+    );
 }
 
 // ── OSC 8: Hyperlinks ──────────────────────────────────────

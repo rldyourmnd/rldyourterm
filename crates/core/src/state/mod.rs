@@ -58,6 +58,7 @@ pub(super) struct ScreenModeState {
     pub(super) application_cursor_keys: bool,
     pub(super) auto_wrap: bool,
     pub(super) origin_mode: bool,
+    pub(super) grapheme_cluster_mode: bool,
     pub(super) mouse_mode: MouseMode,
     pub(super) mouse_format: MouseFormat,
     pub(super) cursor_blink: bool,
@@ -99,6 +100,7 @@ pub struct TerminalState {
     pub(super) application_cursor_keys: bool,
     pub(super) auto_wrap: bool,
     pub(super) origin_mode: bool,
+    pub(super) grapheme_cluster_mode: bool,
     pub(super) mouse_mode: MouseMode,
     pub(super) mouse_format: MouseFormat,
     pub(super) cursor_blink: bool,
@@ -133,6 +135,7 @@ impl TerminalState {
             application_cursor_keys: false,
             auto_wrap: true,
             origin_mode: false,
+            grapheme_cluster_mode: false,
             mouse_mode: MouseMode::Off,
             mouse_format: MouseFormat::Normal,
             cursor_blink: false,
@@ -217,6 +220,7 @@ impl TerminalState {
             application_cursor_keys: self.application_cursor_keys,
             auto_wrap: self.auto_wrap,
             origin_mode: self.origin_mode,
+            grapheme_cluster_mode: self.grapheme_cluster_mode,
             mouse_mode: self.mouse_mode,
             mouse_format: self.mouse_format,
             cursor_blink: self.cursor_blink,
@@ -233,6 +237,7 @@ impl TerminalState {
         self.application_cursor_keys = modes.application_cursor_keys;
         self.auto_wrap = modes.auto_wrap;
         self.origin_mode = modes.origin_mode;
+        self.grapheme_cluster_mode = modes.grapheme_cluster_mode;
         self.mouse_mode = modes.mouse_mode;
         self.mouse_format = modes.mouse_format;
         self.cursor_blink = modes.cursor_blink;
@@ -264,6 +269,7 @@ impl TerminalState {
             1 => Some(self.application_cursor_keys),
             6 => Some(self.origin_mode),
             7 => Some(self.auto_wrap),
+            2027 => Some(self.grapheme_cluster_mode),
             12 => Some(self.cursor_blink),
             25 => Some(self.cursor.visible),
             47 | 1047 => Some(self.alternate_screen.is_some()),

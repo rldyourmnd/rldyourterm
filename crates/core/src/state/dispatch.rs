@@ -29,6 +29,7 @@ impl TerminalState {
             }
             ParserAction::Backspace => self.apply_backspace(events),
             ParserAction::Tab => self.apply_tab(events),
+            ParserAction::CursorBackwardTab(count) => self.apply_cursor_backward_tab(count, events),
             ParserAction::CursorUp(steps) => self.apply_cursor_relative(-(steps as i32), 0, events),
             ParserAction::CursorDown(steps) => self.apply_cursor_relative(steps as i32, 0, events),
             ParserAction::CursorForward(steps) => {
@@ -99,6 +100,9 @@ impl TerminalState {
                     self.cursor.row = top;
                     self.cursor.col = 0;
                 }
+            }
+            ParserAction::SetGraphemeClusterMode(enabled) => {
+                self.grapheme_cluster_mode = enabled;
             }
             ParserAction::SetWindowTitle(title) => {
                 if self.window_title != title {
