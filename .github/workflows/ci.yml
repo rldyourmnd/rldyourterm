@@ -97,7 +97,7 @@ jobs:
           name: coverage-lcov
           path: lcov.info
       - name: Upload to codecov
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.4.2
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.4.2
         with:
           files: lcov.info
           fail_ci_if_error: false
