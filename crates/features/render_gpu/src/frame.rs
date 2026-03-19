@@ -103,7 +103,7 @@ impl GpuRenderer {
             for display_row in 0..sb_rows {
                 let sb_line_idx = terminal.scrollback.len() - effective_offset + display_row;
                 if let Some(line) = terminal.scrollback.get(sb_line_idx) {
-                    backend.write_scrollback_row_instances(line, display_row, grid_cols);
+                    backend.write_scrollback_row_instances(terminal, line, display_row, grid_cols);
                 } else {
                     let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
                     let default_bg = color_to_u32(Color::Default, DEFAULT_BG);

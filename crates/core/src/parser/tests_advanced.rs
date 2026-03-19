@@ -647,6 +647,52 @@ fn osc_8_hyperlink_start_and_end() {
 // ── OSC 10/11: Color queries ───────────────────────────────
 
 #[test]
+fn osc_4_queries_and_sets_palette_entries() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]4;1;?;2;rgb:12/34/56;3;#abc\x07");
+    assert_eq!(
+        actions,
+        vec![
+            ParserAction::QueryPaletteColor(1),
+            ParserAction::SetPaletteColor {
+                index: 2,
+                rgb: (0x12, 0x34, 0x56),
+            },
+            ParserAction::SetPaletteColor {
+                index: 3,
+                rgb: (0xaa, 0xbb, 0xcc),
+            },
+        ]
+    );
+}
+
+#[test]
+fn osc_104_resets_specific_palette_entries() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b]104;1;9\x07");
+    assert_eq!(
+        actions,
+        vec![
+            ParserAction::ResetPaletteColor(1),
+            ParserAction::ResetPaletteColor(9),
+        ]
+    );
+}
+
+#[test]
+fn osc_104_without_payload_resets_entire_palette() {
+    let mut parser = Parser::default();
+    assert_eq!(
+        parser.feed(b"\x1b]104\x07"),
+        vec![ParserAction::ResetPalette]
+    );
+    assert_eq!(
+        parser.feed(b"\x1b]104;\x07"),
+        vec![ParserAction::ResetPalette]
+    );
+}
+
+#[test]
 fn osc_10_queries_foreground_color() {
     let mut parser = Parser::default();
     let actions = parser.feed(b"\x1b]10;?\x07");

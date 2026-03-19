@@ -266,6 +266,47 @@ impl Default for Cell {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Palette {
+    colors: [u32; 256],
+}
+
+impl Palette {
+    #[must_use]
+    pub fn get(&self, index: u8) -> u32 {
+        self.colors[index as usize]
+    }
+
+    pub fn set_rgb(&mut self, index: u8, rgb: (u8, u8, u8)) {
+        self.colors[index as usize] = pack_rgb(rgb.0, rgb.1, rgb.2);
+    }
+
+    pub fn reset_color(&mut self, index: u8) {
+        self.colors[index as usize] = ANSI_PALETTE[index as usize];
+    }
+
+    pub fn reset_all(&mut self) {
+        self.colors = ANSI_PALETTE;
+    }
+
+    #[must_use]
+    pub fn resolve_color(&self, color: Color, default: (u8, u8, u8)) -> u32 {
+        match color {
+            Color::Default => pack_rgb(default.0, default.1, default.2),
+            Color::Indexed(idx) => self.get(idx),
+            Color::Rgb(r, g, b) => pack_rgb(r, g, b),
+        }
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            colors: ANSI_PALETTE,
+        }
+    }
+}
+
 #[rustfmt::skip]
 pub static ANSI_PALETTE: [u32; 256] = {
     let mut palette = [0u32; 256];
@@ -322,16 +363,18 @@ pub static ANSI_PALETTE: [u32; 256] = {
 pub const DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
 pub const DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 
+const fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
 /// Converts a terminal `Color` to a packed RGB `u32` (`0x00RRGGBB`).
 /// `default` is used when the color is `Color::Default`.
 #[must_use]
 pub fn color_to_u32(color: Color, default: (u8, u8, u8)) -> u32 {
     match color {
-        Color::Default => {
-            ((default.0 as u32) << 16) | ((default.1 as u32) << 8) | (default.2 as u32)
-        }
+        Color::Default => pack_rgb(default.0, default.1, default.2),
         Color::Indexed(idx) => ANSI_PALETTE[idx as usize],
-        Color::Rgb(r, g, b) => ((r as u32) << 16) | ((g as u32) << 8) | (b as u32),
+        Color::Rgb(r, g, b) => pack_rgb(r, g, b),
     }
 }
 

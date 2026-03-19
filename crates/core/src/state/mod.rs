@@ -14,7 +14,7 @@ mod tests_stress;
 use crate::{
     cursor::Cursor,
     events::{CoreEvent, IngestDegradeReason},
-    grid::{Attrs, Cell, Grid},
+    grid::{Attrs, Cell, Color, Grid, Palette},
     parser::{Parser, ParserAction},
     scrollback::Scrollback,
 };
@@ -95,6 +95,7 @@ pub struct TerminalState {
     pub(super) cwd: String,
     pub(super) pending_clipboard: Option<(char, String)>,
     pub(super) pending_bell: bool,
+    pub(super) palette: Palette,
     pub(super) bracketed_paste: bool,
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
@@ -131,6 +132,7 @@ impl TerminalState {
             cwd: String::new(),
             pending_clipboard: None,
             pending_bell: false,
+            palette: Palette::default(),
             bracketed_paste: false,
             application_keypad_mode: false,
             application_cursor_keys: false,
@@ -213,6 +215,26 @@ impl TerminalState {
 
     pub fn kitty_keyboard_flags(&self) -> u16 {
         self.kitty_keyboard_stack.last().copied().unwrap_or(0)
+    }
+
+    pub fn palette_color(&self, index: u8) -> u32 {
+        self.palette.get(index)
+    }
+
+    pub fn resolve_color(&self, color: Color, default: (u8, u8, u8)) -> u32 {
+        self.palette.resolve_color(color, default)
+    }
+
+    pub(super) fn set_palette_color(&mut self, index: u8, rgb: (u8, u8, u8)) {
+        self.palette.set_rgb(index, rgb);
+    }
+
+    pub(super) fn reset_palette_color(&mut self, index: u8) {
+        self.palette.reset_color(index);
+    }
+
+    pub(super) fn reset_palette(&mut self) {
+        self.palette.reset_all();
     }
 
     pub(super) fn capture_screen_modes(&self) -> ScreenModeState {

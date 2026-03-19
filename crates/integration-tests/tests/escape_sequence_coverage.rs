@@ -719,6 +719,31 @@ fn osc_7_current_directory() {
     assert_eq!(t.cwd(), "/home/user");
 }
 
+#[test]
+fn osc_4_palette_query_set_and_reset_round_trip() {
+    let mut t = term();
+
+    let responses = feed(&mut t, b"\x1b]4;4;?\x07");
+    assert_eq!(
+        responses,
+        vec![b"\x1b]4;4;rgb:0000/0000/aaaa\x1b\\".to_vec()]
+    );
+
+    let responses = feed(&mut t, b"\x1b]4;4;rgb:12/34/56;4;?\x07");
+    assert_eq!(
+        responses,
+        vec![b"\x1b]4;4;rgb:1212/3434/5656\x1b\\".to_vec()]
+    );
+    assert_eq!(t.palette_color(4), 0x123456);
+
+    let responses = feed(&mut t, b"\x1b]104;4\x07\x1b]4;4;?\x07");
+    assert_eq!(
+        responses,
+        vec![b"\x1b]4;4;rgb:0000/0000/aaaa\x1b\\".to_vec()]
+    );
+    assert_eq!(t.palette_color(4), 0x0000aa);
+}
+
 // ── DECSTBM / scroll region ────────────────────────────────
 
 #[test]

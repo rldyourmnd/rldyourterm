@@ -122,8 +122,8 @@ impl GpuBackend {
         if let Ok(row_cells) = terminal.grid.row_cells(grid_row as u16) {
             for (col, cell) in row_cells.iter().take(cols).enumerate() {
                 let attrs = &cell.attrs;
-                let fg = color_to_u32(attrs.fg, DEFAULT_FG);
-                let bg = color_to_u32(attrs.bg, DEFAULT_BG);
+                let fg = terminal.resolve_color(attrs.fg, DEFAULT_FG);
+                let bg = terminal.resolve_color(attrs.bg, DEFAULT_BG);
 
                 // Continuation cells (width=0) are discarded in the shader;
                 // the owning wide cell's 2x quad covers their screen area.
@@ -163,7 +163,7 @@ impl GpuBackend {
                     if attrs.underline_color == Color::Default {
                         fg
                     } else {
-                        color_to_u32(attrs.underline_color, DEFAULT_FG)
+                        terminal.resolve_color(attrs.underline_color, DEFAULT_FG)
                     }
                 } else {
                     0
@@ -192,6 +192,7 @@ impl GpuBackend {
     /// preserving full visual attributes (colors, bold, italic, etc.).
     pub(super) fn write_scrollback_row_instances(
         &mut self,
+        terminal: &TerminalState,
         cells: &[Cell],
         display_row: usize,
         cols: usize,
@@ -223,13 +224,13 @@ impl GpuBackend {
                 &self.queue,
             );
             let flags = pack_cell_flags(slot, &cell.attrs);
-            let fg = color_to_u32(cell.attrs.fg, DEFAULT_FG);
-            let bg = color_to_u32(cell.attrs.bg, DEFAULT_BG);
+            let fg = terminal.resolve_color(cell.attrs.fg, DEFAULT_FG);
+            let bg = terminal.resolve_color(cell.attrs.bg, DEFAULT_BG);
             let ul = if cell.attrs.has_underline() {
                 if cell.attrs.underline_color == Color::Default {
                     fg
                 } else {
-                    color_to_u32(cell.attrs.underline_color, DEFAULT_FG)
+                    terminal.resolve_color(cell.attrs.underline_color, DEFAULT_FG)
                 }
             } else {
                 0

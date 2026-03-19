@@ -3,7 +3,7 @@
 
 use crate::scrollback::Scrollback;
 
-use super::{ANSI_PALETTE, Attrs, Cell, Color, Grid};
+use super::{ANSI_PALETTE, Attrs, Cell, Color, Grid, Palette};
 
 #[test]
 fn scroll_up_returns_removed_rows_and_clears_bottom() {
@@ -110,6 +110,27 @@ fn palette_standard_colors() {
 fn palette_grayscale_ramp() {
     assert_eq!(ANSI_PALETTE[232], 0x00_080808);
     assert_eq!(ANSI_PALETTE[255], 0x00_eeeeee);
+}
+
+#[test]
+fn palette_override_and_reset_roundtrip() {
+    let mut palette = Palette::default();
+    palette.set_rgb(1, (0x12, 0x34, 0x56));
+    assert_eq!(palette.get(1), 0x123456);
+
+    palette.reset_color(1);
+    assert_eq!(palette.get(1), ANSI_PALETTE[1]);
+}
+
+#[test]
+fn palette_resolve_color_uses_overrides() {
+    let mut palette = Palette::default();
+    palette.set_rgb(9, (0xde, 0xad, 0xbe));
+    assert_eq!(
+        palette.resolve_color(Color::Indexed(9), (0, 0, 0)),
+        0xdeadbe
+    );
+    assert_eq!(palette.resolve_color(Color::Default, (1, 2, 3)), 0x010203);
 }
 
 #[test]

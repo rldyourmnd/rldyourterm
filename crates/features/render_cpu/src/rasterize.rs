@@ -191,7 +191,7 @@ pub fn render_terminal_buffer(
                     if cell.ch == ' ' && cell.attrs == Attrs::default() {
                         continue;
                     }
-                    let (fg, bg) = resolve_cell_colors(&cell.attrs);
+                    let (fg, bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
                     let x = col * CELL_WIDTH;
                     if bg != DEFAULT_BG_U32 {
                         draw_cell_bg(buffer, width, height, x, base_y, bg);
@@ -220,6 +220,7 @@ pub fn render_terminal_buffer(
                     width,
                     height,
                     base_y,
+                    terminal,
                     cells,
                     visible_cols,
                     glyph_cache,
@@ -306,6 +307,7 @@ fn render_grid_row_cells(
     width: usize,
     height: usize,
     base_y: usize,
+    terminal: &TerminalState,
     cells: &[Cell],
     visible_cols: usize,
     glyph_cache: &mut GlyphCache,
@@ -320,7 +322,7 @@ fn render_grid_row_cells(
         }
 
         let x = col * CELL_WIDTH;
-        let (fg, bg) = resolve_cell_colors(&cell.attrs);
+        let (fg, bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
 
         let cell_pixel_width = if cell.width == 2 {
             CELL_WIDTH * 2
@@ -355,7 +357,7 @@ fn render_grid_row_cells(
             let ul_color = if cell.attrs.underline_color == Color::Default {
                 fg
             } else {
-                color_to_u32(cell.attrs.underline_color, DEFAULT_FG)
+                terminal.resolve_color(cell.attrs.underline_color, DEFAULT_FG)
             };
             draw_underline_decoration(buffer, width, height, x, base_y, underline_style, ul_color);
             if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
@@ -385,6 +387,26 @@ fn render_grid_row_cells(
             }
         }
     }
+}
+
+fn resolve_cell_colors_for_terminal(terminal: &TerminalState, attrs: &Attrs) -> (u32, u32) {
+    let mut fg = terminal.resolve_color(attrs.fg, DEFAULT_FG);
+    let mut bg = terminal.resolve_color(attrs.bg, DEFAULT_BG);
+
+    if attrs.dim() {
+        let (r, g, b) = u32_to_rgb(fg);
+        fg = rgb_to_u32(r / 2, g / 2, b / 2);
+    }
+
+    if attrs.inverse() {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+
+    if attrs.hidden() {
+        fg = bg;
+    }
+
+    (fg, bg)
 }
 
 pub fn resolve_cell_colors(attrs: &Attrs) -> (u32, u32) {

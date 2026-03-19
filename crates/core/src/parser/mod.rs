@@ -255,6 +255,13 @@ pub enum ParserAction {
         uri: String,
     },
     HyperlinkEnd,
+    SetPaletteColor {
+        index: u8,
+        rgb: (u8, u8, u8),
+    },
+    QueryPaletteColor(u8),
+    ResetPaletteColor(u8),
+    ResetPalette,
     QueryForegroundColor,
     QueryBackgroundColor,
     PushKittyKeyboardMode(u16),

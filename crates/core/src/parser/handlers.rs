@@ -180,9 +180,7 @@ impl Parser {
 
     fn complete_osc(&mut self, actions: &mut Vec<ParserAction>) {
         let raw = String::from_utf8_lossy(&self.osc_buffer).into_owned();
-        if let Some(action) = parse_osc(&raw) {
-            actions.push(action);
-        }
+        actions.extend(parse_osc(&raw));
         self.reset_state_to_ground();
     }
 
@@ -283,19 +281,115 @@ fn emit_text(text: &str, actions: &mut Vec<ParserAction>) {
     }
 }
 
-fn parse_osc(raw: &str) -> Option<ParserAction> {
-    let (code_str, payload) = raw.split_once(';')?;
-    let code: u16 = code_str.parse().ok()?;
+fn parse_osc(raw: &str) -> Vec<ParserAction> {
+    let (code_str, payload) = raw
+        .split_once(';')
+        .map_or((raw, ""), |(code, payload)| (code, payload));
+    let Ok(code) = code_str.parse::<u16>() else {
+        return Vec::new();
+    };
     match code {
-        0 | 2 => Some(ParserAction::SetWindowTitle(payload.to_string())),
-        7 => parse_osc_7_cwd(payload),
-        8 => parse_osc_8_hyperlink(payload),
-        10 if payload == "?" => Some(ParserAction::QueryForegroundColor),
-        11 if payload == "?" => Some(ParserAction::QueryBackgroundColor),
-        52 => parse_osc_52_clipboard(payload),
-        133 => parse_osc_133_shell_marker(payload),
-        _ => None,
+        0 | 2 => vec![ParserAction::SetWindowTitle(payload.to_string())],
+        4 => parse_osc_4_palette(payload),
+        7 => parse_osc_7_cwd(payload).into_iter().collect(),
+        8 => parse_osc_8_hyperlink(payload).into_iter().collect(),
+        10 if payload == "?" => vec![ParserAction::QueryForegroundColor],
+        11 if payload == "?" => vec![ParserAction::QueryBackgroundColor],
+        52 => parse_osc_52_clipboard(payload).into_iter().collect(),
+        104 => parse_osc_104_palette_reset(payload),
+        133 => parse_osc_133_shell_marker(payload).into_iter().collect(),
+        _ => Vec::new(),
     }
+}
+
+fn parse_osc_4_palette(payload: &str) -> Vec<ParserAction> {
+    let mut actions = Vec::new();
+    let mut parts = payload.split(';');
+
+    loop {
+        let Some(index_str) = parts.next() else {
+            break;
+        };
+        let Some(spec) = parts.next() else {
+            break;
+        };
+        let Ok(index) = index_str.parse::<u16>() else {
+            continue;
+        };
+        if index > u8::MAX as u16 {
+            continue;
+        }
+        let index = index as u8;
+
+        if spec == "?" {
+            actions.push(ParserAction::QueryPaletteColor(index));
+            continue;
+        }
+
+        if let Some(rgb) = parse_osc_color_spec(spec) {
+            actions.push(ParserAction::SetPaletteColor { index, rgb });
+        }
+    }
+
+    actions
+}
+
+fn parse_osc_104_palette_reset(payload: &str) -> Vec<ParserAction> {
+    if payload.is_empty() {
+        return vec![ParserAction::ResetPalette];
+    }
+
+    let mut actions = Vec::new();
+    for index_str in payload.split(';').filter(|part| !part.is_empty()) {
+        let Ok(index) = index_str.parse::<u16>() else {
+            continue;
+        };
+        if index <= u8::MAX as u16 {
+            actions.push(ParserAction::ResetPaletteColor(index as u8));
+        }
+    }
+    actions
+}
+
+fn parse_osc_color_spec(spec: &str) -> Option<(u8, u8, u8)> {
+    if let Some(rgb_spec) = spec.strip_prefix("rgb:") {
+        return parse_rgb_triplet(rgb_spec, '/');
+    }
+
+    spec.strip_prefix('#').and_then(parse_hash_triplet)
+}
+
+fn parse_rgb_triplet(spec: &str, separator: char) -> Option<(u8, u8, u8)> {
+    let mut parts = spec.split(separator);
+    let red = parse_hex_component(parts.next()?)?;
+    let green = parse_hex_component(parts.next()?)?;
+    let blue = parse_hex_component(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((red, green, blue))
+}
+
+fn parse_hash_triplet(spec: &str) -> Option<(u8, u8, u8)> {
+    let component_len = spec.len() / 3;
+    if spec.is_empty() || spec.len() % 3 != 0 || !(1..=4).contains(&component_len) {
+        return None;
+    }
+
+    let red = parse_hex_component(&spec[..component_len])?;
+    let green = parse_hex_component(&spec[component_len..component_len * 2])?;
+    let blue = parse_hex_component(&spec[component_len * 2..])?;
+    Some((red, green, blue))
+}
+
+fn parse_hex_component(component: &str) -> Option<u8> {
+    if component.is_empty() || component.len() > 4 {
+        return None;
+    }
+
+    let value = u16::from_str_radix(component, 16).ok()? as u32;
+    let max_value = (1u32 << (component.len() * 4)) - 1;
+    Some(((value * 255 + max_value / 2) / max_value) as u8)
 }
 
 fn parse_osc_7_cwd(payload: &str) -> Option<ParserAction> {

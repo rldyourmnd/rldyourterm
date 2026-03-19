@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
-use crate::{events::CoreEvent, parser::ParserAction};
+use std::fmt::Write as _;
+
+use crate::{
+    events::CoreEvent,
+    grid::{DEFAULT_BG, DEFAULT_FG},
+    parser::ParserAction,
+};
 
 use super::TerminalState;
 
@@ -226,14 +232,28 @@ impl TerminalState {
             ParserAction::HyperlinkEnd => {
                 self.current_hyperlink = None;
             }
+            ParserAction::SetPaletteColor { index, rgb } => {
+                self.set_palette_color(index, rgb);
+            }
+            ParserAction::QueryPaletteColor(index) => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: osc_palette_response(index, self.palette_color(index)),
+                });
+            }
+            ParserAction::ResetPaletteColor(index) => {
+                self.reset_palette_color(index);
+            }
+            ParserAction::ResetPalette => {
+                self.reset_palette();
+            }
             ParserAction::QueryForegroundColor => {
                 events.push(CoreEvent::TerminalResponse {
-                    data: b"\x1b]10;rgb:d8d8/d8d8/d8d8\x1b\\".to_vec(),
+                    data: osc_dynamic_color_response(10, DEFAULT_FG),
                 });
             }
             ParserAction::QueryBackgroundColor => {
                 events.push(CoreEvent::TerminalResponse {
-                    data: b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\".to_vec(),
+                    data: osc_dynamic_color_response(11, DEFAULT_BG),
                 });
             }
             ParserAction::ShellMarker(kind) => {
@@ -273,4 +293,40 @@ impl TerminalState {
             }
         }
     }
+}
+
+fn osc_dynamic_color_response(code: u16, rgb: (u8, u8, u8)) -> Vec<u8> {
+    format_osc_rgb_response(code, rgb.0, rgb.1, rgb.2)
+}
+
+fn osc_palette_response(index: u8, packed_rgb: u32) -> Vec<u8> {
+    let (red, green, blue) = unpack_rgb(packed_rgb);
+    let mut response = String::from("\x1b]4;");
+    let _ = write!(
+        response,
+        "{index};rgb:{:04x}/{:04x}/{:04x}",
+        widen_channel(red),
+        widen_channel(green),
+        widen_channel(blue)
+    );
+    response.push_str("\x1b\\");
+    response.into_bytes()
+}
+
+fn format_osc_rgb_response(code: u16, red: u8, green: u8, blue: u8) -> Vec<u8> {
+    format!(
+        "\x1b]{code};rgb:{:04x}/{:04x}/{:04x}\x1b\\",
+        widen_channel(red),
+        widen_channel(green),
+        widen_channel(blue)
+    )
+    .into_bytes()
+}
+
+const fn unpack_rgb(color: u32) -> (u8, u8, u8) {
+    ((color >> 16) as u8, (color >> 8) as u8, color as u8)
+}
+
+const fn widen_channel(channel: u8) -> u16 {
+    (channel as u16) * 0x0101
 }

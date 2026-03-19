@@ -1175,8 +1175,49 @@ fn query_background_color_emits_response() {
     let mut state = TerminalState::new(10, 4, 5);
     let events = state.feed(b"\x1b]11;?\x07");
     assert!(events.iter().any(
-        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\")
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]11;rgb:1414/1b1b/1f1f\x1b\\")
     ));
+}
+
+#[test]
+fn osc_4_query_palette_color_emits_current_entry() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b]4;1;?\x07");
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]4;1;rgb:aaaa/0000/0000\x1b\\")
+    ));
+}
+
+#[test]
+fn osc_4_set_then_query_uses_updated_palette_entry() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1b]4;1;rgb:12/34/56;1;?\x07");
+    assert_eq!(state.palette_color(1), 0x123456);
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b]4;1;rgb:1212/3434/5656\x1b\\")
+    ));
+}
+
+#[test]
+fn osc_104_resets_specific_palette_entry() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let _ = state.feed(b"\x1b]4;1;rgb:12/34/56\x07");
+    assert_eq!(state.palette_color(1), 0x123456);
+
+    let _ = state.feed(b"\x1b]104;1\x07");
+    assert_eq!(state.palette_color(1), 0x00_aa0000);
+}
+
+#[test]
+fn osc_104_without_params_resets_entire_palette() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let _ = state.feed(b"\x1b]4;1;rgb:12/34/56;2;rgb:65/43/21\x07");
+    assert_eq!(state.palette_color(1), 0x123456);
+    assert_eq!(state.palette_color(2), 0x654321);
+
+    let _ = state.feed(b"\x1b]104\x07");
+    assert_eq!(state.palette_color(1), 0x00_aa0000);
+    assert_eq!(state.palette_color(2), 0x00_00aa00);
 }
 
 // ── OSC integration tests ──────────────────────────────────
