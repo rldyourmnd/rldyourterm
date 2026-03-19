@@ -15,6 +15,12 @@ static FONT_DATA: &[u8] =
 
 const DEFAULT_MAX_GLYPH_CACHE_ENTRIES: usize = 8_192;
 const FALLBACK_GLYPH_CHAR: char = '?';
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontFallbackPolicy {
+    BundledOnly,
+    System,
+}
+
 const SYSTEM_CJK_FALLBACK_FAMILIES: &[&str] = &[
     "Noto Sans Mono CJK SC",
     "Noto Sans Mono CJK TC",
@@ -275,12 +281,25 @@ impl GlyphCache {
         Self::new_with_max_entries(cell_width, cell_height, DEFAULT_MAX_GLYPH_CACHE_ENTRIES)
     }
 
+    /// Create a new cache and configure the fallback chain according to the
+    /// requested policy.
+    #[must_use]
+    pub fn new_with_fallback_policy(
+        cell_width: u16,
+        cell_height: u16,
+        policy: FontFallbackPolicy,
+    ) -> Self {
+        let mut cache = Self::new(cell_width, cell_height);
+        if policy == FontFallbackPolicy::System {
+            cache.add_system_fallbacks();
+        }
+        cache
+    }
+
     /// Create a new cache and append best-effort system fallback faces for CJK coverage.
     #[must_use]
     pub fn new_with_system_fallbacks(cell_width: u16, cell_height: u16) -> Self {
-        let mut cache = Self::new(cell_width, cell_height);
-        cache.add_system_fallbacks();
-        cache
+        Self::new_with_fallback_policy(cell_width, cell_height, FontFallbackPolicy::System)
     }
 
     /// Create a bounded cache with an explicit max entry limit.

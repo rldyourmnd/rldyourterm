@@ -3,7 +3,7 @@
 
 use rldyourterm_services::render_mode::{ActiveRenderPath, RenderMode};
 use rldyourterm_settings::{
-    SettingsCommand, SettingsPaletteApplyOutcome, SettingsService, ThemePreset,
+    FontFallbackPolicy, SettingsCommand, SettingsPaletteApplyOutcome, SettingsService, ThemePreset,
 };
 use tracing::warn;
 
@@ -246,6 +246,12 @@ pub fn runtime_palette_status_line(
             ),
             None => format!("[palette] saved (restart required) input={command:?}"),
         },
+        SettingsCommand::SetFontFallbackPolicy(policy) => {
+            format!(
+                "[palette] font-fallback={} saved (restart required)",
+                font_fallback_policy_token(policy)
+            )
+        }
         SettingsCommand::SetShellTarget(_)
         | SettingsCommand::SetShellAutoInit(_)
         | SettingsCommand::SetRenderCadencePolicy(_)
@@ -281,6 +287,13 @@ fn theme_preset_token(theme: ThemePreset) -> &'static str {
         ThemePreset::Solarized => "solarized",
         ThemePreset::Dracula => "dracula",
         ThemePreset::Catppuccin => "catppuccin",
+    }
+}
+
+fn font_fallback_policy_token(policy: FontFallbackPolicy) -> &'static str {
+    match policy {
+        FontFallbackPolicy::BundledOnly => "bundled-only",
+        FontFallbackPolicy::System => "system",
     }
 }
 

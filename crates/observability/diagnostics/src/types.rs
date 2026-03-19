@@ -11,8 +11,9 @@ use rldyourterm_services::runtime_protocol::{UiCommandOutcome, UiCommandReceipt}
 use rldyourterm_services::session::SessionTransitionOutcome;
 use rldyourterm_services::shell_target::ShellTarget;
 use rldyourterm_settings::{
-    RenderCadencePolicy, RuntimeProfilePreset, SettingsApplyOutcome, SettingsCommand,
-    SettingsPaletteApplyOutcome, SettingsPaletteRejectReason, SettingsState, ThemePreset,
+    FontFallbackPolicy, RenderCadencePolicy, RuntimeProfilePreset, SettingsApplyOutcome,
+    SettingsCommand, SettingsPaletteApplyOutcome, SettingsPaletteRejectReason, SettingsState,
+    ThemePreset,
 };
 use rldyourterm_shell_integration::{
     FishBaselineFailureCause, ShellLaunchPlan, ShellLaunchProfile, ShellResolution,
@@ -752,6 +753,9 @@ fn settings_command_input(command: &SettingsCommand) -> String {
         SettingsCommand::SetRenderCadencePolicy(RenderCadencePolicy::MonitorAuto) => {
             "render cadence monitor-auto".to_owned()
         }
+        SettingsCommand::SetFontFallbackPolicy(policy) => {
+            format!("font fallback {}", font_fallback_input(*policy))
+        }
         SettingsCommand::SetTheme(theme) => format!("theme set {}", theme_input(*theme)),
         SettingsCommand::SetRuntimeProfile(profile) => {
             format!("profile {}", runtime_profile_input(*profile))
@@ -759,6 +763,13 @@ fn settings_command_input(command: &SettingsCommand) -> String {
         SettingsCommand::SetDebugMode(enabled) => {
             format!("debug {}", if *enabled { "on" } else { "off" })
         }
+    }
+}
+
+fn font_fallback_input(policy: FontFallbackPolicy) -> &'static str {
+    match policy {
+        FontFallbackPolicy::BundledOnly => "bundled-only",
+        FontFallbackPolicy::System => "system",
     }
 }
 

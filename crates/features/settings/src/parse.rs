@@ -4,8 +4,8 @@
 use rldyourterm_services::render_mode::RenderMode;
 
 use crate::{
-    RenderCadencePolicy, RuntimeProfilePreset, SettingsCommand, SettingsCommandParseError,
-    ShellTarget, ThemePreset,
+    FontFallbackPolicy, RenderCadencePolicy, RuntimeProfilePreset, SettingsCommand,
+    SettingsCommandParseError, ShellTarget, ThemePreset,
 };
 
 const THEME_PRESET_EXPECTED: &str =
@@ -24,11 +24,48 @@ pub fn parse_palette_command(input: &str) -> Result<SettingsCommand, SettingsCom
         "mode" => parse_mode_command(&tokens),
         "shell" => parse_shell_command(&tokens),
         "render" => parse_render_command(&tokens),
+        "font" => parse_font_command(&tokens),
         "theme" => parse_theme_command(&tokens),
         "profile" => parse_profile_command(&tokens),
         "debug" => parse_debug_command(&tokens),
         _ => Err(SettingsCommandParseError::UnknownCommand { command }),
     }
+}
+
+fn parse_font_command(tokens: &[&str]) -> Result<SettingsCommand, SettingsCommandParseError> {
+    if tokens.len() < 3 {
+        return Err(SettingsCommandParseError::MissingArgument {
+            command: "font".to_string(),
+            expected: "fallback <system|bundled-only>",
+        });
+    }
+    if normalize_token(tokens[1]) != "fallback" {
+        return Err(SettingsCommandParseError::InvalidValue {
+            field: "font",
+            value: normalize_token(tokens[1]),
+            expected: "fallback <system|bundled-only>",
+        });
+    }
+    if tokens.len() > 3 {
+        return Err(SettingsCommandParseError::UnexpectedTrailingInput {
+            command: "font fallback".to_string(),
+            trailing: normalize_trailing_tokens(tokens, 3),
+        });
+    }
+
+    let policy = match normalize_token(tokens[2]).as_str() {
+        "system" => FontFallbackPolicy::System,
+        "bundled-only" => FontFallbackPolicy::BundledOnly,
+        value => {
+            return Err(SettingsCommandParseError::InvalidValue {
+                field: "font fallback",
+                value: value.to_string(),
+                expected: "system|bundled-only",
+            });
+        }
+    };
+
+    Ok(SettingsCommand::SetFontFallbackPolicy(policy))
 }
 
 pub(crate) fn canonicalize_palette_input(input: &str) -> String {

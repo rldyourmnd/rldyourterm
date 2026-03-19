@@ -16,6 +16,7 @@ impl GpuRenderer {
         width: u32,
         height: u32,
         cache_dir: Option<&Path>,
+        font_fallback_policy: rldyourterm_font::FontFallbackPolicy,
     ) -> Result<(), GpuRenderError> {
         let t0 = std::time::Instant::now();
 
@@ -85,8 +86,11 @@ impl GpuRenderer {
         };
         surface.configure(&device, &config);
 
-        let mut glyph_cache =
-            GlyphCache::new_with_system_fallbacks(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+        let mut glyph_cache = GlyphCache::new_with_fallback_policy(
+            CELL_WIDTH as u16,
+            CELL_HEIGHT as u16,
+            font_fallback_policy,
+        );
         let atlas::AtlasBuildResult {
             texture: atlas_texture,
             glyph_to_slot,

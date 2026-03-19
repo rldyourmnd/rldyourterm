@@ -22,7 +22,7 @@ use rldyourterm_services::session::{FatalBoundaryReason, SessionBoundary, Sessio
 use rldyourterm_services::terminal::{
     ANSI_PALETTE, Attrs, Color, SearchMatch, TerminalState, color_to_u32,
 };
-use rldyourterm_settings::{SettingsService, ThemePreset, theme_for_preset};
+use rldyourterm_settings::{FontFallbackPolicy, SettingsService, ThemePreset, theme_for_preset};
 use rldyourterm_ui::UiRuntimeCommand;
 use winit::keyboard::{Key, ModifiersState};
 use winit::window::Theme as WindowTheme;
@@ -139,6 +139,30 @@ fn palette_dispatch_reports_system_theme_resolution_without_window_context() {
     assert_eq!(
         message,
         "[palette] theme=system resolved=dark active-path=gpu"
+    );
+}
+
+#[test]
+fn palette_dispatch_saves_font_fallback_policy_for_restart() {
+    let mut ui_runtime = test_ui_runtime(RenderMode::Auto);
+    let mut terminal = TerminalState::new(10, 4, 5);
+    let mut settings = SettingsService::default();
+
+    let message = dispatch_runtime_palette_command(
+        &mut ui_runtime,
+        &mut terminal,
+        &mut settings,
+        "font fallback bundled-only",
+    )
+    .expect("dispatch font fallback bundled-only");
+
+    assert_eq!(
+        settings.state().font_fallback_policy,
+        FontFallbackPolicy::BundledOnly
+    );
+    assert_eq!(
+        message,
+        "[palette] font-fallback=bundled-only saved (restart required)"
     );
 }
 

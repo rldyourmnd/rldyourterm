@@ -15,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use rldyourterm_core::{
     RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, TerminalModeFlags, encode_runtime_key_event,
 };
+use rldyourterm_font::FontFallbackPolicy;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_render_cpu::render_terminal_buffer;
@@ -922,6 +923,7 @@ impl ApplicationHandler<LiveDisplayEvent> for LiveDisplayApp {
                     self.requested_extent.width,
                     self.requested_extent.height,
                     None,
+                    FontFallbackPolicy::System,
                 ) {
                     self.finish_error(
                         event_loop,

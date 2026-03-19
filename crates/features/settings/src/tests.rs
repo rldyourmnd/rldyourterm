@@ -4,7 +4,7 @@
 use rldyourterm_services::render_mode::RenderMode;
 
 use crate::{
-    PersistedRenderMode, RUNTIME_PROFILE_SCHEMA_VERSION, RenderCadencePolicy,
+    FontFallbackPolicy, PersistedRenderMode, RUNTIME_PROFILE_SCHEMA_VERSION, RenderCadencePolicy,
     RuntimeProfileApplyOutcome, RuntimeProfilePreset, RuntimeProfileState,
     RuntimeProfileValidationError, SettingsApplyNoopReason, SettingsApplyOutcome,
     SettingsApplyRejectReason, SettingsCommand, SettingsCommandParseError,
@@ -112,6 +112,10 @@ fn parser_accepts_mode_and_shell_commands() {
         SettingsCommand::SetRenderCadencePolicy(RenderCadencePolicy::MonitorAuto)
     );
     assert_eq!(
+        parse_palette_command("font fallback bundled-only").unwrap(),
+        SettingsCommand::SetFontFallbackPolicy(FontFallbackPolicy::BundledOnly)
+    );
+    assert_eq!(
         parse_palette_command("  MODE\tGPU\n").unwrap(),
         SettingsCommand::SetMode(RenderMode::Gpu)
     );
@@ -166,6 +170,19 @@ fn parser_rejects_invalid_theme_value() {
             field: "theme",
             value: "neon".to_string(),
             expected: "system|cuberpunk|aurora|monochrome|dark|light|solarized|dracula|catppuccin",
+        }
+    );
+}
+
+#[test]
+fn parser_rejects_invalid_font_fallback_value() {
+    let err = parse_palette_command("font fallback neon").unwrap_err();
+    assert_eq!(
+        err,
+        SettingsCommandParseError::InvalidValue {
+            field: "font fallback",
+            value: "neon".to_string(),
+            expected: "system|bundled-only",
         }
     );
 }
@@ -278,6 +295,7 @@ fn runtime_profile_roundtrip_is_typed_and_stable() {
         shell_target: ShellTarget::Fish,
         shell_auto_init: true,
         render_cadence_policy: RenderCadencePolicy::MonitorAuto,
+        font_fallback_policy: FontFallbackPolicy::BundledOnly,
         theme: ThemePreset::Catppuccin,
         runtime_profile: RuntimeProfilePreset::Throughput,
         debug_mode: true,
@@ -298,6 +316,7 @@ fn invalid_runtime_profile_is_rejected_without_state_mutation() {
         shell_target: ShellTarget::Zsh,
         shell_auto_init: true,
         render_cadence_policy: RenderCadencePolicy::MonitorAuto,
+        font_fallback_policy: FontFallbackPolicy::System,
         theme: ThemePreset::Cuberpunk,
         runtime_profile: RuntimeProfilePreset::Balanced,
         debug_mode: false,

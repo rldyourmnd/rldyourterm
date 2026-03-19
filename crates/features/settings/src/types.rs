@@ -38,6 +38,13 @@ pub enum RuntimeProfilePreset {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum FontFallbackPolicy {
+    BundledOnly,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PersistedRenderMode {
     Cpu,
     Gpu,
@@ -70,6 +77,7 @@ pub enum SettingsCommand {
     SetShellTarget(ShellTarget),
     SetShellAutoInit(bool),
     SetRenderCadencePolicy(RenderCadencePolicy),
+    SetFontFallbackPolicy(FontFallbackPolicy),
     SetTheme(ThemePreset),
     SetRuntimeProfile(RuntimeProfilePreset),
     SetDebugMode(bool),
@@ -81,6 +89,7 @@ pub struct SettingsState {
     pub shell_target: ShellTarget,
     pub shell_auto_init: bool,
     pub render_cadence_policy: RenderCadencePolicy,
+    pub font_fallback_policy: FontFallbackPolicy,
     pub theme: ThemePreset,
     pub runtime_profile: RuntimeProfilePreset,
     pub debug_mode: bool,
@@ -93,6 +102,7 @@ impl Default for SettingsState {
             shell_target: ShellTarget::Auto,
             shell_auto_init: true,
             render_cadence_policy: RenderCadencePolicy::MonitorAuto,
+            font_fallback_policy: FontFallbackPolicy::System,
             theme: ThemePreset::Cuberpunk,
             runtime_profile: RuntimeProfilePreset::Balanced,
             debug_mode: false,
@@ -107,6 +117,8 @@ pub struct RuntimeProfileState {
     pub shell_target: ShellTarget,
     pub shell_auto_init: bool,
     pub render_cadence_policy: RenderCadencePolicy,
+    #[serde(default = "default_font_fallback_policy")]
+    pub font_fallback_policy: FontFallbackPolicy,
     pub theme: ThemePreset,
     pub runtime_profile: RuntimeProfilePreset,
     pub debug_mode: bool,
@@ -120,6 +132,7 @@ impl RuntimeProfileState {
             shell_target: state.shell_target,
             shell_auto_init: state.shell_auto_init,
             render_cadence_policy: state.render_cadence_policy,
+            font_fallback_policy: state.font_fallback_policy,
             theme: state.theme,
             runtime_profile: state.runtime_profile,
             debug_mode: state.debug_mode,
@@ -148,11 +161,16 @@ impl RuntimeProfileState {
             shell_target: self.shell_target,
             shell_auto_init: self.shell_auto_init,
             render_cadence_policy: self.render_cadence_policy,
+            font_fallback_policy: self.font_fallback_policy,
             theme: self.theme,
             runtime_profile: self.runtime_profile,
             debug_mode: self.debug_mode,
         })
     }
+}
+
+fn default_font_fallback_policy() -> FontFallbackPolicy {
+    FontFallbackPolicy::System
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

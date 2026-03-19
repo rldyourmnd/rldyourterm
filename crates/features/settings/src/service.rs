@@ -145,6 +145,10 @@ impl SettingsService {
                 candidate.render_cadence_policy = policy;
                 None
             }
+            SettingsCommand::SetFontFallbackPolicy(policy) => {
+                candidate.font_fallback_policy = policy;
+                None
+            }
             SettingsCommand::SetTheme(theme) => {
                 candidate.theme = theme;
                 None

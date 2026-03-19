@@ -70,7 +70,7 @@ use crate::runtime_shared::terminal::{
 };
 use anyhow::{Context, Result, anyhow};
 use rldyourterm_diagnostics::{DiagnosticsSink, EventKind, RuntimeCommandSourceKind};
-use rldyourterm_font::GlyphCache;
+use rldyourterm_font::{FontFallbackPolicy as RuntimeFontFallbackPolicy, GlyphCache};
 use rldyourterm_foundation::api::clipboard::ClipboardAdapter;
 use rldyourterm_foundation::api::pty::{PtyFactory, PtyIo, PtySize, PtySpawnConfig};
 use rldyourterm_foundation::api::window::{
@@ -94,7 +94,8 @@ use rldyourterm_services::terminal::{
     Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, MouseMode, TerminalState,
 };
 use rldyourterm_settings::{
-    SettingsCommand, SettingsService, SettingsState, ThemePreset, theme_for_preset,
+    FontFallbackPolicy as SettingsFontFallbackPolicy, SettingsCommand, SettingsService,
+    SettingsState, ThemePreset, theme_for_preset,
 };
 use rldyourterm_ui::{
     DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome,
@@ -347,6 +348,7 @@ struct GuiRuntimeApp {
     window: GuiRuntimeWindowPlane,
     terminal: TerminalState,
     glyph_cache: GlyphCache,
+    font_fallback_policy: RuntimeFontFallbackPolicy,
     frame: GuiRuntimeFramePlane,
     interaction: GuiRuntimeInteractionPlane,
     child_exit_pending: bool,
@@ -504,6 +506,8 @@ impl GuiRuntimeApp {
 
         let settings = SettingsService::new(initial_settings);
         debug_assert_eq!(settings.state().mode, initial_mode);
+        let font_fallback_policy =
+            runtime_font_fallback_policy(settings.state().font_fallback_policy);
 
         let mut terminal = TerminalState::new(
             DEFAULT_TERMINAL_COLS,
@@ -546,10 +550,12 @@ impl GuiRuntimeApp {
                 last_window_title: String::new(),
             },
             terminal,
-            glyph_cache: GlyphCache::new_with_system_fallbacks(
+            glyph_cache: GlyphCache::new_with_fallback_policy(
                 CELL_WIDTH as u16,
                 CELL_HEIGHT as u16,
+                font_fallback_policy,
             ),
+            font_fallback_policy,
             frame: GuiRuntimeFramePlane {
                 redraw_pending: true,
                 redraw_in_flight: false,
@@ -683,6 +689,13 @@ impl GuiRuntimeApp {
             self.terminal.grid.mark_all_dirty();
             self.queue_redraw();
         }
+    }
+}
+
+fn runtime_font_fallback_policy(policy: SettingsFontFallbackPolicy) -> RuntimeFontFallbackPolicy {
+    match policy {
+        SettingsFontFallbackPolicy::BundledOnly => RuntimeFontFallbackPolicy::BundledOnly,
+        SettingsFontFallbackPolicy::System => RuntimeFontFallbackPolicy::System,
     }
 }
 

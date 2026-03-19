@@ -55,6 +55,7 @@ impl GuiRuntimeApp {
             size.width,
             size.height,
             self.gpu_cache_dir.as_deref(),
+            self.font_fallback_policy,
         ) {
             Ok(()) => {
                 self.control.render_backend.mark_deferred_ready();
