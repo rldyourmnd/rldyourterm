@@ -197,6 +197,7 @@ run_ci_suite() {
   bash -n ops/jenkins/deploy_remote.sh
   bash -n ops/jenkins/controller/support/run_pr_ci.sh
   bash -n scripts/ci/run_jenkins_pr_ci.sh
+  bash scripts/ci/validate_license_consistency.sh
   python3 -m py_compile ops/jenkins/router/router.py
   python3 -m json.tool < ops/jenkins/router/repositories.json >/dev/null
   if compgen -G "ops/jenkins/router/test_*.py" >/dev/null; then

@@ -54,6 +54,9 @@ esac
 
 echo "GOVERNANCE_E2E_START mode=$mode with_matrix=$with_matrix"
 
+echo "GOVERNANCE_E2E_STEP step=license-consistency"
+bash scripts/ci/validate_license_consistency.sh
+
 echo "GOVERNANCE_E2E_STEP step=vsa-dependency-graph"
 bash scripts/ci/validate_vsa_dependency_graph.sh
 

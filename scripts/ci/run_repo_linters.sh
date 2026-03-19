@@ -15,6 +15,7 @@ require_command python3
 require_command rg
 
 actionlint -config-file actionlint.yaml
+bash scripts/ci/validate_license_consistency.sh
 
 mapfile -t shell_files < <(rg --files -g '*.sh' scripts/ci scripts/mvp ops/jenkins)
 if [[ "${#shell_files[@]}" -eq 0 ]]; then

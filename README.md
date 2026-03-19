@@ -5,7 +5,7 @@
 [![Security](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml/badge.svg?branch=main&event=audit)](https://github.com/rldyourmnd/rldyourterm/security/overview)
 [![CodeQL](https://github.com/rldyourmnd/rldyourterm/actions/workflows/codeql.yml/badge.svg)](https://github.com/rldyourmnd/rldyourterm/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/rldyourmnd/rldyourterm/badge)](https://securityscorecards.dev/viewer/?uri=github.com/rldyourmnd/rldyourterm)
-[![License](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.92%2B-orange.svg)](https://www.rust-lang.org/)
 [![crates.io](https://img.shields.io/crates/v/rldyourterm-app.svg)](https://crates.io/crates/rldyourterm-app)
 
@@ -13,6 +13,10 @@ Crash-intolerant AI terminal runtime with v1.0 priorities locked as:
 1. stability,
 2. AI CLI compatibility (`Claude Code`, `Codex`, `Gemini CLI`),
 3. speed.
+
+## License
+
+Licensed under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). Repository governance validates AGPL license consistency in CI and Jenkins.
 
 ## MVP runtime status
 
