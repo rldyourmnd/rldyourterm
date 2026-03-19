@@ -21,6 +21,8 @@ pub fn selected_scenarios(selection: ScenarioArg) -> Vec<ScenarioArg> {
         ScenarioArg::All => vec![
             ScenarioArg::StartupFirstFrameGpu,
             ScenarioArg::StartupFirstFrameCpu,
+            ScenarioArg::InputLatencyGpu,
+            ScenarioArg::InputLatencyCpu,
             ScenarioArg::SteadyRedrawGpu,
             ScenarioArg::SteadyRedrawCpu,
             ScenarioArg::ResizeCycleGpu,
@@ -55,6 +57,22 @@ pub const fn descriptor(scenario: ScenarioArg) -> ScenarioDescriptor {
             backend: "cpu",
             description: "Window creation, softbuffer setup, CPU rasterization, and first successful present on a live winit surface",
             primary_unit_label: "windows",
+        },
+        ScenarioArg::InputLatencyGpu => ScenarioDescriptor {
+            name: "input-latency-gpu",
+            layer: "features/render-gpu",
+            benchmark_kind: "display-latency",
+            backend: "gpu",
+            description: "Synthetic terminal input ingestion followed by a GPU redraw and successful present on an already initialized live winit surface",
+            primary_unit_label: "updates",
+        },
+        ScenarioArg::InputLatencyCpu => ScenarioDescriptor {
+            name: "input-latency-cpu",
+            layer: "features/render-cpu",
+            benchmark_kind: "display-latency",
+            backend: "cpu",
+            description: "Synthetic terminal input ingestion followed by CPU rasterization and softbuffer present on an already initialized live window surface",
+            primary_unit_label: "updates",
         },
         ScenarioArg::SteadyRedrawGpu => ScenarioDescriptor {
             name: "steady-redraw-gpu",
@@ -132,6 +150,8 @@ pub fn scenario_belongs_to_suite(scenario: ScenarioArg) -> bool {
         ScenarioArg::All
             | ScenarioArg::StartupFirstFrameGpu
             | ScenarioArg::StartupFirstFrameCpu
+            | ScenarioArg::InputLatencyGpu
+            | ScenarioArg::InputLatencyCpu
             | ScenarioArg::SteadyRedrawGpu
             | ScenarioArg::SteadyRedrawCpu
             | ScenarioArg::ResizeCycleGpu
@@ -150,17 +170,18 @@ mod tests {
     #[test]
     fn all_selection_expands_to_live_display_suite() {
         let scenarios = selected_scenarios(ScenarioArg::All);
-        assert_eq!(scenarios.len(), 6);
+        assert_eq!(scenarios.len(), 8);
         assert!(scenarios.contains(&ScenarioArg::StartupFirstFrameGpu));
+        assert!(scenarios.contains(&ScenarioArg::InputLatencyCpu));
         assert!(scenarios.contains(&ScenarioArg::ResizeCycleCpu));
         assert_eq!(BENCHMARK_SUITE_NAME, "live-display");
     }
 
     #[test]
     fn descriptors_capture_backend_and_kind() {
-        let descriptor = descriptor(ScenarioArg::SteadyRedrawGpu);
+        let descriptor = descriptor(ScenarioArg::InputLatencyGpu);
         assert_eq!(descriptor.backend, "gpu");
-        assert_eq!(descriptor.benchmark_kind, "display-frame");
+        assert_eq!(descriptor.benchmark_kind, "display-latency");
     }
 
     #[test]

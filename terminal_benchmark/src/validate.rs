@@ -558,6 +558,7 @@ pub(crate) mod tests {
             .iter()
             .map(|scenario| {
                 let is_cpu = scenario.backend.as_deref() == Some("cpu");
+                let controlled_monitor_cadence = scenario.controlled_monitor_cadence;
                 LiveDisplayScenarioReport {
                     scenario: scenario.scenario.clone(),
                     layer: scenario.layer.clone(),
@@ -571,12 +572,12 @@ pub(crate) mod tests {
                     primary_units_per_iteration: 1,
                     stats: sample_stats(),
                     primary_units_per_second: 1.0,
-                    pacing_mode: if is_cpu {
+                    pacing_mode: if controlled_monitor_cadence {
                         "monitor-cadence".to_owned()
                     } else {
                         "event-driven".to_owned()
                     },
-                    monitor_refresh_rate_millihz: is_cpu.then_some(60_000),
+                    monitor_refresh_rate_millihz: controlled_monitor_cadence.then_some(60_000),
                     monitor_name: Some("Primary".to_owned()),
                     monitor_scale_factor: Some(1.0),
                     display_phase_stats: LiveDisplayPhaseStats {
@@ -638,6 +639,7 @@ pub(crate) mod tests {
             min_nanos: 1,
             median_nanos: 1,
             p95_nanos: 1,
+            p99_nanos: 1,
             max_nanos: 1,
             mean_nanos: 1,
             total_nanos: 1,

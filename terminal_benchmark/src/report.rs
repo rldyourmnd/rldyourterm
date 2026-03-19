@@ -229,12 +229,13 @@ impl BenchmarkSuiteReport {
         );
         let _ = writeln!(
             out,
-            "{:<32} {:<24} {:<14} {:>10} {:>10} {:>10} {:>10} {:>16} {:>16}",
+            "{:<32} {:<24} {:<14} {:>10} {:>10} {:>10} {:>10} {:>10} {:>16} {:>16}",
             "scenario",
             "layer",
             "kind",
             "mean_ms",
             "p95_ms",
+            "p99_ms",
             "min_ms",
             "max_ms",
             "units/sec",
@@ -242,18 +243,19 @@ impl BenchmarkSuiteReport {
         );
         let _ = writeln!(
             out,
-            "{:-<32} {:-<24} {:-<14} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16} {:-<16}",
-            "", "", "", "", "", "", "", "", ""
+            "{:-<32} {:-<24} {:-<14} {:-<10} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16} {:-<16}",
+            "", "", "", "", "", "", "", "", "", ""
         );
         for result in &self.results {
             let _ = writeln!(
                 out,
-                "{:<32} {:<24} {:<14} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2} {:>16.2}",
+                "{:<32} {:<24} {:<14} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2} {:>16.2}",
                 result.scenario,
                 result.layer,
                 result.benchmark_kind,
                 nanos_to_millis(result.stats.mean_nanos),
                 nanos_to_millis(result.stats.p95_nanos),
+                nanos_to_millis(result.stats.p99_nanos),
                 nanos_to_millis(result.stats.min_nanos),
                 nanos_to_millis(result.stats.max_nanos),
                 result.primary_units_per_second,
@@ -336,23 +338,32 @@ impl LiveDisplayBenchmarkSuiteReport {
         );
         let _ = writeln!(
             out,
-            "{:<32} {:<18} {:<16} {:>10} {:>10} {:>10} {:>10} {:>16}",
-            "scenario", "layer", "backend", "mean_ms", "p95_ms", "min_ms", "max_ms", "units/sec",
+            "{:<32} {:<18} {:<16} {:>10} {:>10} {:>10} {:>10} {:>10} {:>16}",
+            "scenario",
+            "layer",
+            "backend",
+            "mean_ms",
+            "p95_ms",
+            "p99_ms",
+            "min_ms",
+            "max_ms",
+            "units/sec",
         );
         let _ = writeln!(
             out,
-            "{:-<32} {:-<18} {:-<16} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16}",
-            "", "", "", "", "", "", "", ""
+            "{:-<32} {:-<18} {:-<16} {:-<10} {:-<10} {:-<10} {:-<10} {:-<10} {:-<16}",
+            "", "", "", "", "", "", "", "", ""
         );
         for result in &self.results {
             let _ = writeln!(
                 out,
-                "{:<32} {:<18} {:<16} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2}",
+                "{:<32} {:<18} {:<16} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>10.3} {:>16.2}",
                 result.scenario,
                 result.layer,
                 result.backend,
                 nanos_to_millis(result.stats.mean_nanos),
                 nanos_to_millis(result.stats.p95_nanos),
+                nanos_to_millis(result.stats.p99_nanos),
                 nanos_to_millis(result.stats.min_nanos),
                 nanos_to_millis(result.stats.max_nanos),
                 result.primary_units_per_second,

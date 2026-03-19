@@ -26,7 +26,7 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::data::Workload;
-use crate::fixtures::seeded_terminal_state;
+use crate::fixtures::{canonical_chunk_bytes, feed_bytes_in_chunks, seeded_terminal_state};
 use crate::live_display::scenario_registry::{
     BENCHMARK_SUITE_NAME, descriptor, scenario_belongs_to_suite, selected_scenario_names,
     selected_scenarios, suite_manifest,
@@ -43,6 +43,7 @@ enum DisplayBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScenarioKind {
     StartupFirstFrame,
+    InputLatency,
     SteadyRedraw,
     ResizeCycle,
 }
@@ -387,7 +388,9 @@ struct LiveDisplayApp {
     resize_cycles_observed: u32,
     resize_request_cursor: usize,
     pending_resize_started_at: Option<Instant>,
+    pending_input_started_at: Option<Instant>,
     iteration_started_at: Option<Instant>,
+    input_latency_sample: Option<Duration>,
     cpu_phase_totals: LiveDisplayCpuPhaseTotals,
     cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts,
     pacing_mode: PacingMode,
@@ -400,6 +403,9 @@ struct LiveDisplayApp {
     last_redraw_requested_at: Option<Instant>,
     last_redraw_completed_at: Option<Instant>,
     display_phase_totals: LiveDisplayPhaseTotals,
+    latency_input: Vec<u8>,
+    input_chunk_bytes: usize,
+    input_responses_scratch: Vec<Vec<u8>>,
     result: Option<Result<LiveDisplayIterationOutcome>>,
 }
 
@@ -412,6 +418,8 @@ impl LiveDisplayApp {
             ScenarioArg::StartupFirstFrameCpu => {
                 (DisplayBackend::Cpu, ScenarioKind::StartupFirstFrame)
             }
+            ScenarioArg::InputLatencyGpu => (DisplayBackend::Gpu, ScenarioKind::InputLatency),
+            ScenarioArg::InputLatencyCpu => (DisplayBackend::Cpu, ScenarioKind::InputLatency),
             ScenarioArg::SteadyRedrawGpu => (DisplayBackend::Gpu, ScenarioKind::SteadyRedraw),
             ScenarioArg::SteadyRedrawCpu => (DisplayBackend::Cpu, ScenarioKind::SteadyRedraw),
             ScenarioArg::ResizeCycleGpu => (DisplayBackend::Gpu, ScenarioKind::ResizeCycle),
@@ -421,10 +429,14 @@ impl LiveDisplayApp {
 
         let requested_extent =
             PhysicalSize::new(workload.requested_width, workload.requested_height);
-        let terminal = seeded_terminal_state(
-            cli,
-            &Workload::generate(cli.cols, crate::data::WorkloadScale::from_arg(cli.scale)),
-        );
+        let benchmark_workload =
+            Workload::generate(cli.cols, crate::data::WorkloadScale::from_arg(cli.scale));
+        let terminal = seeded_terminal_state(cli, &benchmark_workload);
+        let latency_input = benchmark_workload
+            .delta_batches
+            .get(1)
+            .cloned()
+            .expect("generated benchmark workload must include a latency delta batch");
 
         Self {
             backend,
@@ -449,7 +461,9 @@ impl LiveDisplayApp {
             resize_cycles_observed: 0,
             resize_request_cursor: 0,
             pending_resize_started_at: None,
+            pending_input_started_at: None,
             iteration_started_at: None,
+            input_latency_sample: None,
             cpu_phase_totals: LiveDisplayCpuPhaseTotals::default(),
             cpu_buffer_age_counts: LiveDisplayCpuBufferAgeCounts::default(),
             pacing_mode: PacingMode::EventDriven,
@@ -462,6 +476,9 @@ impl LiveDisplayApp {
             last_redraw_requested_at: None,
             last_redraw_completed_at: None,
             display_phase_totals: LiveDisplayPhaseTotals::default(),
+            latency_input,
+            input_chunk_bytes: canonical_chunk_bytes(cli.chunk_bytes),
+            input_responses_scratch: Vec::new(),
             result: None,
         }
     }
@@ -473,11 +490,13 @@ impl LiveDisplayApp {
 
     fn finish_success(&mut self, event_loop: &ActiveEventLoop, notes: Vec<String>) {
         let elapsed = self
-            .iteration_started_at
-            .map(|started| started.elapsed())
+            .input_latency_sample
+            .filter(|_| matches!(self.scenario_kind, ScenarioKind::InputLatency))
+            .or_else(|| self.iteration_started_at.map(|started| started.elapsed()))
             .unwrap_or_default();
         let primary_units = match self.scenario_kind {
             ScenarioKind::StartupFirstFrame => 1,
+            ScenarioKind::InputLatency => 1,
             ScenarioKind::SteadyRedraw => u64::from(self.redraws_observed),
             ScenarioKind::ResizeCycle => u64::from(self.resize_cycles_observed),
         };
@@ -595,6 +614,31 @@ impl LiveDisplayApp {
         self.redraw_pending = true;
     }
 
+    fn reset_measured_totals(&mut self) {
+        self.redraws_observed = 0;
+        self.resize_cycles_observed = 0;
+        self.cpu_phase_totals = LiveDisplayCpuPhaseTotals::default();
+        self.cpu_buffer_age_counts = LiveDisplayCpuBufferAgeCounts::default();
+        self.display_phase_totals = LiveDisplayPhaseTotals::default();
+        self.pending_input_started_at = None;
+        self.last_redraw_requested_at = None;
+        self.last_redraw_completed_at = None;
+        self.input_latency_sample = None;
+    }
+
+    fn arm_input_latency_measurement(&mut self) {
+        self.reset_measured_totals();
+        let started_at = Instant::now();
+        feed_bytes_in_chunks(
+            &mut self.terminal,
+            &self.latency_input,
+            self.input_chunk_bytes,
+            &mut self.input_responses_scratch,
+        );
+        self.pending_input_started_at = Some(started_at);
+        self.queue_redraw();
+    }
+
     fn refresh_monitor_pacing_if_needed(&mut self) {
         let needs_monitor_retry = matches!(
             (self.backend, self.scenario_kind, &self.pacing_mode),
@@ -668,7 +712,9 @@ impl LiveDisplayApp {
 
     fn render_gpu(&mut self) -> Result<()> {
         let dirty_rows = vec![true; self.terminal.grid.height() as usize];
-        self.terminal.cursor.visible = !self.terminal.cursor.visible;
+        if !matches!(self.scenario_kind, ScenarioKind::InputLatency) {
+            self.terminal.cursor.visible = !self.terminal.cursor.visible;
+        }
         self.gpu_renderer
             .as_mut()
             .context("gpu renderer not initialized")?
@@ -694,7 +740,9 @@ impl LiveDisplayApp {
     fn render_cpu(&mut self) -> Result<()> {
         let window = self.window.as_ref().context("window not initialized")?;
         let size = window.inner_size();
-        self.terminal.cursor.visible = !self.terminal.cursor.visible;
+        if !matches!(self.scenario_kind, ScenarioKind::InputLatency) {
+            self.terminal.cursor.visible = !self.terminal.cursor.visible;
+        }
         let surface = self
             .softbuffer_surface
             .as_mut()
@@ -884,7 +932,12 @@ impl ApplicationHandler for LiveDisplayApp {
                 }
 
                 self.redraws_observed = self.redraws_observed.saturating_add(1);
-                self.last_redraw_completed_at = Some(Instant::now());
+                let redraw_completed_at = Instant::now();
+                if let Some(input_started_at) = self.pending_input_started_at.take() {
+                    self.input_latency_sample =
+                        Some(redraw_completed_at.saturating_duration_since(input_started_at));
+                }
+                self.last_redraw_completed_at = Some(redraw_completed_at);
                 let mut notes = vec![format!(
                     "requested_extent={}x{}",
                     self.requested_extent.width, self.requested_extent.height
@@ -894,6 +947,15 @@ impl ApplicationHandler for LiveDisplayApp {
                     ScenarioKind::StartupFirstFrame => {
                         notes.push(format!("redraws={}", self.redraws_observed));
                         self.finish_success(event_loop, notes);
+                    }
+                    ScenarioKind::InputLatency => {
+                        if let Some(sample) = self.input_latency_sample {
+                            notes.push(format!("input_bytes={}", self.latency_input.len()));
+                            notes.push(format!("latency_ns={}", sample.as_nanos()));
+                            self.finish_success(event_loop, notes);
+                        } else {
+                            self.arm_input_latency_measurement();
+                        }
                     }
                     ScenarioKind::SteadyRedraw => {
                         if self.redraws_observed >= self.steady_frames_target {
@@ -954,6 +1016,15 @@ mod tests {
         LiveDisplayApp::new(ScenarioArg::ResizeCycleCpu, &cli, &workload)
     }
 
+    fn input_latency_app() -> LiveDisplayApp {
+        let cli = Cli {
+            scenario: ScenarioArg::InputLatencyCpu,
+            ..sample_cli()
+        };
+        let workload = LiveDisplayWorkload::from_cli(&cli);
+        LiveDisplayApp::new(ScenarioArg::InputLatencyCpu, &cli, &workload)
+    }
+
     #[test]
     fn ignored_resize_requests_do_not_arm_pending_resize_state() {
         let mut app = resize_app();
@@ -1000,6 +1071,34 @@ mod tests {
     }
 
     #[test]
+    fn arm_input_latency_measurement_resets_phase_totals_and_schedules_redraw() {
+        let mut app = input_latency_app();
+        app.redraws_observed = 9;
+        app.resize_cycles_observed = 2;
+        app.cpu_phase_totals.buffer_acquire = Duration::from_millis(1);
+        app.cpu_buffer_age_counts.age_1 = 3;
+        app.display_phase_totals.redraw_dispatch = Duration::from_millis(2);
+        app.display_phase_totals
+            .frame_gap
+            .push(Duration::from_millis(3));
+        app.last_redraw_requested_at = Some(Instant::now());
+        app.last_redraw_completed_at = Some(Instant::now());
+
+        app.arm_input_latency_measurement();
+
+        assert!(app.pending_input_started_at.is_some());
+        assert!(app.redraw_pending);
+        assert_eq!(app.redraws_observed, 0);
+        assert_eq!(app.resize_cycles_observed, 0);
+        assert_eq!(app.cpu_phase_totals.buffer_acquire, Duration::ZERO);
+        assert_eq!(app.cpu_buffer_age_counts.age_1, 0);
+        assert_eq!(app.display_phase_totals.redraw_dispatch, Duration::ZERO);
+        assert!(app.display_phase_totals.frame_gap.is_empty());
+        assert!(app.last_redraw_requested_at.is_none());
+        assert!(app.last_redraw_completed_at.is_none());
+    }
+
+    #[test]
     fn apply_monitor_pacing_promotes_cpu_steady_redraw_to_monitor_cadence() {
         let cli = Cli {
             scenario: ScenarioArg::SteadyRedrawCpu,
@@ -1014,6 +1113,21 @@ mod tests {
         assert_eq!(app.monitor_name.as_deref(), Some("HDMI-1"));
         assert_eq!(app.monitor_scale_factor, Some(2.0));
         assert_eq!(app.pacing_mode.token(), "monitor-cadence");
+    }
+
+    #[test]
+    fn apply_monitor_pacing_keeps_cpu_input_latency_event_driven() {
+        let cli = Cli {
+            scenario: ScenarioArg::InputLatencyCpu,
+            ..sample_cli()
+        };
+        let workload = LiveDisplayWorkload::from_cli(&cli);
+        let mut app = LiveDisplayApp::new(ScenarioArg::InputLatencyCpu, &cli, &workload);
+
+        app.apply_monitor_pacing(Some(59_982), Some("HDMI-1".to_string()), Some(2.0));
+
+        assert_eq!(app.monitor_refresh_rate_millihz, Some(59_982));
+        assert_eq!(app.pacing_mode.token(), "event-driven");
     }
 
     #[test]

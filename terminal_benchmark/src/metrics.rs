@@ -9,6 +9,7 @@ pub struct IterationStats {
     pub min_nanos: u128,
     pub median_nanos: u128,
     pub p95_nanos: u128,
+    pub p99_nanos: u128,
     pub max_nanos: u128,
     pub mean_nanos: u128,
     pub total_nanos: u128,
@@ -28,6 +29,7 @@ impl IterationStats {
             min_nanos: samples[0],
             median_nanos: percentile_nearest_rank(&samples, 50),
             p95_nanos: percentile_nearest_rank(&samples, 95),
+            p99_nanos: percentile_nearest_rank(&samples, 99),
             max_nanos: samples[samples.len() - 1],
             mean_nanos,
             total_nanos,
@@ -57,6 +59,7 @@ mod tests {
         assert_eq!(stats.min_nanos, 1);
         assert_eq!(stats.median_nanos, 3);
         assert_eq!(stats.p95_nanos, 5);
+        assert_eq!(stats.p99_nanos, 5);
         assert_eq!(stats.max_nanos, 5);
         assert_eq!(stats.mean_nanos, 3);
         assert_eq!(stats.total_nanos, 15);
