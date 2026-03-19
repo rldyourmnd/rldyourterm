@@ -85,7 +85,8 @@ impl GpuRenderer {
         };
         surface.configure(&device, &config);
 
-        let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+        let mut glyph_cache =
+            GlyphCache::new_with_system_fallbacks(CELL_WIDTH as u16, CELL_HEIGHT as u16);
         let atlas::AtlasBuildResult {
             texture: atlas_texture,
             glyph_to_slot,

@@ -546,7 +546,10 @@ impl GuiRuntimeApp {
                 last_window_title: String::new(),
             },
             terminal,
-            glyph_cache: GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16),
+            glyph_cache: GlyphCache::new_with_system_fallbacks(
+                CELL_WIDTH as u16,
+                CELL_HEIGHT as u16,
+            ),
             frame: GuiRuntimeFramePlane {
                 redraw_pending: true,
                 redraw_in_flight: false,

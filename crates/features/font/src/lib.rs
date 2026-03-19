@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use font8x8::{BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, UnicodeFonts};
+use fontdb::{Database, Style};
 use fontdue::{Font, FontSettings};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::OnceLock;
 
 /// Bundled JetBrains Mono Nerd Font Mono (SIL OFL 1.1).
 /// Covers ASCII, Latin Extended, Cyrillic, Greek, Powerline, Nerd Font icons,
@@ -13,6 +15,108 @@ static FONT_DATA: &[u8] =
 
 const DEFAULT_MAX_GLYPH_CACHE_ENTRIES: usize = 8_192;
 const FALLBACK_GLYPH_CHAR: char = '?';
+const SYSTEM_CJK_FALLBACK_FAMILIES: &[&str] = &[
+    "Noto Sans Mono CJK SC",
+    "Noto Sans Mono CJK TC",
+    "Noto Sans Mono CJK JP",
+    "Noto Sans Mono CJK KR",
+    "Noto Sans Mono CJK HK",
+    "Noto Sans Mono CJK",
+    "Noto Sans CJK SC",
+    "Noto Sans CJK TC",
+    "Noto Sans CJK JP",
+    "Noto Sans CJK KR",
+    "Noto Sans CJK HK",
+    "Noto Sans CJK",
+    "Source Han Sans SC",
+    "Source Han Sans TC",
+    "Source Han Sans JP",
+    "Source Han Sans KR",
+    "Source Han Sans HC",
+    "PingFang SC",
+    "PingFang TC",
+    "Hiragino Sans",
+    "Yu Gothic UI",
+    "Yu Gothic",
+    "Meiryo",
+    "Malgun Gothic",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "SimSun",
+    "NSimSun",
+    "PMingLiU",
+    "MingLiU",
+    "WenQuanYi Zen Hei",
+    "WenQuanYi Micro Hei",
+];
+
+fn system_fallback_fonts() -> &'static [Font] {
+    static SYSTEM_FALLBACK_FONTS: OnceLock<Vec<Font>> = OnceLock::new();
+
+    SYSTEM_FALLBACK_FONTS
+        .get_or_init(discover_system_fallback_fonts)
+        .as_slice()
+}
+
+fn discover_system_fallback_fonts() -> Vec<Font> {
+    let mut database = Database::new();
+    database.load_system_fonts();
+
+    let mut loaded = Vec::new();
+    let mut seen = HashSet::new();
+
+    for family_name in SYSTEM_CJK_FALLBACK_FAMILIES {
+        let face_id = database
+            .faces()
+            .filter(|face| face.style == Style::Normal)
+            .find(|face| {
+                face.monospaced
+                    && face
+                        .families
+                        .iter()
+                        .any(|(name, _)| name.eq_ignore_ascii_case(family_name))
+            })
+            .map(|face| face.id)
+            .or_else(|| {
+                database
+                    .faces()
+                    .filter(|face| face.style == Style::Normal)
+                    .find(|face| {
+                        face.families
+                            .iter()
+                            .any(|(name, _)| name.eq_ignore_ascii_case(family_name))
+                    })
+                    .map(|face| face.id)
+            });
+
+        let Some(face_id) = face_id else {
+            continue;
+        };
+
+        let Some(font) = database
+            .with_face_data(face_id, |font_data, collection_index| {
+                Font::from_bytes(
+                    font_data,
+                    FontSettings {
+                        collection_index,
+                        ..FontSettings::default()
+                    },
+                )
+                .ok()
+            })
+            .flatten()
+        else {
+            continue;
+        };
+
+        let identity = (font.file_hash(), font.name().unwrap_or("").to_owned());
+        if seen.insert(identity) {
+            loaded.push(font);
+        }
+    }
+
+    loaded
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GlyphKey {
@@ -103,6 +207,14 @@ impl GlyphCache {
         Self::new_with_max_entries(cell_width, cell_height, DEFAULT_MAX_GLYPH_CACHE_ENTRIES)
     }
 
+    /// Create a new cache and append best-effort system fallback faces for CJK coverage.
+    #[must_use]
+    pub fn new_with_system_fallbacks(cell_width: u16, cell_height: u16) -> Self {
+        let mut cache = Self::new(cell_width, cell_height);
+        cache.add_system_fallbacks();
+        cache
+    }
+
     /// Create a bounded cache with an explicit max entry limit.
     #[must_use]
     pub fn new_with_max_entries(cell_width: u16, cell_height: u16, max_entries: usize) -> Self {
@@ -149,13 +261,59 @@ impl GlyphCache {
     ///
     /// Returns `true` if the font was loaded, `false` if parsing failed.
     pub fn add_fallback_font(&mut self, font_data: &[u8]) -> bool {
-        let font = match Font::from_bytes(font_data, FontSettings::default()) {
+        self.add_fallback_font_face(font_data, 0)
+    }
+
+    /// Add a fallback font face from a TTF/OTF/TTC source. `collection_index`
+    /// selects the face when loading from a collection file.
+    ///
+    /// Returns `true` if the font was loaded, `false` if parsing failed.
+    pub fn add_fallback_font_face(&mut self, font_data: &[u8], collection_index: u32) -> bool {
+        let font = match Font::from_bytes(
+            font_data,
+            FontSettings {
+                collection_index,
+                ..FontSettings::default()
+            },
+        ) {
             Ok(f) => f,
             Err(_) => return false,
         };
         let ascent_px = Self::compute_ascent(&font, self.px_size, self.cell_height);
         self.fonts.push(FontEntry { font, ascent_px });
+        self.reset_after_font_chain_change();
         true
+    }
+
+    /// Append discovered system fallback faces to the current chain.
+    ///
+    /// Returns the number of newly appended fallback fonts.
+    pub fn add_system_fallbacks(&mut self) -> usize {
+        let mut existing = self
+            .fonts
+            .iter()
+            .map(|entry| Self::font_identity(&entry.font))
+            .collect::<HashSet<_>>();
+        let mut added = 0;
+
+        for font in system_fallback_fonts() {
+            let identity = Self::font_identity(font);
+            if !existing.insert(identity) {
+                continue;
+            }
+            let ascent_px = Self::compute_ascent(font, self.px_size, self.cell_height);
+            self.fonts.push(FontEntry {
+                font: font.clone(),
+                ascent_px,
+            });
+            added += 1;
+        }
+
+        if added > 0 {
+            self.reset_after_font_chain_change();
+        }
+
+        added
     }
 
     /// Compute baseline ascent for a font at the given px_size.
@@ -163,6 +321,18 @@ impl GlyphCache {
         font.horizontal_line_metrics(px_size)
             .map(|lm| lm.ascent.round() as i32)
             .unwrap_or(cell_height as i32 - 2)
+    }
+
+    fn font_identity(font: &Font) -> (usize, String) {
+        (font.file_hash(), font.name().unwrap_or("").to_owned())
+    }
+
+    fn reset_after_font_chain_change(&mut self) {
+        self.cache.clear();
+        self.eviction_queue.clear();
+        let fallback_key = GlyphKey::from(FALLBACK_GLYPH_CHAR);
+        let fallback_bitmap = self.rasterize_into_cell(&fallback_key);
+        self.cache.insert(fallback_key, fallback_bitmap);
     }
 
     /// Get or rasterize a glyph for `key`. Returns a reference to the cached bitmap.
@@ -622,6 +792,32 @@ mod tests {
         let result = cache.add_fallback_font(b"not a font");
         assert!(!result);
         assert_eq!(cache.fonts.len(), 1);
+    }
+
+    #[test]
+    fn add_fallback_font_face_accepts_collection_index_zero() {
+        let mut cache = GlyphCache::new(8, 16);
+        let result = cache.add_fallback_font_face(FONT_DATA, 0);
+        assert!(result);
+        assert_eq!(cache.fonts.len(), 2);
+    }
+
+    #[test]
+    fn add_fallback_font_face_rejects_invalid_collection_index() {
+        let mut cache = GlyphCache::new(8, 16);
+        let result = cache.add_fallback_font_face(FONT_DATA, 1);
+        assert!(!result);
+        assert_eq!(cache.fonts.len(), 1);
+    }
+
+    #[test]
+    fn add_system_fallbacks_is_idempotent() {
+        let mut cache = GlyphCache::new(8, 16);
+        let _ = cache.add_system_fallbacks();
+        let font_count_after_first = cache.fonts.len();
+        let added_again = cache.add_system_fallbacks();
+        assert_eq!(added_again, 0);
+        assert_eq!(cache.fonts.len(), font_count_after_first);
     }
 
     #[test]

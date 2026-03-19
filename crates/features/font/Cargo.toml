@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 fontdue.workspace = true
 font8x8.workspace = true
+fontdb.workspace = true
