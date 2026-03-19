@@ -5,6 +5,7 @@ use crate::events::{DisplayClearMode, IngestDegradeReason};
 
 use super::{
     MAX_CSI_LEN, MAX_OSC_LEN, MAX_SGR_PARAMS, Parser, ParserAction, SgrParams, ShellMarkerKind,
+    StatusStringRequest,
 };
 
 #[test]
@@ -27,6 +28,50 @@ fn incomplete_dcs_discarded_on_resync() {
     assert!(resync.is_empty());
     let actions = parser.feed(b"A");
     assert_eq!(actions, vec![ParserAction::Print('A')]);
+}
+
+#[test]
+fn dcs_tmux_passthrough_refeeds_inner_sequences() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1bPtmux;\x1b\x1b]0;Wrapped Title\x07\x1b\\");
+    assert_eq!(
+        actions,
+        vec![ParserAction::SetWindowTitle("Wrapped Title".to_string())]
+    );
+}
+
+#[test]
+fn dcs_decrqss_sgr_request_is_parsed() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1bP$qm\x1b\\");
+    assert_eq!(
+        actions,
+        vec![ParserAction::RequestStatusString(StatusStringRequest::Sgr)]
+    );
+}
+
+#[test]
+fn dcs_decrqss_cursor_style_request_is_parsed() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1bP$q q\x1b\\");
+    assert_eq!(
+        actions,
+        vec![ParserAction::RequestStatusString(
+            StatusStringRequest::CursorStyle
+        )]
+    );
+}
+
+#[test]
+fn dcs_decrqss_unknown_request_is_rejected_in_state_layer() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1bP$q\"p\x1b\\");
+    assert_eq!(
+        actions,
+        vec![ParserAction::RequestStatusString(
+            StatusStringRequest::Unsupported
+        )]
+    );
 }
 
 #[test]

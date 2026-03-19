@@ -720,6 +720,21 @@ fn osc_7_current_directory() {
 }
 
 #[test]
+fn dcs_tmux_passthrough_forwards_inner_osc() {
+    let mut t = term();
+    feed_bytes(&mut t, b"\x1bPtmux;\x1b\x1b]0;tmux title\x07\x1b\\");
+    assert_eq!(t.window_title(), "tmux title");
+}
+
+#[test]
+fn dcs_decrqss_reports_sgr_state() {
+    let mut t = term();
+    feed_bytes(&mut t, b"\x1b[1;31m");
+    let responses = feed(&mut t, b"\x1bP$qm\x1b\\");
+    assert_eq!(responses, vec![b"\x1bP1$r1;31m\x1b\\".to_vec()]);
+}
+
+#[test]
 fn osc_4_palette_query_set_and_reset_round_trip() {
     let mut t = term();
 

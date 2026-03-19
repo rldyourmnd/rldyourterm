@@ -16,6 +16,7 @@ use crate::state::{MouseFormat, MouseMode};
 
 const MAX_CSI_LEN: usize = 256;
 const MAX_OSC_LEN: usize = 4096;
+const MAX_DCS_LEN: usize = 4096;
 const REPLACEMENT_CHAR: char = '\u{FFFD}';
 
 pub const MAX_SGR_PARAMS: usize = 16;
@@ -147,6 +148,14 @@ pub enum ShellMarkerKind {
     OutputEnd,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusStringRequest {
+    Sgr,
+    CursorStyle,
+    ScrollRegion,
+    Unsupported,
+}
+
 const MAX_CSI_PARAMS: usize = 32;
 
 /// Stack-allocated CSI parameter array. ECMA-48 limits CSI to 16 parameters.
@@ -264,6 +273,7 @@ pub enum ParserAction {
     ResetPalette,
     QueryForegroundColor,
     QueryBackgroundColor,
+    RequestStatusString(StatusStringRequest),
     PushKittyKeyboardMode(u16),
     PopKittyKeyboardMode(u16),
     QueryKittyKeyboardMode,
@@ -298,6 +308,7 @@ pub struct Parser {
     csi_buffer: Vec<u8>,
     csi_dropped: usize,
     osc_buffer: Vec<u8>,
+    dcs_buffer: Vec<u8>,
 }
 
 impl Parser {

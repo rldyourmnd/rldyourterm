@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 
 use crate::{
     events::CoreEvent,
-    grid::{DEFAULT_BG, DEFAULT_FG},
-    parser::ParserAction,
+    grid::{Attrs, Color, DEFAULT_BG, DEFAULT_FG, UnderlineStyle},
+    parser::{ParserAction, StatusStringRequest},
 };
 
 use super::TerminalState;
@@ -256,6 +256,11 @@ impl TerminalState {
                     data: osc_dynamic_color_response(11, DEFAULT_BG),
                 });
             }
+            ParserAction::RequestStatusString(request) => {
+                events.push(CoreEvent::TerminalResponse {
+                    data: decrqss_response(self, request),
+                });
+            }
             ParserAction::ShellMarker(kind) => {
                 events.push(CoreEvent::ShellMarkerReceived { kind });
             }
@@ -297,6 +302,106 @@ impl TerminalState {
 
 fn osc_dynamic_color_response(code: u16, rgb: (u8, u8, u8)) -> Vec<u8> {
     format_osc_rgb_response(code, rgb.0, rgb.1, rgb.2)
+}
+
+fn decrqss_response(state: &TerminalState, request: StatusStringRequest) -> Vec<u8> {
+    let Some(payload) = decrqss_payload(state, request) else {
+        return b"\x1bP0$r\x1b\\".to_vec();
+    };
+
+    format!("\x1bP1$r{payload}\x1b\\").into_bytes()
+}
+
+fn decrqss_payload(state: &TerminalState, request: StatusStringRequest) -> Option<String> {
+    match request {
+        StatusStringRequest::Sgr => Some(format_sgr_status_string(&state.pen)),
+        StatusStringRequest::CursorStyle => Some(format!("{} q", state.cursor_shape)),
+        StatusStringRequest::ScrollRegion => Some(format!(
+            "{};{}r",
+            state.scroll_top().saturating_add(1),
+            state.scroll_bottom().saturating_add(1)
+        )),
+        StatusStringRequest::Unsupported => None,
+    }
+}
+
+fn format_sgr_status_string(attrs: &Attrs) -> String {
+    let mut params = Vec::new();
+
+    if attrs.bold() {
+        params.push(String::from("1"));
+    }
+    if attrs.dim() {
+        params.push(String::from("2"));
+    }
+    if attrs.italic() {
+        params.push(String::from("3"));
+    }
+    match attrs.underline_style() {
+        UnderlineStyle::None => {}
+        UnderlineStyle::Single => params.push(String::from("4")),
+        UnderlineStyle::Double => params.push(String::from("4:2")),
+        UnderlineStyle::Curly => params.push(String::from("4:3")),
+        UnderlineStyle::Dotted => params.push(String::from("4:4")),
+        UnderlineStyle::Dashed => params.push(String::from("4:5")),
+    }
+    if attrs.blink() {
+        params.push(String::from("5"));
+    }
+    if attrs.inverse() {
+        params.push(String::from("7"));
+    }
+    if attrs.hidden() {
+        params.push(String::from("8"));
+    }
+    if attrs.strikethrough() {
+        params.push(String::from("9"));
+    }
+    if attrs.overline() {
+        params.push(String::from("53"));
+    }
+
+    push_sgr_color(&mut params, attrs.fg, false);
+    push_sgr_color(&mut params, attrs.bg, true);
+    push_sgr_underline_color(&mut params, attrs.underline_color);
+
+    if params.is_empty() {
+        params.push(String::from("0"));
+    }
+
+    format!("{}m", params.join(";"))
+}
+
+fn push_sgr_color(params: &mut Vec<String>, color: Color, background: bool) {
+    match color {
+        Color::Default => {}
+        Color::Indexed(index @ 0..=7) => {
+            let base = if background { 40 } else { 30 };
+            params.push((base + u16::from(index)).to_string());
+        }
+        Color::Indexed(index @ 8..=15) => {
+            let base = if background { 100 } else { 90 };
+            params.push((base + u16::from(index - 8)).to_string());
+        }
+        Color::Indexed(index) => {
+            let base = if background { 48 } else { 38 };
+            params.push(format!("{base};5;{index}"));
+        }
+        Color::Rgb(red, green, blue) => {
+            let base = if background { 48 } else { 38 };
+            params.push(format!("{base};2;{red};{green};{blue}"));
+        }
+    }
+}
+
+fn push_sgr_underline_color(params: &mut Vec<String>, color: Color) {
+    match color {
+        Color::Default => {}
+        Color::Indexed(index) => params.push(format!("58;5;{index}")),
+        Color::Rgb(red, green, blue) => {
+            params.push(format!("58;2;{red};{green};{blue}"));
+        }
+    }
 }
 
 fn osc_palette_response(index: u8, packed_rgb: u32) -> Vec<u8> {

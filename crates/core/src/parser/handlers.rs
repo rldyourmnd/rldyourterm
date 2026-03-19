@@ -3,7 +3,10 @@
 
 use crate::events::IngestDegradeReason;
 
-use super::{MAX_CSI_LEN, MAX_OSC_LEN, ParseState, Parser, ParserAction, REPLACEMENT_CHAR};
+use super::{
+    MAX_CSI_LEN, MAX_DCS_LEN, MAX_OSC_LEN, ParseState, Parser, ParserAction, REPLACEMENT_CHAR,
+    StatusStringRequest,
+};
 
 impl Parser {
     pub(super) fn handle_ground_byte(&mut self, byte: u8, actions: &mut Vec<ParserAction>) {
@@ -79,7 +82,7 @@ impl Parser {
                 self.state = ParseState::Ground;
             }
             b'P' => {
-                // DCS (Device Control String) - absorb payload until ST
+                self.dcs_buffer.clear();
                 self.state = ParseState::Dcs;
             }
             _ => {
@@ -163,18 +166,21 @@ impl Parser {
     pub(super) fn handle_dcs_byte(&mut self, byte: u8) {
         if byte == 0x1B {
             self.state = ParseState::DcsEsc;
+            return;
         }
-        // All other bytes are silently absorbed (DCS payload)
+
+        self.push_dcs_payload_byte(byte);
     }
 
     pub(super) fn handle_dcs_esc_byte(&mut self, byte: u8, actions: &mut Vec<ParserAction>) {
         if byte == b'\\' {
-            // ST complete (ESC \) - DCS terminated, return to Ground
-            self.state = ParseState::Ground;
+            self.complete_dcs(actions);
         } else {
-            // Not ST - the ESC starts a new escape sequence outside DCS
-            self.state = ParseState::Escape;
-            self.handle_escape_byte(byte, actions);
+            self.push_dcs_payload_byte(0x1B);
+            if byte != 0x1B {
+                self.push_dcs_payload_byte(byte);
+            }
+            self.state = ParseState::Dcs;
         }
     }
 
@@ -182,6 +188,21 @@ impl Parser {
         let raw = String::from_utf8_lossy(&self.osc_buffer).into_owned();
         actions.extend(parse_osc(&raw));
         self.reset_state_to_ground();
+    }
+
+    fn complete_dcs(&mut self, actions: &mut Vec<ParserAction>) {
+        let raw = self.dcs_buffer.clone();
+        self.reset_state_to_ground();
+
+        if let Some(decoded) = decode_tmux_passthrough(&raw) {
+            let mut nested = Parser::default();
+            let mut nested_actions = Vec::new();
+            nested.feed_into(&decoded, &mut nested_actions);
+            actions.extend(nested_actions);
+            return;
+        }
+
+        actions.extend(parse_dcs(&raw));
     }
 
     pub(super) fn emit_oversized_csi(&self, actions: &mut Vec<ParserAction>) {
@@ -199,6 +220,13 @@ impl Parser {
         self.csi_buffer.clear();
         self.csi_dropped = 0;
         self.osc_buffer.clear();
+        self.dcs_buffer.clear();
+    }
+
+    fn push_dcs_payload_byte(&mut self, byte: u8) {
+        if self.dcs_buffer.len() < MAX_DCS_LEN {
+            self.dcs_buffer.push(byte);
+        }
     }
 
     pub(super) fn flush_text_buffer(
@@ -300,6 +328,44 @@ fn parse_osc(raw: &str) -> Vec<ParserAction> {
         133 => parse_osc_133_shell_marker(payload).into_iter().collect(),
         _ => Vec::new(),
     }
+}
+
+fn parse_dcs(raw: &[u8]) -> Vec<ParserAction> {
+    if let Some(request) = parse_decrqss(raw) {
+        return vec![ParserAction::RequestStatusString(request)];
+    }
+
+    Vec::new()
+}
+
+fn parse_decrqss(raw: &[u8]) -> Option<StatusStringRequest> {
+    let request = raw.strip_prefix(b"$q")?;
+    let status = match request {
+        b"m" => StatusStringRequest::Sgr,
+        b" q" => StatusStringRequest::CursorStyle,
+        b"r" => StatusStringRequest::ScrollRegion,
+        _ => StatusStringRequest::Unsupported,
+    };
+    Some(status)
+}
+
+fn decode_tmux_passthrough(raw: &[u8]) -> Option<Vec<u8>> {
+    let payload = raw.strip_prefix(b"tmux;")?;
+    let mut decoded = Vec::with_capacity(payload.len());
+    let mut index = 0usize;
+
+    while index < payload.len() {
+        if payload[index] == 0x1B && payload.get(index + 1) == Some(&0x1B) {
+            decoded.push(0x1B);
+            index += 2;
+            continue;
+        }
+
+        decoded.push(payload[index]);
+        index += 1;
+    }
+
+    Some(decoded)
 }
 
 fn parse_osc_4_palette(payload: &str) -> Vec<ParserAction> {

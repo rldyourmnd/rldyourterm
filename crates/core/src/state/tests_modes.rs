@@ -1180,6 +1180,59 @@ fn query_background_color_emits_response() {
 }
 
 #[test]
+fn dcs_tmux_passthrough_applies_inner_window_title() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let events = state.feed(b"\x1bPtmux;\x1b\x1b]0;tmux wrapped\x07\x1b\\");
+    assert_eq!(state.window_title(), "tmux wrapped");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::WindowTitleChanged { title } if title == "tmux wrapped")
+        )
+    );
+}
+
+#[test]
+fn decrqss_reports_current_sgr_state() {
+    let mut state = TerminalState::new(10, 4, 5);
+    let _ = state.feed(b"\x1b[1;31m");
+    let events = state.feed(b"\x1bP$qm\x1b\\");
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1bP1$r1;31m\x1b\\")
+    ));
+}
+
+#[test]
+fn decrqss_reports_current_scroll_region() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[2;4r");
+    let events = state.feed(b"\x1bP$qr\x1b\\");
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1bP1$r2;4r\x1b\\")
+    ));
+}
+
+#[test]
+fn decrqss_reports_current_cursor_style() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let _ = state.feed(b"\x1b[5 q");
+    let events = state.feed(b"\x1bP$q q\x1b\\");
+    assert!(events.iter().any(
+        |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1bP1$r5 q\x1b\\")
+    ));
+}
+
+#[test]
+fn decrqss_rejects_unsupported_requests() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let events = state.feed(b"\x1bP$q\"p\x1b\\");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1bP0$r\x1b\\")
+        )
+    );
+}
+
+#[test]
 fn osc_4_query_palette_color_emits_current_entry() {
     let mut state = TerminalState::new(10, 4, 5);
     let events = state.feed(b"\x1b]4;1;?\x07");
