@@ -2030,6 +2030,7 @@ name = "rldyourterm-interaction"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "rldyourterm-core",
  "rldyourterm-services",
  "rldyourterm-settings",
  "tracing",

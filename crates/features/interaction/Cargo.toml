@@ -9,5 +9,6 @@ license.workspace = true
 crossterm.workspace = true
 winit.workspace = true
 tracing.workspace = true
+rldyourterm-core.workspace = true
 rldyourterm-services.workspace = true
 rldyourterm-settings.workspace = true
