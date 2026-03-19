@@ -6,7 +6,7 @@
 //! These tests exercise real rendering paths (no mocks) at the pixel level
 //! through `render_terminal_buffer`, verifying framebuffer integrity, SGR
 //! attribute rendering, wide character layout, scrollback compositing,
-//! selection highlighting, and sustained-load stability.
+//! selection highlighting, cursor overlays, and sustained-load stability.
 
 use super::{DEFAULT_BG_U32, DEFAULT_FG_U32, render_terminal_buffer, rgb_to_u32};
 use rldyourterm_font::GlyphCache;
@@ -799,7 +799,7 @@ fn scrollback_offset_shifts_visible_content() {
 // ===========================================================================
 
 #[test]
-fn selection_inverts_covered_cell_pixels() {
+fn selection_uses_theme_background_for_covered_blank_cells() {
     let cols: usize = 4;
     let rows: usize = 1;
     let mut state = state_with_default_scrollback(cols as u16, rows as u16);
@@ -817,26 +817,23 @@ fn selection_inverts_covered_cell_pixels() {
     let mut ctx_sel = RenderCtx::new(cols, rows);
     ctx_sel.render_with_selection(&mut state2, 1, 1);
     let sel_cell1 = ctx_sel.cell_pixels(0, 1);
+    let (_, selection_bg) = state2.selection_colors();
 
-    // The selected cell must differ from the unselected version because
-    // selection applies XOR 0x00FF_FFFF to every pixel in the cell.
     assert_ne!(
         no_sel_cell1, sel_cell1,
-        "selection XOR must change pixels in the covered cell"
+        "selection theming must change pixels in the covered cell"
     );
 
-    // Verify the XOR relationship: each pixel should be original ^ 0x00FF_FFFF.
-    for (idx, (&orig, &selected)) in no_sel_cell1.iter().zip(sel_cell1.iter()).enumerate() {
+    for (idx, &selected) in sel_cell1.iter().enumerate() {
         assert_eq!(
-            selected,
-            orig ^ 0x00FF_FFFF,
-            "pixel {idx} in selected cell must be XOR-inverted"
+            selected, selection_bg,
+            "pixel {idx} in selected cell must match the theme selection background"
         );
     }
 }
 
 #[test]
-fn selection_skips_cursor_cell_to_avoid_double_xor() {
+fn cursor_overlay_wins_over_selection_on_cursor_cell() {
     let cols: usize = 4;
     let rows: usize = 1;
     let mut state = state_with_default_scrollback(cols as u16, rows as u16);
@@ -858,14 +855,12 @@ fn selection_skips_cursor_cell_to_avoid_double_xor() {
     let mut ctx_cursor_only = RenderCtx::new(cols, rows);
     ctx_cursor_only.render_full(&mut state_cursor_only);
 
-    // The cursor cell should look the same in both cases because the
-    // selection pass skips the cursor cell to avoid double-XOR cancellation.
     let sel_cursor_cell = ctx.cell_pixels(0, 1);
     let only_cursor_cell = ctx_cursor_only.cell_pixels(0, 1);
     assert_eq!(
         sel_cursor_cell, only_cursor_cell,
         "cursor cell must look identical whether or not selection covers it, \
-         because selection skips the cursor to prevent double-XOR"
+         because cursor theming should override the selection highlight"
     );
 }
 

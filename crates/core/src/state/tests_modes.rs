@@ -1276,9 +1276,15 @@ fn apply_theme_updates_dynamic_color_queries_and_palette_reset_baseline() {
     let theme = TerminalTheme {
         default_fg: (0x12, 0x34, 0x56),
         default_bg: (0x65, 0x43, 0x21),
+        cursor_fg: (0xaa, 0xbb, 0xcc),
+        cursor_bg: (0x10, 0x20, 0x30),
+        selection_fg: (0xde, 0xad, 0xbe),
+        selection_bg: (0x40, 0x50, 0x60),
         palette,
     };
     state.apply_theme(&theme);
+    assert_eq!(state.cursor_colors(), (0xaabbcc, 0x102030));
+    assert_eq!(state.selection_colors(), (0xdeadbe, 0x405060));
 
     let dynamic_color_events = state.feed(b"\x1b]10;?\x07\x1b]11;?\x07");
     assert!(dynamic_color_events.iter().any(

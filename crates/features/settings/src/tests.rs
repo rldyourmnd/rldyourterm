@@ -147,6 +147,10 @@ fn theme_preset_contracts_expose_concrete_palette_data() {
     let theme = theme_for_preset(ThemePreset::Monochrome);
     assert_eq!(theme.default_fg, (0x22, 0x22, 0x22));
     assert_eq!(theme.default_bg, (0xf5, 0xf5, 0xf5));
+    assert_eq!(theme.cursor_fg, (0xf5, 0xf5, 0xf5));
+    assert_eq!(theme.cursor_bg, (0x22, 0x22, 0x22));
+    assert_eq!(theme.selection_fg, (0x22, 0x22, 0x22));
+    assert_eq!(theme.selection_bg, (0xd0, 0xd0, 0xd0));
     assert_eq!(theme.palette[0], 0x00181818);
     assert_eq!(theme.palette[15], 0x00ffffff);
     assert_eq!(theme.palette[16], 0x00000000);

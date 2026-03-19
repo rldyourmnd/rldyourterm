@@ -24,6 +24,10 @@ struct GridUniforms {
     blink_visible: u32,
     cursor_shape: u32,
     overlay_row: u32,
+    cursor_fg_color: u32,
+    cursor_bg_color: u32,
+    selection_fg_color: u32,
+    selection_bg_color: u32,
 };
 
 struct CellInstance {
@@ -213,18 +217,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         bg = mix(bg, fg, 0.1875);
     }
 
-    // Selection highlight: invert colors for selected range.
-    // Skip the cursor cell to avoid double-inversion with the cursor pass below
-    // (two swaps cancel out, making the cursor invisible on selected cells).
     let cursor_index = grid.cursor_row * grid.grid_cols + grid.cursor_col;
     let is_cursor_cell = !is_overlay_cell && grid.cursor_visible != 0u && in.instance == cursor_index;
-    if grid.selection_start != SEL_NONE && !is_cursor_cell && !is_overlay_cell {
+    if grid.selection_start != SEL_NONE && !is_overlay_cell {
         let sel_lo = min(grid.selection_start, grid.selection_end);
         let sel_hi = max(grid.selection_start, grid.selection_end);
         if in.instance >= sel_lo && in.instance <= sel_hi {
-            let tmp = fg;
-            fg = bg;
-            bg = tmp;
+            fg = unpack_rgb(grid.selection_fg_color);
+            bg = unpack_rgb(grid.selection_bg_color);
         }
     }
 
@@ -248,9 +248,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
 
             if in_cursor {
-                let tmp = fg;
-                fg = bg;
-                bg = tmp;
+                fg = unpack_rgb(grid.cursor_fg_color);
+                bg = unpack_rgb(grid.cursor_bg_color);
             }
         }
     }

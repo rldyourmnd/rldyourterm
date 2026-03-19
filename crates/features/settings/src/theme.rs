@@ -7,6 +7,10 @@ use crate::ThemePreset;
 
 const CUBERPUNK_DEFAULT_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
 const CUBERPUNK_DEFAULT_BG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
+const CUBERPUNK_CURSOR_FG: (u8, u8, u8) = (0x14, 0x1b, 0x1f);
+const CUBERPUNK_CURSOR_BG: (u8, u8, u8) = (0x73, 0xf7, 0xff);
+const CUBERPUNK_SELECTION_FG: (u8, u8, u8) = (0xd8, 0xd8, 0xd8);
+const CUBERPUNK_SELECTION_BG: (u8, u8, u8) = (0x3e, 0x4b, 0x53);
 const CUBERPUNK_ANSI: [u32; 16] = [
     0x00141b1f, 0x00ff7a90, 0x00b9f27c, 0x00ffd36e, 0x007ad5ff, 0x00ff80bf, 0x0073f7ff, 0x00d8d8d8,
     0x003e4b53, 0x00ff9db0, 0x00d7ff9b, 0x00ffe39f, 0x0099e2ff, 0x00ff9ed2, 0x0090ffff, 0x00f5f7fa,
@@ -14,6 +18,10 @@ const CUBERPUNK_ANSI: [u32; 16] = [
 
 const AURORA_DEFAULT_FG: (u8, u8, u8) = (0xd7, 0xe7, 0xee);
 const AURORA_DEFAULT_BG: (u8, u8, u8) = (0x0f, 0x19, 0x24);
+const AURORA_CURSOR_FG: (u8, u8, u8) = (0x0f, 0x19, 0x24);
+const AURORA_CURSOR_BG: (u8, u8, u8) = (0x77, 0xe2, 0xd7);
+const AURORA_SELECTION_FG: (u8, u8, u8) = (0xd7, 0xe7, 0xee);
+const AURORA_SELECTION_BG: (u8, u8, u8) = (0x37, 0x45, 0x57);
 const AURORA_ANSI: [u32; 16] = [
     0x000f1924, 0x00ff8a7a, 0x007fd7a6, 0x00f2d06b, 0x007ab8ff, 0x00d6a6ff, 0x0077e2d7, 0x00d7e7ee,
     0x00374557, 0x00ffb29f, 0x00a7efc2, 0x00ffe08f, 0x0094c8ff, 0x00e2b9ff, 0x0091f0e7, 0x00f4fbff,
@@ -21,6 +29,10 @@ const AURORA_ANSI: [u32; 16] = [
 
 const MONOCHROME_DEFAULT_FG: (u8, u8, u8) = (0x22, 0x22, 0x22);
 const MONOCHROME_DEFAULT_BG: (u8, u8, u8) = (0xf5, 0xf5, 0xf5);
+const MONOCHROME_CURSOR_FG: (u8, u8, u8) = (0xf5, 0xf5, 0xf5);
+const MONOCHROME_CURSOR_BG: (u8, u8, u8) = (0x22, 0x22, 0x22);
+const MONOCHROME_SELECTION_FG: (u8, u8, u8) = (0x22, 0x22, 0x22);
+const MONOCHROME_SELECTION_BG: (u8, u8, u8) = (0xd0, 0xd0, 0xd0);
 const MONOCHROME_ANSI: [u32; 16] = [
     0x00181818, 0x00333333, 0x00444444, 0x00555555, 0x00666666, 0x00777777, 0x00888888, 0x00e2e2e2,
     0x00909090, 0x00a0a0a0, 0x00b0b0b0, 0x00c0c0c0, 0x00d0d0d0, 0x00dadada, 0x00e5e5e5, 0x00ffffff,
@@ -31,16 +43,28 @@ pub fn theme_for_preset(preset: ThemePreset) -> TerminalTheme {
         ThemePreset::Cuberpunk => TerminalTheme {
             default_fg: CUBERPUNK_DEFAULT_FG,
             default_bg: CUBERPUNK_DEFAULT_BG,
+            cursor_fg: CUBERPUNK_CURSOR_FG,
+            cursor_bg: CUBERPUNK_CURSOR_BG,
+            selection_fg: CUBERPUNK_SELECTION_FG,
+            selection_bg: CUBERPUNK_SELECTION_BG,
             palette: themed_palette(CUBERPUNK_ANSI),
         },
         ThemePreset::Aurora => TerminalTheme {
             default_fg: AURORA_DEFAULT_FG,
             default_bg: AURORA_DEFAULT_BG,
+            cursor_fg: AURORA_CURSOR_FG,
+            cursor_bg: AURORA_CURSOR_BG,
+            selection_fg: AURORA_SELECTION_FG,
+            selection_bg: AURORA_SELECTION_BG,
             palette: themed_palette(AURORA_ANSI),
         },
         ThemePreset::Monochrome => TerminalTheme {
             default_fg: MONOCHROME_DEFAULT_FG,
             default_bg: MONOCHROME_DEFAULT_BG,
+            cursor_fg: MONOCHROME_CURSOR_FG,
+            cursor_bg: MONOCHROME_CURSOR_BG,
+            selection_fg: MONOCHROME_SELECTION_FG,
+            selection_bg: MONOCHROME_SELECTION_BG,
             palette: themed_palette(MONOCHROME_ANSI),
         },
     }

@@ -145,6 +145,10 @@ struct GridUniforms {
     blink_visible: u32,
     cursor_shape: u32,
     overlay_row: u32,
+    cursor_fg_color: u32,
+    cursor_bg_color: u32,
+    selection_fg_color: u32,
+    selection_bg_color: u32,
 }
 
 #[repr(C)]

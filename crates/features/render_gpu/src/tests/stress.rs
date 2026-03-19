@@ -100,8 +100,12 @@ fn stress_grid_uniforms_cursor_boundary_values() {
             blink_visible: 1,
             cursor_shape: 0,
             overlay_row: OVERLAY_ROW_NONE,
+            cursor_fg_color: 0x00112233,
+            cursor_bg_color: 0x00445566,
+            selection_fg_color: 0x00778899,
+            selection_bg_color: 0x00aabbcc,
         };
         let bytes = bytemuck::bytes_of(&uniforms);
-        assert_eq!(bytes.len(), 64);
+        assert_eq!(bytes.len(), 80);
     }
 }

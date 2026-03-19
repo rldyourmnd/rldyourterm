@@ -313,6 +313,10 @@ pub struct Palette {
 pub struct TerminalTheme {
     pub default_fg: (u8, u8, u8),
     pub default_bg: (u8, u8, u8),
+    pub cursor_fg: (u8, u8, u8),
+    pub cursor_bg: (u8, u8, u8),
+    pub selection_fg: (u8, u8, u8),
+    pub selection_bg: (u8, u8, u8),
     pub palette: [u32; 256],
 }
 
@@ -368,6 +372,10 @@ impl Default for TerminalTheme {
         Self {
             default_fg: DEFAULT_FG,
             default_bg: DEFAULT_BG,
+            cursor_fg: DEFAULT_BG,
+            cursor_bg: DEFAULT_FG,
+            selection_fg: DEFAULT_FG,
+            selection_bg: (0x3e, 0x4b, 0x53),
             palette: ANSI_PALETTE,
         }
     }

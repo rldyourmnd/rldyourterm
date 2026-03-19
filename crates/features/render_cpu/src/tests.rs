@@ -24,6 +24,17 @@ fn cells_from_str(s: &str) -> Vec<Cell> {
         .collect()
 }
 
+fn cell_pixels(buffer: &[u32], width: usize, cell_col: usize) -> Vec<u32> {
+    let start_x = cell_col * CELL_WIDTH;
+    let end_x = start_x + CELL_WIDTH;
+    let mut pixels = Vec::with_capacity(CELL_WIDTH * CELL_HEIGHT);
+    for row in 0..CELL_HEIGHT {
+        let row_start = row * width;
+        pixels.extend_from_slice(&buffer[row_start + start_x..row_start + end_x]);
+    }
+    pixels
+}
+
 #[test]
 fn full_render_is_deterministic_and_cpu_mode() {
     let mut state = state_with_default_scrollback(4, 2);
@@ -186,6 +197,7 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
 #[test]
 fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
     let mut state = state_with_default_scrollback(2, 1);
+    state.cursor.visible = false;
     let width = CELL_WIDTH * 2;
     let height = CELL_HEIGHT;
     let mut buffer = vec![0; width * height];
@@ -214,9 +226,12 @@ fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
         &[],
     );
 
+    let (_, selection_bg) = state.selection_colors();
     assert!(
-        buffer.iter().any(|pixel| *pixel != DEFAULT_BG_U32),
-        "selection overlay must still invert blank default cells"
+        cell_pixels(&buffer, width, 0)
+            .iter()
+            .all(|pixel| *pixel == selection_bg),
+        "selection overlay must use theme selection background on blank cells"
     );
 }
 
@@ -254,9 +269,12 @@ fn pixel_renderer_draws_cursor_on_blank_default_row() {
         &[],
     );
 
+    let (_, cursor_bg) = state.cursor_colors();
     assert!(
-        buffer.iter().any(|pixel| *pixel != DEFAULT_BG_U32),
-        "cursor overlay must still draw on a blank default row"
+        cell_pixels(&buffer, width, 0)
+            .iter()
+            .all(|pixel| *pixel == cursor_bg),
+        "cursor overlay must use theme cursor background on a blank default row"
     );
 }
 

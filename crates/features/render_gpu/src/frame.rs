@@ -223,6 +223,10 @@ impl GpuRenderer {
             blink_visible: u32::from(blink_visible),
             cursor_shape: terminal.cursor_shape() as u32,
             overlay_row,
+            cursor_fg_color: terminal.cursor_colors().0,
+            cursor_bg_color: terminal.cursor_colors().1,
+            selection_fg_color: terminal.selection_colors().0,
+            selection_bg_color: terminal.selection_colors().1,
         };
         backend.queue.write_buffer(
             &backend.grid_uniform_buffer,

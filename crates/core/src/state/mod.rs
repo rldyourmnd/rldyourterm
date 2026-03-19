@@ -104,6 +104,10 @@ pub struct TerminalState {
     pub(super) palette: Palette,
     pub(super) default_fg: (u8, u8, u8),
     pub(super) default_bg: (u8, u8, u8),
+    pub(super) cursor_fg: (u8, u8, u8),
+    pub(super) cursor_bg: (u8, u8, u8),
+    pub(super) selection_fg: (u8, u8, u8),
+    pub(super) selection_bg: (u8, u8, u8),
     pub(super) bracketed_paste: bool,
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
@@ -147,6 +151,10 @@ impl TerminalState {
             palette: Palette::default(),
             default_fg: DEFAULT_FG,
             default_bg: DEFAULT_BG,
+            cursor_fg: DEFAULT_BG,
+            cursor_bg: DEFAULT_FG,
+            selection_fg: DEFAULT_FG,
+            selection_bg: (0x3e, 0x4b, 0x53),
             bracketed_paste: false,
             application_keypad_mode: false,
             application_cursor_keys: false,
@@ -285,9 +293,27 @@ impl TerminalState {
         (fg, bg)
     }
 
+    pub fn cursor_colors(&self) -> (u32, u32) {
+        (
+            self.resolve_color(Color::Default, self.cursor_fg),
+            self.resolve_color(Color::Default, self.cursor_bg),
+        )
+    }
+
+    pub fn selection_colors(&self) -> (u32, u32) {
+        (
+            self.resolve_color(Color::Default, self.selection_fg),
+            self.resolve_color(Color::Default, self.selection_bg),
+        )
+    }
+
     pub fn apply_theme(&mut self, theme: &TerminalTheme) {
         self.default_fg = theme.default_fg;
         self.default_bg = theme.default_bg;
+        self.cursor_fg = theme.cursor_fg;
+        self.cursor_bg = theme.cursor_bg;
+        self.selection_fg = theme.selection_fg;
+        self.selection_bg = theme.selection_bg;
         self.palette.set_base_colors(theme.palette);
         self.grid.mark_all_dirty();
         if let Some(alternate_screen) = self.alternate_screen.as_mut() {

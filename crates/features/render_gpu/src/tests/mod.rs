@@ -442,7 +442,7 @@ fn cell_instance_bytemuck_pod_layout() {
 
 #[test]
 fn grid_uniforms_bytemuck_pod_layout() {
-    assert_eq!(std::mem::size_of::<GridUniforms>(), 64);
+    assert_eq!(std::mem::size_of::<GridUniforms>(), 80);
     assert_eq!(std::mem::align_of::<GridUniforms>(), 4);
 }
 

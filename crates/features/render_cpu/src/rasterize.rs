@@ -169,6 +169,7 @@ pub fn render_terminal_buffer(
 
     let effective_offset = viewport_offset.min(terminal.scrollback.len());
     let sb_rows_on_screen = effective_offset.min(content_rows);
+    let selection_range = selection_flat_range(selection_start, selection_end);
 
     collect_current_damage_rows(
         terminal,
@@ -215,6 +216,7 @@ pub fn render_terminal_buffer(
                 search_overlay_row,
                 visible_cols,
                 row_idx * grid_cols,
+                None,
                 &[],
                 glyph_cache,
                 true,
@@ -234,6 +236,7 @@ pub fn render_terminal_buffer(
                     cells,
                     visible_cols,
                     row_idx * grid_cols,
+                    selection_range,
                     search_hit_ranges,
                     glyph_cache,
                     true,
@@ -249,6 +252,9 @@ pub fn render_terminal_buffer(
                         row_flat_start,
                         grid_cols,
                     )
+                    && !selection_range.is_some_and(|(range_start, range_end)| {
+                        row_intersects_flat_range(row_flat_start, grid_cols, range_start, range_end)
+                    })
                 {
                     continue;
                 }
@@ -261,6 +267,7 @@ pub fn render_terminal_buffer(
                     cells,
                     visible_cols,
                     row_flat_start,
+                    selection_range,
                     search_hit_ranges,
                     glyph_cache,
                     blink_visible,
@@ -282,61 +289,24 @@ pub fn render_terminal_buffer(
         }
     }
 
-    // Selection highlight: invert colors for selected cells on repainted rows only.
-    // When the framebuffer age is 2, repaint_rows already includes the previous
-    // frame's damage rows, so the buffer is brought forward to the current frame
-    // before selection XOR is applied. Re-inverting untouched rows would still
-    // toggle the highlight off because XOR is its own inverse.
-    // Skip the cursor cell to avoid double-XOR with the cursor pass below
-    // (two XOR operations cancel out, making the cursor invisible on selection).
-    let cursor_flat = if viewport_offset == 0
-        && terminal.cursor.visible
-        && (terminal.cursor.row as usize) < content_rows
-    {
-        (terminal.cursor.row as usize) * grid_cols + terminal.cursor.col as usize
-    } else {
-        usize::MAX
-    };
-    if selection_start != u32::MAX {
-        let sel_lo = selection_start.min(selection_end) as usize;
-        let sel_hi = selection_start.max(selection_end) as usize;
-        for &row in repaint_rows {
-            let row_usize = row as usize;
-            if overlay_active && row_usize == overlay_row {
-                continue;
-            }
-            let row_flat_start = row_usize * grid_cols;
-            let row_flat_end = row_flat_start + grid_cols - 1;
-            if row_flat_end < sel_lo || row_flat_start > sel_hi {
-                continue;
-            }
-            let start_col = sel_lo.saturating_sub(row_flat_start);
-            let end_col = (sel_hi - row_flat_start).min(grid_cols - 1);
-            for col in start_col..=end_col.min(visible_cols - 1) {
-                if row_flat_start + col == cursor_flat {
-                    continue;
-                }
-                draw_cell_invert(
-                    buffer,
-                    width,
-                    height,
-                    col * CELL_WIDTH,
-                    row_usize * CELL_HEIGHT,
-                );
-            }
-        }
-    }
-
     if viewport_offset == 0 && terminal.cursor.visible {
         let cursor_row = terminal.cursor.row as usize;
         let cursor_col = terminal.cursor.col as usize;
         if cursor_row < content_rows && cursor_col < visible_cols {
+            let cursor_cell = terminal
+                .grid
+                .get_cell(terminal.cursor.row, terminal.cursor.col)
+                .ok()
+                .copied();
             draw_cursor(
                 buffer,
                 width,
                 height,
                 cursor_col * CELL_WIDTH,
                 cursor_row * CELL_HEIGHT,
+                cursor_cell,
+                terminal,
+                glyph_cache,
                 terminal.cursor_shape(),
                 blink_visible,
             );
@@ -356,11 +326,13 @@ fn render_row_cells(
     cells: &[Cell],
     visible_cols: usize,
     row_flat_start: usize,
+    selection_range: Option<(usize, usize)>,
     search_hit_ranges: &[(u32, u32)],
     glyph_cache: &mut GlyphCache,
     blink_visible: bool,
 ) {
     let (_, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
+    let selection_colors = terminal.selection_colors();
 
     for (col, cell) in cells.iter().take(visible_cols).enumerate() {
         if cell.width == 0 {
@@ -368,13 +340,18 @@ fn render_row_cells(
         }
         let cell_search_hit =
             cell_intersects_search_hit_ranges(search_hit_ranges, row_flat_start + col, cell.width);
-        if is_default_blank_cell(cell) && !cell_search_hit {
+        let cell_selected = selection_range.is_some_and(|(range_start, range_end)| {
+            cell_intersects_flat_range(row_flat_start + col, cell.width, range_start, range_end)
+        });
+        if is_default_blank_cell(cell) && !cell_search_hit && !cell_selected {
             continue;
         }
 
         let x = col * CELL_WIDTH;
-        let (fg, mut bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
-        if cell_search_hit {
+        let (mut fg, mut bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
+        if cell_selected {
+            (fg, bg) = selection_colors;
+        } else if cell_search_hit {
             bg = tint_search_hit_background(fg, bg);
         }
 
@@ -408,7 +385,7 @@ fn render_row_cells(
         // Resolve underline decoration color (SGR 58 or fallback to fg).
         let underline_style = cell.attrs.underline_style();
         if underline_style != UnderlineStyle::None {
-            let ul_color = if cell.attrs.underline_color == Color::Default {
+            let ul_color = if cell_selected || cell.attrs.underline_color == Color::Default {
                 fg
             } else {
                 terminal.resolve_color(cell.attrs.underline_color, DEFAULT_FG)
@@ -443,6 +420,23 @@ fn render_row_cells(
     }
 }
 
+fn selection_flat_range(selection_start: u32, selection_end: u32) -> Option<(usize, usize)> {
+    (selection_start != u32::MAX).then_some((
+        selection_start.min(selection_end) as usize,
+        selection_start.max(selection_end) as usize,
+    ))
+}
+
+fn cell_intersects_flat_range(
+    cell_flat_start: usize,
+    cell_width: u8,
+    range_start: usize,
+    range_end: usize,
+) -> bool {
+    let cell_flat_end = cell_flat_start + cell_width.max(1) as usize - 1;
+    cell_flat_end >= range_start && cell_flat_start <= range_end
+}
+
 fn resolve_cell_colors_for_terminal(terminal: &TerminalState, attrs: &Attrs) -> (u32, u32) {
     terminal.resolve_cell_colors(attrs)
 }
@@ -461,6 +455,19 @@ fn row_intersects_search_hit_ranges(
     search_hit_ranges
         .get(first_candidate)
         .is_some_and(|&(start, _)| start <= row_end)
+}
+
+fn row_intersects_flat_range(
+    row_flat_start: usize,
+    row_width: usize,
+    range_start: usize,
+    range_end: usize,
+) -> bool {
+    if row_width == 0 {
+        return false;
+    }
+    let row_flat_end = row_flat_start + row_width - 1;
+    row_flat_end >= range_start && row_flat_start <= range_end
 }
 
 fn cell_intersects_search_hit_ranges(
@@ -538,7 +545,7 @@ fn draw_cell_bg(buffer: &mut [u32], width: usize, height: usize, x: usize, y: us
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_glyph_blended(
+fn draw_glyph_blended_clipped(
     buffer: &mut [u32],
     width: usize,
     height: usize,
@@ -547,6 +554,8 @@ fn draw_glyph_blended(
     glyph: &GlyphBitmap,
     fg: u32,
     bold: bool,
+    clip_start_x: usize,
+    clip_end_x: usize,
 ) {
     if glyph.glyph_width == 0 || glyph.glyph_height == 0 {
         return;
@@ -568,7 +577,7 @@ fn draw_glyph_blended(
             }
             let px = px as usize;
             let py = py as usize;
-            if px >= width || py >= height {
+            if px < clip_start_x || px >= clip_end_x || px >= width || py >= height {
                 continue;
             }
 
@@ -582,7 +591,7 @@ fn draw_glyph_blended(
             let b = (bg_b as u32 * inv_a + fg_b as u32 * a) / 255;
             buffer[idx] = rgb_to_u32(r as u8, g as u8, b as u8);
 
-            if bold && px + 1 < width {
+            if bold && px + 1 < clip_end_x && px + 1 < width {
                 let bold_idx = py * width + px + 1;
                 let (bbg_r, bbg_g, bbg_b) = u32_to_rgb(buffer[bold_idx]);
                 let br = (bbg_r as u32 * inv_a + fg_r as u32 * a) / 255;
@@ -592,6 +601,22 @@ fn draw_glyph_blended(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_glyph_blended(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    cell_x: usize,
+    cell_y: usize,
+    glyph: &GlyphBitmap,
+    fg: u32,
+    bold: bool,
+) {
+    draw_glyph_blended_clipped(
+        buffer, width, height, cell_x, cell_y, glyph, fg, bold, 0, width,
+    );
 }
 
 fn draw_underline(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize, fg: u32) {
@@ -714,30 +739,19 @@ fn draw_overline(buffer: &mut [u32], width: usize, height: usize, x: usize, y: u
     buffer[row_start + x..row_start + end_x].fill(fg);
 }
 
-/// Invert a full cell for selection highlighting.
-fn draw_cell_invert(buffer: &mut [u32], width: usize, height: usize, x: usize, y: usize) {
-    let end_x = (x + CELL_WIDTH).min(width);
-    for glyph_y in 0..CELL_HEIGHT {
-        let pixel_y = y + glyph_y;
-        if pixel_y >= height {
-            break;
-        }
-        let row_start = pixel_y * width;
-        for pixel in &mut buffer[row_start + x..row_start + end_x] {
-            *pixel ^= 0x00FF_FFFF;
-        }
-    }
-}
-
 /// Draw cursor with DECSCUSR shape support.
 /// Shapes: 0/1=blinking block, 2=steady block, 3=blinking underline,
 /// 4=steady underline, 5=blinking bar, 6=steady bar.
+#[allow(clippy::too_many_arguments)]
 fn draw_cursor(
     buffer: &mut [u32],
     width: usize,
     height: usize,
     x: usize,
     y: usize,
+    cell: Option<Cell>,
+    terminal: &TerminalState,
+    glyph_cache: &mut GlyphCache,
     cursor_shape: u8,
     blink_visible: bool,
 ) {
@@ -747,6 +761,7 @@ fn draw_cursor(
         return;
     }
 
+    let (cursor_fg, cursor_bg) = terminal.cursor_colors();
     let (y_start, y_end, x_start, x_end) = match cursor_shape {
         3 | 4 => {
             // Underline: bottom 2px of cell.
@@ -770,7 +785,46 @@ fn draw_cursor(
         }
         let row_start = pixel_y * width;
         for pixel in &mut buffer[row_start + x_start..row_start + x_end] {
-            *pixel ^= 0x00FF_FFFF;
+            *pixel = cursor_bg;
         }
+    }
+
+    let is_block = !matches!(cursor_shape, 3..=6);
+    if !is_block {
+        return;
+    }
+
+    let Some(cell) = cell else {
+        return;
+    };
+    if cell.attrs.blink() && !blink_visible {
+        return;
+    }
+
+    if let Some(glyph_key) = glyph_key_for_cell(&cell) {
+        let glyph = glyph_cache.get(glyph_key);
+        draw_glyph_blended_clipped(
+            buffer,
+            width,
+            height,
+            x,
+            y,
+            glyph,
+            cursor_fg,
+            cell.attrs.bold(),
+            x,
+            x + CELL_WIDTH,
+        );
+    }
+
+    let underline_style = cell.attrs.underline_style();
+    if underline_style != UnderlineStyle::None {
+        draw_underline_decoration(buffer, width, height, x, y, underline_style, cursor_fg);
+    }
+    if cell.attrs.strikethrough() {
+        draw_strikethrough(buffer, width, height, x, y, cursor_fg);
+    }
+    if cell.attrs.overline() {
+        draw_overline(buffer, width, height, x, y, cursor_fg);
     }
 }
