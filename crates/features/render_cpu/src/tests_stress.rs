@@ -81,6 +81,8 @@ impl RenderCtx {
             0,
             u32::MAX,
             u32::MAX,
+            &[],
+            &[],
         );
     }
 
@@ -104,6 +106,8 @@ impl RenderCtx {
             0,
             u32::MAX,
             u32::MAX,
+            &[],
+            &[],
         );
     }
 
@@ -130,6 +134,8 @@ impl RenderCtx {
             0,
             selection_start,
             selection_end,
+            &[],
+            &[],
         );
     }
 
@@ -151,6 +157,8 @@ impl RenderCtx {
             viewport_offset,
             u32::MAX,
             u32::MAX,
+            &[],
+            &[],
         );
     }
 

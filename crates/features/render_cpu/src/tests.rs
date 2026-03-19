@@ -169,6 +169,8 @@ fn pixel_renderer_draws_dirty_row_and_clears_dirty_flags() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     assert!(
@@ -208,6 +210,8 @@ fn pixel_renderer_preserves_selection_overlay_on_blank_default_row() {
         0,
         0,
         0,
+        &[],
+        &[],
     );
 
     assert!(
@@ -246,11 +250,109 @@ fn pixel_renderer_draws_cursor_on_blank_default_row() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     assert!(
         buffer.iter().any(|pixel| *pixel != DEFAULT_BG_U32),
         "cursor overlay must still draw on a blank default row"
+    );
+}
+
+#[test]
+fn pixel_renderer_tints_blank_search_hits_without_cursor_noise() {
+    let mut state = state_with_default_scrollback(2, 1);
+    state.cursor.visible = false;
+
+    let width = CELL_WIDTH * 2;
+    let height = CELL_HEIGHT;
+    let mut buffer = vec![0; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut current_damage_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
+
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &[],
+        None,
+        &mut current_damage_rows,
+        &mut repaint_rows,
+        &mut persisted_damage_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+        &[(0, 0)],
+        &[],
+    );
+
+    assert!(
+        buffer[..CELL_WIDTH * CELL_HEIGHT]
+            .iter()
+            .any(|pixel| *pixel != DEFAULT_BG_U32),
+        "search-hit tint must remain visible even on blank default cells"
+    );
+}
+
+#[test]
+fn pixel_renderer_draws_search_overlay_row_with_inverse_cells() {
+    let mut state = state_with_default_scrollback(2, 2);
+    state.cursor.visible = false;
+
+    let width = CELL_WIDTH * 2;
+    let height = CELL_HEIGHT * 2;
+    let mut buffer = vec![0; width * height];
+    let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
+    let mut current_damage_rows = Vec::new();
+    let mut repaint_rows = Vec::new();
+    let mut persisted_damage_rows = Vec::new();
+    let overlay_attrs = Attrs::default().with_inverse();
+    let overlay_row = [
+        Cell {
+            ch: 'S',
+            attrs: overlay_attrs,
+            width: 1,
+        },
+        Cell {
+            ch: ' ',
+            attrs: overlay_attrs,
+            width: 1,
+        },
+    ];
+
+    render_terminal_buffer(
+        &mut buffer,
+        width,
+        height,
+        &mut state,
+        &mut glyph_cache,
+        0,
+        &[],
+        None,
+        &mut current_damage_rows,
+        &mut repaint_rows,
+        &mut persisted_damage_rows,
+        true,
+        0,
+        u32::MAX,
+        u32::MAX,
+        &[],
+        &overlay_row,
+    );
+
+    let overlay_offset = width * CELL_HEIGHT;
+    assert!(
+        buffer[overlay_offset..]
+            .iter()
+            .any(|pixel| *pixel == DEFAULT_FG_U32),
+        "overlay row must paint the reserved bottom row with inverse background"
     );
 }
 
@@ -310,6 +412,8 @@ fn pixel_renderer_forces_full_redraw_when_buffer_reuse_is_invalid() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     render_terminal_buffer(
@@ -328,6 +432,8 @@ fn pixel_renderer_forces_full_redraw_when_buffer_reuse_is_invalid() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     assert_eq!(
@@ -370,6 +476,8 @@ fn pixel_renderer_replays_previous_damage_when_framebuffer_age_is_two() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     let first_row_pixels = &buffer[..width * CELL_HEIGHT];
@@ -414,6 +522,8 @@ fn pixel_renderer_persists_full_repaint_history_when_buffer_reuse_is_invalid() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     assert_eq!(persisted_damage_rows, vec![0, 1, 2]);
@@ -454,6 +564,8 @@ fn pixel_renderer_replays_full_repaint_history_after_fresh_buffer_transition() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
     std::mem::swap(&mut previous_damage_rows, &mut persisted_damage_rows);
 
@@ -478,6 +590,8 @@ fn pixel_renderer_replays_full_repaint_history_after_fresh_buffer_transition() {
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
 
     let third_row_offset = width * CELL_HEIGHT * 2;

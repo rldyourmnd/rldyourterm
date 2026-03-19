@@ -5,7 +5,7 @@ use super::super::{
     DEFAULT_FG, DEFAULT_FG_U32, GpuFailureHandling, MonitorAffectingWindowEvent,
     cadence_resync_command_for_monitor_event, deferred_gpu_failure_kind,
     dispatch_gpu_failure_command, dispatch_runtime_palette_command,
-    emit_gpu_auto_fallback_observability, format_search_window_title,
+    emit_gpu_auto_fallback_observability, format_search_overlay_text, format_search_window_title,
     is_runtime_palette_shortcut_key, resolve_cell_colors, restore_live_view_after_output,
     sample_monitor_refresh_rate_millihz, should_restore_live_view_after_output,
 };
@@ -193,6 +193,10 @@ fn search_window_title_reports_active_match_and_invalid_regex() {
     assert_eq!(
         format_search_window_title("shell", interaction.search()),
         "Search: foo - invalid regex | shell"
+    );
+    assert_eq!(
+        format_search_overlay_text(interaction.search()),
+        "Search: foo - invalid regex"
     );
 }
 

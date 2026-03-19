@@ -9,6 +9,8 @@ use rldyourterm_services::terminal::{
 
 pub const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
 pub const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
+const SEARCH_HIT_TINT_NUMERATOR: u32 = 3;
+const SEARCH_HIT_TINT_DENOMINATOR: u32 = 16;
 
 fn is_default_blank_cell(cell: &Cell) -> bool {
     cell.is_blank_space() && cell.width == 1 && cell.attrs == Attrs::default()
@@ -145,6 +147,8 @@ pub fn render_terminal_buffer(
     viewport_offset: usize,
     selection_start: u32,
     selection_end: u32,
+    search_hit_ranges: &[(u32, u32)],
+    search_overlay_row: &[Cell],
 ) {
     if width == 0 || height == 0 {
         return;
@@ -155,9 +159,16 @@ pub fn render_terminal_buffer(
     let visible_rows = (height / CELL_HEIGHT).max(1).min(grid_rows);
     let visible_cols = (width / CELL_WIDTH).max(1).min(grid_cols);
     let (_, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
+    let overlay_active = !search_overlay_row.is_empty();
+    let overlay_row = visible_rows.saturating_sub(1);
+    let content_rows = if overlay_active {
+        visible_rows.saturating_sub(1)
+    } else {
+        visible_rows
+    };
 
     let effective_offset = viewport_offset.min(terminal.scrollback.len());
-    let sb_rows_on_screen = effective_offset.min(visible_rows);
+    let sb_rows_on_screen = effective_offset.min(content_rows);
 
     collect_current_damage_rows(
         terminal,
@@ -194,40 +205,27 @@ pub fn render_terminal_buffer(
             buffer[start..start + width].fill(default_bg);
         }
 
+        if overlay_active && row_idx == overlay_row {
+            render_row_cells(
+                buffer,
+                width,
+                height,
+                base_y,
+                terminal,
+                search_overlay_row,
+                visible_cols,
+                row_idx * grid_cols,
+                &[],
+                glyph_cache,
+                true,
+            );
+            continue;
+        }
+
         if row_idx < sb_rows_on_screen {
             let sb_line_idx = terminal.scrollback.len() - effective_offset + row_idx;
             if let Some(cells) = terminal.scrollback.get(sb_line_idx) {
-                for (col, cell) in cells.iter().take(visible_cols).enumerate() {
-                    if cell.is_blank_space() && cell.attrs == Attrs::default() {
-                        continue;
-                    }
-                    let (fg, bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
-                    let x = col * CELL_WIDTH;
-                    if bg != default_bg {
-                        draw_cell_bg(buffer, width, height, x, base_y, bg);
-                    }
-                    if let Some(glyph_key) = glyph_key_for_cell(cell) {
-                        let glyph = glyph_cache.get(glyph_key);
-                        draw_glyph_blended(
-                            buffer,
-                            width,
-                            height,
-                            x,
-                            base_y,
-                            glyph,
-                            fg,
-                            cell.attrs.bold(),
-                        );
-                    }
-                }
-            }
-        } else {
-            let grid_row = (row_idx - sb_rows_on_screen) as u16;
-            if let Ok(cells) = terminal.grid.row_cells(grid_row) {
-                if cells.iter().take(visible_cols).all(is_default_blank_cell) {
-                    continue;
-                }
-                render_grid_row_cells(
+                render_row_cells(
                     buffer,
                     width,
                     height,
@@ -235,6 +233,35 @@ pub fn render_terminal_buffer(
                     terminal,
                     cells,
                     visible_cols,
+                    row_idx * grid_cols,
+                    search_hit_ranges,
+                    glyph_cache,
+                    true,
+                );
+            }
+        } else {
+            let grid_row = (row_idx - sb_rows_on_screen) as u16;
+            if let Ok(cells) = terminal.grid.row_cells(grid_row) {
+                let row_flat_start = row_idx * grid_cols;
+                if cells.iter().take(visible_cols).all(is_default_blank_cell)
+                    && !row_intersects_search_hit_ranges(
+                        search_hit_ranges,
+                        row_flat_start,
+                        grid_cols,
+                    )
+                {
+                    continue;
+                }
+                render_row_cells(
+                    buffer,
+                    width,
+                    height,
+                    base_y,
+                    terminal,
+                    cells,
+                    visible_cols,
+                    row_flat_start,
+                    search_hit_ranges,
                     glyph_cache,
                     blink_visible,
                 );
@@ -262,7 +289,10 @@ pub fn render_terminal_buffer(
     // toggle the highlight off because XOR is its own inverse.
     // Skip the cursor cell to avoid double-XOR with the cursor pass below
     // (two XOR operations cancel out, making the cursor invisible on selection).
-    let cursor_flat = if viewport_offset == 0 && terminal.cursor.visible {
+    let cursor_flat = if viewport_offset == 0
+        && terminal.cursor.visible
+        && (terminal.cursor.row as usize) < content_rows
+    {
         (terminal.cursor.row as usize) * grid_cols + terminal.cursor.col as usize
     } else {
         usize::MAX
@@ -272,6 +302,9 @@ pub fn render_terminal_buffer(
         let sel_hi = selection_start.max(selection_end) as usize;
         for &row in repaint_rows {
             let row_usize = row as usize;
+            if overlay_active && row_usize == overlay_row {
+                continue;
+            }
             let row_flat_start = row_usize * grid_cols;
             let row_flat_end = row_flat_start + grid_cols - 1;
             if row_flat_end < sel_lo || row_flat_start > sel_hi {
@@ -297,7 +330,7 @@ pub fn render_terminal_buffer(
     if viewport_offset == 0 && terminal.cursor.visible {
         let cursor_row = terminal.cursor.row as usize;
         let cursor_col = terminal.cursor.col as usize;
-        if cursor_row < visible_rows && cursor_col < visible_cols {
+        if cursor_row < content_rows && cursor_col < visible_cols {
             draw_cursor(
                 buffer,
                 width,
@@ -314,7 +347,7 @@ pub fn render_terminal_buffer(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_grid_row_cells(
+fn render_row_cells(
     buffer: &mut [u32],
     width: usize,
     height: usize,
@@ -322,6 +355,8 @@ fn render_grid_row_cells(
     terminal: &TerminalState,
     cells: &[Cell],
     visible_cols: usize,
+    row_flat_start: usize,
+    search_hit_ranges: &[(u32, u32)],
     glyph_cache: &mut GlyphCache,
     blink_visible: bool,
 ) {
@@ -331,12 +366,17 @@ fn render_grid_row_cells(
         if cell.width == 0 {
             continue;
         }
-        if is_default_blank_cell(cell) {
+        let cell_search_hit =
+            cell_intersects_search_hit_ranges(search_hit_ranges, row_flat_start + col, cell.width);
+        if is_default_blank_cell(cell) && !cell_search_hit {
             continue;
         }
 
         let x = col * CELL_WIDTH;
-        let (fg, bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
+        let (fg, mut bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
+        if cell_search_hit {
+            bg = tint_search_hit_background(fg, bg);
+        }
 
         let cell_pixel_width = if cell.width == 2 {
             CELL_WIDTH * 2
@@ -405,6 +445,60 @@ fn render_grid_row_cells(
 
 fn resolve_cell_colors_for_terminal(terminal: &TerminalState, attrs: &Attrs) -> (u32, u32) {
     terminal.resolve_cell_colors(attrs)
+}
+
+fn row_intersects_search_hit_ranges(
+    search_hit_ranges: &[(u32, u32)],
+    row_flat_start: usize,
+    row_width: usize,
+) -> bool {
+    if row_width == 0 || search_hit_ranges.is_empty() {
+        return false;
+    }
+    let row_start = row_flat_start as u32;
+    let row_end = row_start.saturating_add(row_width.saturating_sub(1) as u32);
+    let first_candidate = search_hit_ranges.partition_point(|&(_, end)| end < row_start);
+    search_hit_ranges
+        .get(first_candidate)
+        .is_some_and(|&(start, _)| start <= row_end)
+}
+
+fn cell_intersects_search_hit_ranges(
+    search_hit_ranges: &[(u32, u32)],
+    flat_start: usize,
+    cell_width: u8,
+) -> bool {
+    if cell_width == 0 || search_hit_ranges.is_empty() {
+        return false;
+    }
+    let start = flat_start as u32;
+    let end = start.saturating_add(u32::from(cell_width.saturating_sub(1)));
+    let first_candidate = search_hit_ranges.partition_point(|&(_, range_end)| range_end < start);
+    search_hit_ranges
+        .get(first_candidate)
+        .is_some_and(|&(range_start, _)| range_start <= end)
+}
+
+fn tint_search_hit_background(fg: u32, bg: u32) -> u32 {
+    let (fg_r, fg_g, fg_b) = u32_to_rgb(fg);
+    let (bg_r, bg_g, bg_b) = u32_to_rgb(bg);
+    rgb_to_u32(
+        mix_search_hit_channel(bg_r, fg_r),
+        mix_search_hit_channel(bg_g, fg_g),
+        mix_search_hit_channel(bg_b, fg_b),
+    )
+}
+
+fn mix_search_hit_channel(bg: u8, fg: u8) -> u8 {
+    let bg = u32::from(bg);
+    let fg = u32::from(fg);
+    if fg >= bg {
+        let delta = (fg - bg) * SEARCH_HIT_TINT_NUMERATOR / SEARCH_HIT_TINT_DENOMINATOR;
+        bg.saturating_add(delta).min(u32::from(u8::MAX)) as u8
+    } else {
+        let delta = (bg - fg) * SEARCH_HIT_TINT_NUMERATOR / SEARCH_HIT_TINT_DENOMINATOR;
+        bg.saturating_sub(delta) as u8
+    }
 }
 
 pub fn resolve_cell_colors(attrs: &Attrs) -> (u32, u32) {

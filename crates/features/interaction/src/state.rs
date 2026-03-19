@@ -412,30 +412,37 @@ impl InteractionState {
         &self,
         cols: usize,
         scrollback_len: usize,
-        grid_rows: usize,
+        display_rows: usize,
     ) -> Option<(u32, u32)> {
         let search_match = self.search.active_match()?;
-        if cols == 0
-            || search_match.start_col >= search_match.end_col
-            || search_match.start_col >= cols
-        {
-            return None;
+        let top_line_index = scrollback_len.saturating_sub(self.viewport_offset);
+        project_search_match_flat_range(search_match, cols, top_line_index, display_rows)
+    }
+
+    pub fn collect_visible_search_flat_ranges(
+        &self,
+        cols: usize,
+        scrollback_len: usize,
+        display_rows: usize,
+        include_active_match: bool,
+        out: &mut Vec<(u32, u32)>,
+    ) {
+        out.clear();
+        if cols == 0 || display_rows == 0 {
+            return;
         }
 
         let top_line_index = scrollback_len.saturating_sub(self.viewport_offset);
-        let display_row = search_match.line_index.checked_sub(top_line_index)?;
-        if display_row >= grid_rows {
-            return None;
+        for (index, search_match) in self.search.matches().iter().enumerate() {
+            if !include_active_match && Some(index) == self.search.active_match_index() {
+                continue;
+            }
+            if let Some(range) =
+                project_search_match_flat_range(search_match, cols, top_line_index, display_rows)
+            {
+                out.push(range);
+            }
         }
-
-        let row_offset = display_row.checked_mul(cols)?;
-        let end_col = search_match
-            .end_col
-            .saturating_sub(1)
-            .min(cols.saturating_sub(1));
-        let start = u32::try_from(row_offset.checked_add(search_match.start_col)?).ok()?;
-        let end = u32::try_from(row_offset.checked_add(end_col)?).ok()?;
-        Some((start, end))
     }
 
     pub fn update_pointer_cell(
@@ -494,6 +501,35 @@ impl InteractionState {
     pub fn scroll_viewport_page_down(&mut self, page_size: usize) -> bool {
         self.set_viewport_offset(self.viewport_offset.saturating_sub(page_size))
     }
+}
+
+fn project_search_match_flat_range(
+    search_match: &SearchMatch,
+    cols: usize,
+    top_line_index: usize,
+    display_rows: usize,
+) -> Option<(u32, u32)> {
+    if cols == 0
+        || display_rows == 0
+        || search_match.start_col >= search_match.end_col
+        || search_match.start_col >= cols
+    {
+        return None;
+    }
+
+    let display_row = search_match.line_index.checked_sub(top_line_index)?;
+    if display_row >= display_rows {
+        return None;
+    }
+
+    let row_offset = display_row.checked_mul(cols)?;
+    let end_col = search_match
+        .end_col
+        .saturating_sub(1)
+        .min(cols.saturating_sub(1));
+    let start = u32::try_from(row_offset.checked_add(search_match.start_col)?).ok()?;
+    let end = u32::try_from(row_offset.checked_add(end_col)?).ok()?;
+    Some((start, end))
 }
 
 #[cfg(test)]
@@ -610,5 +646,41 @@ mod tests {
         assert!(state.align_viewport_to_active_search_match(100));
         assert_eq!(state.viewport_offset(), 5);
         assert_eq!(state.search_flat_range(80, 100, 24), Some((3, 5)));
+    }
+
+    #[test]
+    fn interaction_state_collects_visible_search_ranges_excluding_active_match() {
+        let mut state = InteractionState::default();
+        assert!(state.enter_search_mode());
+        assert!(state.set_search_results(
+            vec![
+                SearchMatch {
+                    line_index: 95,
+                    start_col: 3,
+                    end_col: 6,
+                    text: "foo".to_owned(),
+                },
+                SearchMatch {
+                    line_index: 96,
+                    start_col: 10,
+                    end_col: 12,
+                    text: "bar".to_owned(),
+                },
+                SearchMatch {
+                    line_index: 99,
+                    start_col: 1,
+                    end_col: 3,
+                    text: "baz".to_owned(),
+                },
+            ],
+            None,
+            true,
+        ));
+        assert!(state.align_viewport_to_active_search_match(100));
+
+        let mut ranges = Vec::new();
+        state.collect_visible_search_flat_ranges(80, 100, 4, false, &mut ranges);
+
+        assert_eq!(ranges, vec![(90, 91)]);
     }
 }

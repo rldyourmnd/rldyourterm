@@ -42,6 +42,7 @@ use self::rendering::deferred_gpu_failure_kind;
 use self::terminal_io::{
     cap_paste_text, dispatch_runtime_palette_command, read_clipboard_text_for_paste,
 };
+use self::windowing::format_search_overlay_text;
 use self::windowing::{ViewportGeometry, cap_framebuffer_extent};
 #[cfg(test)]
 use self::windowing::{
@@ -86,13 +87,16 @@ use rldyourterm_render_cpu::render_terminal_buffer;
 use rldyourterm_render_gpu::{GpuRenderer, SELECTION_NONE};
 use rldyourterm_services::render_mode::{ActiveRenderPath, GpuFailureKind, RenderMode};
 use rldyourterm_services::session::{SessionBoundary, SessionState, SessionTransitionOutcome};
-use rldyourterm_services::terminal::{CELL_HEIGHT, CELL_WIDTH, MouseMode, TerminalState};
+use rldyourterm_services::terminal::{
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, MouseMode, TerminalState,
+};
 use rldyourterm_settings::{SettingsCommand, SettingsService};
 use rldyourterm_ui::{
     DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, UiBootstrapConfig, UiCommandOutcome,
     UiCommandReceipt, UiRuntime, UiRuntimeCommand,
 };
 use tracing::{debug, info, trace, warn};
+use unicode_width::UnicodeWidthChar;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Ime, KeyEvent as WinitKeyEvent, WindowEvent};
@@ -435,6 +439,8 @@ struct GuiRuntimeFramePlane {
     repaint_rows_scratch: Vec<u16>,
     persisted_cpu_damage_rows_scratch: Vec<u16>,
     previous_cpu_damage_rows: Vec<u16>,
+    visible_search_match_ranges: Vec<(u32, u32)>,
+    search_overlay_cells: Vec<Cell>,
     blink_visible: bool,
     last_blink_toggle: Instant,
 }
@@ -537,6 +543,8 @@ impl GuiRuntimeApp {
                     DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY,
                 ),
                 previous_cpu_damage_rows: Vec::with_capacity(DIRTY_ROWS_SCRATCH_INITIAL_CAPACITY),
+                visible_search_match_ranges: Vec::new(),
+                search_overlay_cells: Vec::new(),
                 blink_visible: true,
                 last_blink_toggle: Instant::now(),
             },
@@ -559,6 +567,70 @@ impl GuiRuntimeApp {
         self.frame.redraw_pending = true;
     }
 
+    fn search_content_rows(&self) -> usize {
+        let grid_rows = self.terminal.grid.height() as usize;
+        if self.interaction.state.search_active() {
+            grid_rows.saturating_sub(1)
+        } else {
+            grid_rows
+        }
+    }
+
+    fn sync_search_render_state(&mut self) {
+        self.frame.visible_search_match_ranges.clear();
+        self.frame.search_overlay_cells.clear();
+
+        if !self.interaction.state.search_active() {
+            return;
+        }
+
+        let cols = self.terminal.grid.width() as usize;
+        if cols == 0 {
+            return;
+        }
+
+        self.interaction.state.collect_visible_search_flat_ranges(
+            cols,
+            self.terminal.scrollback.len(),
+            self.search_content_rows(),
+            false,
+            &mut self.frame.visible_search_match_ranges,
+        );
+
+        let overlay_attrs = Attrs::default().with_inverse();
+        self.frame.search_overlay_cells.resize(
+            cols,
+            Cell {
+                ch: ' ',
+                attrs: overlay_attrs,
+                width: 1,
+            },
+        );
+
+        let mut col = 0usize;
+        for ch in format_search_overlay_text(self.interaction.state.search()).chars() {
+            let Some(cell_width) = UnicodeWidthChar::width(ch) else {
+                continue;
+            };
+            if cell_width == 0 || col + cell_width > cols {
+                break;
+            }
+            self.frame.search_overlay_cells[col] = Cell {
+                ch,
+                attrs: overlay_attrs,
+                width: cell_width as u8,
+            };
+            for continuation_col in (col + 1)..(col + cell_width) {
+                self.frame.search_overlay_cells[continuation_col] = Cell {
+                    ch: ' ',
+                    attrs: overlay_attrs,
+                    width: 0,
+                };
+            }
+            col += cell_width;
+        }
+    }
+
     fn current_highlight_flat_range(&self) -> (u32, u32) {
         let cols = self.terminal.grid.width() as usize;
         self.interaction
@@ -568,7 +640,7 @@ impl GuiRuntimeApp {
                 self.interaction.state.search_flat_range(
                     cols,
                     self.terminal.scrollback.len(),
-                    self.terminal.grid.height() as usize,
+                    self.search_content_rows(),
                 )
             })
             .unwrap_or((SELECTION_NONE, SELECTION_NONE))

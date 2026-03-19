@@ -672,7 +672,17 @@ impl LiveDisplayApp {
         self.gpu_renderer
             .as_mut()
             .context("gpu renderer not initialized")?
-            .render_frame(&self.terminal, &dirty_rows, 0, true, 0, u32::MAX, u32::MAX)
+            .render_frame(
+                &self.terminal,
+                &dirty_rows,
+                0,
+                true,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &[],
+                &[],
+            )
             .map_err(|error| match error {
                 GpuRenderError::SurfaceAcquire(source) => {
                     anyhow::anyhow!("gpu surface acquire failed during live benchmark: {source}")
@@ -714,6 +724,8 @@ impl LiveDisplayApp {
             0,
             u32::MAX,
             u32::MAX,
+            &[],
+            &[],
         );
         self.cpu_phase_totals.raster += raster_started_at.elapsed();
         std::mem::swap(

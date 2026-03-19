@@ -1977,6 +1977,7 @@ dependencies = [
  "softbuffer",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "winit",
 ]
 

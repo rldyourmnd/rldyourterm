@@ -23,7 +23,7 @@ struct GridUniforms {
     selection_end: u32,
     blink_visible: u32,
     cursor_shape: u32,
-    _pad0: u32,
+    overlay_row: u32,
 };
 
 struct CellInstance {
@@ -50,9 +50,11 @@ const OVERLINE_BIT: u32    = 0x8000000u; // bit 27
 const CURLY_UL_BIT: u32    = 0x10000000u; // bit 28
 const DOTTED_UL_BIT: u32   = 0x20000000u; // bit 29
 const DASHED_UL_BIT: u32   = 0x40000000u; // bit 30
+const SEARCH_HIT_BIT: u32  = 0x80000000u; // bit 31
 
 // Selection sentinel: no active selection.
 const SEL_NONE: u32 = 0xFFFFFFFFu;
+const OVERLAY_NONE: u32 = 0xFFFFFFFFu;
 
 // Atlas texture size (pixels) for bold pixel offset calculation.
 const ATLAS_TEX_SIZE: f32 = 1024.0;
@@ -186,6 +188,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var fg = unpack_rgb(in.fg_color);
     var bg = unpack_rgb(in.bg_color);
+    let cell_row = in.instance / grid.grid_cols;
+    let is_overlay_cell = grid.overlay_row != OVERLAY_NONE && cell_row == grid.overlay_row;
 
     // Dim: halve foreground brightness (SGR 2)
     if (flags & DIM_BIT) != 0u {
@@ -205,12 +209,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         fg = bg;
     }
 
+    if (flags & SEARCH_HIT_BIT) != 0u {
+        bg = mix(bg, fg, 0.1875);
+    }
+
     // Selection highlight: invert colors for selected range.
     // Skip the cursor cell to avoid double-inversion with the cursor pass below
     // (two swaps cancel out, making the cursor invisible on selected cells).
     let cursor_index = grid.cursor_row * grid.grid_cols + grid.cursor_col;
-    let is_cursor_cell = grid.cursor_visible != 0u && in.instance == cursor_index;
-    if grid.selection_start != SEL_NONE && !is_cursor_cell {
+    let is_cursor_cell = !is_overlay_cell && grid.cursor_visible != 0u && in.instance == cursor_index;
+    if grid.selection_start != SEL_NONE && !is_cursor_cell && !is_overlay_cell {
         let sel_lo = min(grid.selection_start, grid.selection_end);
         let sel_hi = max(grid.selection_start, grid.selection_end);
         if in.instance >= sel_lo && in.instance <= sel_hi {

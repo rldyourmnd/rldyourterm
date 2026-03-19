@@ -621,6 +621,8 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
     std::mem::swap(
         &mut previous_damage_rows,
@@ -643,6 +645,8 @@ fn bench_cpu_pixel_raster_delta(cli: &Cli, workload: &Workload) -> Result<Iterat
         0,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
     let elapsed = start.elapsed();
     black_box(buffer[0]);
@@ -782,6 +786,8 @@ fn bench_cpu_render_scrollback(cli: &Cli, workload: &Workload) -> Result<Iterati
         viewport_offset,
         u32::MAX,
         u32::MAX,
+        &[],
+        &[],
     );
     let elapsed = start.elapsed();
     black_box(buffer[0]);

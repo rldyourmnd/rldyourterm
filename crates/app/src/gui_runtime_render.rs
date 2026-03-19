@@ -258,6 +258,7 @@ impl GuiRuntimeApp {
 
     pub(super) fn draw_frame(&mut self) -> Result<()> {
         let render_attempt_sequence = self.control.render_backend.begin_render_attempt();
+        self.sync_search_render_state();
 
         trace!(
             render_path = ?self.control.ui_runtime.active_render_path(),
@@ -278,6 +279,8 @@ impl GuiRuntimeApp {
                 self.interaction.state.viewport_offset(),
                 sel_start,
                 sel_end,
+                &self.frame.visible_search_match_ranges,
+                &self.frame.search_overlay_cells,
             ) {
                 Ok(()) => {
                     self.terminal.grid.clear_dirty_rows();
@@ -406,6 +409,8 @@ impl GuiRuntimeApp {
             self.interaction.state.viewport_offset(),
             sel_start,
             sel_end,
+            &self.frame.visible_search_match_ranges,
+            &self.frame.search_overlay_cells,
         );
         std::mem::swap(
             &mut self.frame.previous_cpu_damage_rows,

@@ -4,7 +4,7 @@
 use super::{
     ATTR_BLINK, ATTR_BOLD, ATTR_CONTINUATION, ATTR_CURLY_UNDERLINE, ATTR_DASHED_UNDERLINE,
     ATTR_DIM, ATTR_DOTTED_UNDERLINE, ATTR_DOUBLE_UNDERLINE, ATTR_HIDDEN, ATTR_INVERSE, ATTR_ITALIC,
-    ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE, Attrs,
+    ATTR_OVERLINE, ATTR_SEARCH_HIT, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE, Attrs,
     CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD, CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR, CELL_HEIGHT,
     CELL_WIDTH, Cell, CellInstance, Color, DEFAULT_FG, GpuBackend, INITIAL_CELL_BUFFER_CAPACITY,
     TerminalState, UnderlineStyle,
@@ -114,7 +114,7 @@ impl GpuBackend {
         let rows = terminal.grid.height() as usize;
         let cols = terminal.grid.width() as usize;
         for row in 0..rows {
-            self.write_row_instances(terminal, row, row, cols);
+            self.write_row_instances(terminal, row, row, cols, &[]);
         }
     }
 
@@ -128,6 +128,7 @@ impl GpuBackend {
         grid_row: usize,
         display_row: usize,
         cols: usize,
+        search_hit_ranges: &[(u32, u32)],
     ) {
         let row_offset = display_row * cols;
         if let Ok(row_cells) = terminal.grid.row_cells(grid_row as u16) {
@@ -164,6 +165,13 @@ impl GpuBackend {
                 let mut packed = pack_cell_flags(slot, attrs);
                 if cell.width == 2 {
                     packed |= ATTR_WIDE;
+                }
+                if cell_intersects_search_hit_ranges(
+                    search_hit_ranges,
+                    row_offset + col,
+                    cell.width,
+                ) {
+                    packed |= ATTR_SEARCH_HIT;
                 }
 
                 // Resolve underline decoration color for shader (SGR 58).
@@ -203,6 +211,7 @@ impl GpuBackend {
         cells: &[Cell],
         display_row: usize,
         cols: usize,
+        search_hit_ranges: &[(u32, u32)],
     ) {
         let row_offset = display_row * cols;
         let (default_fg, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
@@ -215,7 +224,9 @@ impl GpuBackend {
         self.cell_instances[row_offset..row_offset + cols].fill(blank);
 
         for (col, cell) in cells.iter().take(cols).enumerate() {
-            if cell.is_blank_space() && cell.attrs == Attrs::default() {
+            let search_hit =
+                cell_intersects_search_hit_ranges(search_hit_ranges, row_offset + col, cell.width);
+            if cell.is_blank_space() && cell.attrs == Attrs::default() && !search_hit {
                 continue;
             }
             let slot = glyph_key_for_cell(cell).map_or(0, |glyph_key| {
@@ -231,7 +242,10 @@ impl GpuBackend {
                     &self.queue,
                 )
             });
-            let flags = pack_cell_flags(slot, &cell.attrs);
+            let mut flags = pack_cell_flags(slot, &cell.attrs);
+            if search_hit {
+                flags |= ATTR_SEARCH_HIT;
+            }
             let (fg, bg) = terminal.resolve_cell_colors(&cell.attrs);
             let ul = if cell.attrs.has_underline() {
                 if cell.attrs.underline_color == Color::Default {
@@ -250,6 +264,22 @@ impl GpuBackend {
             };
         }
     }
+}
+
+fn cell_intersects_search_hit_ranges(
+    search_hit_ranges: &[(u32, u32)],
+    flat_start: usize,
+    cell_width: u8,
+) -> bool {
+    if search_hit_ranges.is_empty() || cell_width == 0 {
+        return false;
+    }
+    let start = flat_start as u32;
+    let end = start.saturating_add(u32::from(cell_width.saturating_sub(1)));
+    let first_candidate = search_hit_ranges.partition_point(|&(_, range_end)| range_end < start);
+    search_hit_ranges
+        .get(first_candidate)
+        .is_some_and(|&(range_start, _)| range_start <= end)
 }
 
 pub(super) fn create_cell_bind_group(
@@ -357,6 +387,7 @@ pub(super) fn prepare_and_upload_dirty_rows(
     dirty_rows: &[bool],
     grid_cols: usize,
     row_byte_size: usize,
+    search_hit_ranges: &[(u32, u32)],
 ) {
     let flush = |backend: &GpuBackend, start: usize, end: usize| {
         let byte_offset = start as u64 * row_byte_size as u64;
@@ -376,7 +407,7 @@ pub(super) fn prepare_and_upload_dirty_rows(
             if range_start.is_none() {
                 range_start = Some(row);
             }
-            backend.write_row_instances(terminal, row, row, grid_cols);
+            backend.write_row_instances(terminal, row, row, grid_cols, search_hit_ranges);
             continue;
         }
 

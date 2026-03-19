@@ -404,6 +404,19 @@ pub(super) fn format_search_window_title(
     search: &rldyourterm_interaction::SearchState,
 ) -> String {
     let mut title = String::from("Search");
+    push_search_status(&mut title, search);
+    title.push_str(" | ");
+    title.push_str(base_title);
+    title
+}
+
+pub(super) fn format_search_overlay_text(search: &rldyourterm_interaction::SearchState) -> String {
+    let mut title = String::from("Search");
+    push_search_status(&mut title, search);
+    title
+}
+
+fn push_search_status(title: &mut String, search: &rldyourterm_interaction::SearchState) {
     if !search.query().is_empty() {
         title.push_str(": ");
         title.push_str(search.query());
@@ -429,9 +442,6 @@ pub(super) fn format_search_window_title(
             title.push_str(&format!(" - {active_index}/{match_count}"));
         }
     }
-    title.push_str(" | ");
-    title.push_str(base_title);
-    title
 }
 
 pub(super) fn cap_terminal_geometry(raw_cols: usize, raw_rows: usize) -> (u16, u16) {

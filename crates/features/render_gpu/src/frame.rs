@@ -45,6 +45,8 @@ impl GpuRenderer {
         viewport_offset: usize,
         selection_start: u32,
         selection_end: u32,
+        search_hit_ranges: &[(u32, u32)],
+        search_overlay_row: &[Cell],
     ) -> Result<(), GpuRenderError> {
         let backend = self
             .backend
@@ -63,9 +65,20 @@ impl GpuRenderer {
 
         // When viewing scrollback, cursor is hidden and all rows need full recompositing.
         let viewing_scrollback = viewport_offset > 0;
+        let overlay_active = !search_overlay_row.is_empty();
+        let overlay_row = if overlay_active {
+            grid_rows.saturating_sub(1) as u32
+        } else {
+            OVERLAY_ROW_NONE
+        };
+        let content_rows = if overlay_active {
+            grid_rows.saturating_sub(1)
+        } else {
+            grid_rows
+        };
         let effective_offset = viewport_offset.min(terminal.scrollback.len());
         let sb_rows = if viewing_scrollback {
-            effective_offset.min(grid_rows)
+            effective_offset.min(content_rows)
         } else {
             0
         };
@@ -77,7 +90,7 @@ impl GpuRenderer {
         } else {
             u32::from(terminal.cursor.visible)
         };
-        let content_dirty = if viewing_scrollback {
+        let content_dirty = if viewing_scrollback || overlay_active {
             true
         } else {
             dirty_rows.iter().any(|&d| d)
@@ -98,12 +111,18 @@ impl GpuRenderer {
         let row_byte_size = grid_cols * std::mem::size_of::<CellInstance>();
         let mut scroll_dma: Option<(u64, u64)> = None;
 
-        if viewing_scrollback {
+        if viewing_scrollback || overlay_active {
             // Scrollback view: compose scrollback lines at top, grid rows below.
             for display_row in 0..sb_rows {
                 let sb_line_idx = terminal.scrollback.len() - effective_offset + display_row;
                 if let Some(line) = terminal.scrollback.get(sb_line_idx) {
-                    backend.write_scrollback_row_instances(terminal, line, display_row, grid_cols);
+                    backend.write_scrollback_row_instances(
+                        terminal,
+                        line,
+                        display_row,
+                        grid_cols,
+                        search_hit_ranges,
+                    );
                 } else {
                     let (default_fg, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
                     let row_offset = display_row * grid_cols;
@@ -115,9 +134,24 @@ impl GpuRenderer {
                     });
                 }
             }
-            for grid_row in 0..(grid_rows - sb_rows) {
+            for grid_row in 0..content_rows.saturating_sub(sb_rows) {
                 let display_row = sb_rows + grid_row;
-                backend.write_row_instances(terminal, grid_row, display_row, grid_cols);
+                backend.write_row_instances(
+                    terminal,
+                    grid_row,
+                    display_row,
+                    grid_cols,
+                    search_hit_ranges,
+                );
+            }
+            if overlay_active {
+                backend.write_scrollback_row_instances(
+                    terminal,
+                    search_overlay_row,
+                    content_rows,
+                    grid_cols,
+                    &[],
+                );
             }
             backend.queue.write_buffer(
                 &backend.cell_buffer,
@@ -142,7 +176,7 @@ impl GpuRenderer {
             backend.cell_instances.copy_within(src_start..src_end, 0);
 
             for row in first_new_row..grid_rows {
-                backend.write_row_instances(terminal, row, row, grid_cols);
+                backend.write_row_instances(terminal, row, row, grid_cols, search_hit_ranges);
             }
 
             let upload_offset = first_new_row as u64 * row_byte_size as u64;
@@ -164,7 +198,14 @@ impl GpuRenderer {
                 &mut backend.cell_bind_group_back,
             );
         } else if !viewing_scrollback && !force_full_upload {
-            prepare_and_upload_dirty_rows(backend, terminal, dirty_rows, grid_cols, row_byte_size);
+            prepare_and_upload_dirty_rows(
+                backend,
+                terminal,
+                dirty_rows,
+                grid_cols,
+                row_byte_size,
+                search_hit_ranges,
+            );
         }
 
         let uniforms = GridUniforms {
@@ -183,7 +224,7 @@ impl GpuRenderer {
             selection_end,
             blink_visible: u32::from(blink_visible),
             cursor_shape: terminal.cursor_shape() as u32,
-            _pad: 0,
+            overlay_row,
         };
         backend.queue.write_buffer(
             &backend.grid_uniform_buffer,

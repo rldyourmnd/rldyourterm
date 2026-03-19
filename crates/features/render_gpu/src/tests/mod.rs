@@ -356,7 +356,7 @@ fn render_frame_returns_backend_unavailable_when_uninitialized() {
     let terminal = TerminalState::new(80, 24, 100);
     let dirty = vec![true; 24];
     assert_eq!(
-        renderer.render_frame(&terminal, &dirty, 0, true, 0, u32::MAX, u32::MAX),
+        renderer.render_frame(&terminal, &dirty, 0, true, 0, u32::MAX, u32::MAX, &[], &[]),
         Err(GpuRenderError::BackendUnavailable)
     );
 }
@@ -455,6 +455,7 @@ fn attr_flags_do_not_overlap_atlas_index() {
     assert_eq!(ATTR_CURLY_UNDERLINE & 0xFFFF, 0);
     assert_eq!(ATTR_DOTTED_UNDERLINE & 0xFFFF, 0);
     assert_eq!(ATTR_DASHED_UNDERLINE & 0xFFFF, 0);
+    assert_eq!(ATTR_SEARCH_HIT & 0xFFFF, 0);
     assert_eq!(ATTR_STRIKETHROUGH & 0xFFFF, 0);
     assert_eq!(ATTR_DIM & 0xFFFF, 0);
     assert_eq!(ATTR_INVERSE & 0xFFFF, 0);
@@ -465,10 +466,11 @@ fn attr_flags_do_not_overlap_atlas_index() {
         | ATTR_CURLY_UNDERLINE
         | ATTR_DOTTED_UNDERLINE
         | ATTR_DASHED_UNDERLINE
+        | ATTR_SEARCH_HIT
         | ATTR_STRIKETHROUGH
         | ATTR_DIM
         | ATTR_INVERSE;
-    assert_eq!(all_flags.count_ones(), 10);
+    assert_eq!(all_flags.count_ones(), 11);
 }
 
 #[test]

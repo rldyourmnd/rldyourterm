@@ -26,3 +26,4 @@ rldyourterm-settings.workspace = true
 rldyourterm-shell-integration.workspace = true
 rldyourterm-diagnostics.workspace = true
 image.workspace = true
+unicode-width.workspace = true
