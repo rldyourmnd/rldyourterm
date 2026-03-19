@@ -37,6 +37,15 @@ fn mouse_mode_independent_of_mouse_format() {
 }
 
 #[test]
+fn mouse_mode_x10_is_tracked_separately() {
+    let mut t = term();
+    feed_bytes(&mut t, b"\x1b[?9h");
+    assert_eq!(t.mouse_mode(), MouseMode::X10);
+    feed_bytes(&mut t, b"\x1b[?9l");
+    assert_eq!(t.mouse_mode(), MouseMode::Off);
+}
+
+#[test]
 fn mouse_mode_upgrade_path() {
     let mut t = term();
     // Basic -> ButtonTrack -> AnyEvent (upgrade)
@@ -49,6 +58,23 @@ fn mouse_mode_upgrade_path() {
     // Disable AnyEvent, should go to Off (not back to ButtonTrack)
     feed_bytes(&mut t, b"\x1b[?1003l");
     assert_eq!(t.mouse_mode(), MouseMode::Off);
+}
+
+#[test]
+fn extended_private_modes_toggle_through_public_api() {
+    let mut t = term();
+
+    assert!(!t.reverse_video_enabled());
+    assert!(!t.alternate_scroll_enabled());
+    assert!(t.meta_sends_escape_enabled());
+    assert!(!t.alt_sends_escape_enabled());
+
+    feed_bytes(&mut t, b"\x1b[?5h\x1b[?1007h\x1b[?1036h\x1b[?1039h");
+
+    assert!(t.reverse_video_enabled());
+    assert!(t.alternate_scroll_enabled());
+    assert!(!t.meta_sends_escape_enabled());
+    assert!(t.alt_sends_escape_enabled());
 }
 
 // ── Cursor shape lifecycle ──────────────────────────────────

@@ -75,7 +75,8 @@ use rldyourterm_foundation::api::window::{
 use rldyourterm_foundation_platform::pty::PlatformPtyFactory;
 use rldyourterm_foundation_platform::window::{PlatformSoftbufferSurface, PlatformWindowHost};
 use rldyourterm_interaction::{
-    InteractionState, RuntimePaletteView, TerminalModeFlags,
+    InteractionState, RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, RuntimePaletteView,
+    TerminalModeFlags, encode_runtime_key_event,
     encode_winit_key_event as shared_encode_winit_key_event, handle_runtime_palette_key_input,
     is_local_shutdown_key_winit, is_runtime_palette_shortcut_winit,
     runtime_key_from_winit_borrowed,

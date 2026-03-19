@@ -29,7 +29,7 @@ pub enum RuntimeKey {
     F(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RuntimeKeyModifiers {
     pub shift: bool,
     pub alt: bool,
@@ -156,10 +156,32 @@ pub fn is_local_shutdown_key_winit(event: &WinitKeyEvent, modifiers: ModifiersSt
     runtime_key_event_from_winit(&event.logical_key, modifiers).is_some_and(is_local_shutdown_key)
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct TerminalModeFlags {
     pub application_cursor_keys: bool,
     pub kitty_keyboard_flags: u16,
+    pub meta_sends_escape: bool,
+    pub alt_sends_escape: bool,
+}
+
+impl Default for TerminalModeFlags {
+    fn default() -> Self {
+        Self {
+            application_cursor_keys: false,
+            kitty_keyboard_flags: 0,
+            meta_sends_escape: true,
+            alt_sends_escape: false,
+        }
+    }
+}
+
+impl TerminalModeFlags {
+    fn alt_modifier_sends_escape(self) -> bool {
+        // The runtime input model exposes Alt but not a distinct Meta modifier bit.
+        // Treat Alt as the shared Meta/Alt-like modifier and let the terminal modes
+        // decide whether that modifier should prefix ESC.
+        self.meta_sends_escape || self.alt_sends_escape
+    }
 }
 
 pub fn encode_runtime_key_event(
@@ -183,7 +205,11 @@ fn encode_legacy_key_event(
 
     match key_event.key {
         RuntimeKey::Enter => Some(vec![b'\r']),
-        RuntimeKey::Backspace if modifiers.alt && !modifiers.control => Some(b"\x1b\x7f".to_vec()),
+        RuntimeKey::Backspace
+            if modifiers.alt && !modifiers.control && modes.alt_modifier_sends_escape() =>
+        {
+            Some(b"\x1b\x7f".to_vec())
+        }
         RuntimeKey::Backspace => Some(vec![0x7f]),
         RuntimeKey::Tab if modifiers.shift && !modifiers.alt && !modifiers.control => {
             Some(b"\x1b[Z".to_vec())
@@ -224,13 +250,18 @@ fn encode_legacy_key_event(
             encode_ctrl_letter(ch).map(|code| vec![code])
         }
         RuntimeKey::Character(ch)
-            if modifiers.alt && !modifiers.control && !modifiers.super_key =>
+            if modifiers.alt
+                && !modifiers.control
+                && !modifiers.super_key
+                && modes.alt_modifier_sends_escape() =>
         {
             let mut bytes = vec![0x1b];
             bytes.extend_from_slice(ch.to_string().as_bytes());
             Some(bytes)
         }
-        RuntimeKey::Character(ch) if !modifiers.super_key => Some(ch.to_string().into_bytes()),
+        RuntimeKey::Character(ch) if !modifiers.control && !modifiers.super_key => {
+            Some(ch.to_string().into_bytes())
+        }
         RuntimeKey::Character(_) => None,
         RuntimeKey::Tab => None,
         RuntimeKey::F(_) => None,
@@ -292,7 +323,7 @@ pub fn encode_winit_key_event(
 ) -> Option<Vec<u8>> {
     let modifiers = RuntimeKeyModifiers::from_winit(modifiers);
     if modes.kitty_keyboard_flags == 0
-        && let Some(bytes) = encode_winit_text_bytes(event.text.as_deref(), modifiers)
+        && let Some(bytes) = encode_winit_text_bytes(event.text.as_deref(), modifiers, modes)
     {
         return Some(bytes);
     }
@@ -311,13 +342,21 @@ pub fn encode_winit_key_event(
         .and_then(|event| encode_runtime_key_event(event, modes))
 }
 
-fn encode_winit_text_bytes(text: Option<&str>, modifiers: RuntimeKeyModifiers) -> Option<Vec<u8>> {
+fn encode_winit_text_bytes(
+    text: Option<&str>,
+    modifiers: RuntimeKeyModifiers,
+    modes: TerminalModeFlags,
+) -> Option<Vec<u8>> {
     let text = text.filter(|text| !text.is_empty())?;
-    if modifiers.alt && !modifiers.control && !modifiers.super_key {
+    if modifiers.alt
+        && !modifiers.control
+        && !modifiers.super_key
+        && modes.alt_modifier_sends_escape()
+    {
         let mut bytes = vec![0x1b];
         bytes.extend_from_slice(text.as_bytes());
         Some(bytes)
-    } else if !modifiers.control && !modifiers.alt && !modifiers.super_key {
+    } else if !modifiers.control && !modifiers.super_key {
         Some(text.as_bytes().to_vec())
     } else {
         None
@@ -401,6 +440,7 @@ mod tests {
                 control: false,
                 super_key: false,
             },
+            TerminalModeFlags::default(),
         );
         assert_eq!(bytes, Some(vec![b'x']));
     }
@@ -415,6 +455,7 @@ mod tests {
                 control: false,
                 super_key: false,
             },
+            TerminalModeFlags::default(),
         );
         assert_eq!(bytes, Some(b"\x1bx".to_vec()));
     }
@@ -429,8 +470,28 @@ mod tests {
                 control: true,
                 super_key: false,
             },
+            TerminalModeFlags::default(),
         );
         assert_eq!(bytes, None);
+    }
+
+    #[test]
+    fn encode_winit_text_bytes_allows_alt_text_without_escape_when_disabled() {
+        let bytes = encode_winit_text_bytes(
+            Some("x"),
+            RuntimeKeyModifiers {
+                shift: false,
+                alt: true,
+                control: false,
+                super_key: false,
+            },
+            TerminalModeFlags {
+                meta_sends_escape: false,
+                alt_sends_escape: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(bytes, Some(vec![b'x']));
     }
 
     #[test]
@@ -556,6 +617,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Character('a'),
@@ -577,6 +639,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Enter,
@@ -598,6 +661,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Tab,
@@ -619,6 +683,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Backspace,
@@ -640,6 +705,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Escape,
@@ -661,6 +727,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Character('a'),
@@ -682,6 +749,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Tab,
@@ -703,6 +771,7 @@ mod tests {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Up,
@@ -735,10 +804,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_alt_backspace_respects_escape_modes() {
+        let disabled = TerminalModeFlags {
+            meta_sends_escape: false,
+            alt_sends_escape: false,
+            ..Default::default()
+        };
+        let enabled = TerminalModeFlags {
+            meta_sends_escape: false,
+            alt_sends_escape: true,
+            ..Default::default()
+        };
+        let key_event = RuntimeKeyEvent {
+            key: RuntimeKey::Backspace,
+            modifiers: RuntimeKeyModifiers {
+                alt: true,
+                ..Default::default()
+            },
+        };
+
+        assert_eq!(
+            encode_runtime_key_event(key_event, disabled),
+            Some(vec![0x7f])
+        );
+        assert_eq!(
+            encode_runtime_key_event(key_event, enabled),
+            Some(b"\x1b\x7f".to_vec())
+        );
+    }
+
+    #[test]
     fn kitty_mode_super_modifier_encoded() {
         let modes = TerminalModeFlags {
             application_cursor_keys: false,
             kitty_keyboard_flags: 1,
+            ..Default::default()
         };
         let key_event = RuntimeKeyEvent {
             key: RuntimeKey::Character('a'),

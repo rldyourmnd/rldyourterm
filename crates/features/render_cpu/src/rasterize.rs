@@ -145,6 +145,7 @@ pub fn render_terminal_buffer(
     let grid_cols = terminal.grid.width() as usize;
     let visible_rows = (height / CELL_HEIGHT).max(1).min(grid_rows);
     let visible_cols = (width / CELL_WIDTH).max(1).min(grid_cols);
+    let (_, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
 
     let effective_offset = viewport_offset.min(terminal.scrollback.len());
     let sb_rows_on_screen = effective_offset.min(visible_rows);
@@ -181,7 +182,7 @@ pub fn render_terminal_buffer(
 
         for py in base_y..clear_end_y {
             let start = py * width;
-            buffer[start..start + width].fill(DEFAULT_BG_U32);
+            buffer[start..start + width].fill(default_bg);
         }
 
         if row_idx < sb_rows_on_screen {
@@ -193,7 +194,7 @@ pub fn render_terminal_buffer(
                     }
                     let (fg, bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
                     let x = col * CELL_WIDTH;
-                    if bg != DEFAULT_BG_U32 {
+                    if bg != default_bg {
                         draw_cell_bg(buffer, width, height, x, base_y, bg);
                     }
                     let glyph = glyph_cache.get(cell.ch);
@@ -238,7 +239,7 @@ pub fn render_terminal_buffer(
         if any_bottom_dirty {
             for py in grid_pixel_height..height {
                 let start = py * width;
-                buffer[start..start + width].fill(DEFAULT_BG_U32);
+                buffer[start..start + width].fill(default_bg);
             }
         }
     }
@@ -313,6 +314,8 @@ fn render_grid_row_cells(
     glyph_cache: &mut GlyphCache,
     blink_visible: bool,
 ) {
+    let (_, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
+
     for (col, cell) in cells.iter().take(visible_cols).enumerate() {
         if cell.width == 0 {
             continue;
@@ -329,7 +332,7 @@ fn render_grid_row_cells(
         } else {
             CELL_WIDTH
         };
-        if bg != DEFAULT_BG_U32 {
+        if bg != default_bg {
             draw_cell_bg(buffer, width, height, x, base_y, bg);
             if cell.width == 2 && col + 1 < visible_cols {
                 draw_cell_bg(buffer, width, height, x + CELL_WIDTH, base_y, bg);
@@ -390,23 +393,7 @@ fn render_grid_row_cells(
 }
 
 fn resolve_cell_colors_for_terminal(terminal: &TerminalState, attrs: &Attrs) -> (u32, u32) {
-    let mut fg = terminal.resolve_color(attrs.fg, DEFAULT_FG);
-    let mut bg = terminal.resolve_color(attrs.bg, DEFAULT_BG);
-
-    if attrs.dim() {
-        let (r, g, b) = u32_to_rgb(fg);
-        fg = rgb_to_u32(r / 2, g / 2, b / 2);
-    }
-
-    if attrs.inverse() {
-        std::mem::swap(&mut fg, &mut bg);
-    }
-
-    if attrs.hidden() {
-        fg = bg;
-    }
-
-    (fg, bg)
+    terminal.resolve_cell_colors(attrs)
 }
 
 pub fn resolve_cell_colors(attrs: &Attrs) -> (u32, u32) {

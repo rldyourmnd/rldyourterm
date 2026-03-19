@@ -125,6 +125,9 @@ impl TerminalState {
             ParserAction::AutoWrapMode(enabled) => {
                 self.auto_wrap = enabled;
             }
+            ParserAction::SetReverseVideo(enabled) => {
+                self.reverse_video = enabled;
+            }
             ParserAction::SendPrimaryDA => {
                 events.push(CoreEvent::TerminalResponse {
                     data: b"\x1b[?1;2c".to_vec(),
@@ -192,6 +195,9 @@ impl TerminalState {
             ParserAction::SetMouseFormat(format) => {
                 self.mouse_format = format;
             }
+            ParserAction::SetAlternateScroll(enabled) => {
+                self.alternate_scroll = enabled;
+            }
             ParserAction::AlternateScreenEnterSimple => {
                 self.apply_alternate_screen_enter_simple();
                 events.push(CoreEvent::AlternateScreenEntered);
@@ -204,6 +210,12 @@ impl TerminalState {
             ParserAction::CursorRestorePositionDec => self.apply_cursor_restore(events),
             ParserAction::SetCursorBlink(enabled) => {
                 self.cursor_blink = enabled;
+            }
+            ParserAction::SetMetaSendsEscape(enabled) => {
+                self.meta_sends_escape = enabled;
+            }
+            ParserAction::SetAltSendsEscape(enabled) => {
+                self.alt_sends_escape = enabled;
             }
             ParserAction::SetFocusReporting(enabled) => {
                 self.focus_reporting = enabled;

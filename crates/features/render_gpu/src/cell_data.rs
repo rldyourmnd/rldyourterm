@@ -6,8 +6,8 @@ use super::{
     ATTR_DIM, ATTR_DOTTED_UNDERLINE, ATTR_DOUBLE_UNDERLINE, ATTR_HIDDEN, ATTR_INVERSE, ATTR_ITALIC,
     ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE, Attrs,
     CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD, CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR, CELL_HEIGHT,
-    CELL_WIDTH, Cell, CellInstance, Color, DEFAULT_BG, DEFAULT_FG, GpuBackend,
-    INITIAL_CELL_BUFFER_CAPACITY, TerminalState, UnderlineStyle, color_to_u32,
+    CELL_WIDTH, Cell, CellInstance, Color, DEFAULT_FG, GpuBackend, INITIAL_CELL_BUFFER_CAPACITY,
+    TerminalState, UnderlineStyle,
 };
 use crate::atlas::ensure_glyph_in_atlas;
 use tracing::{debug, info};
@@ -122,8 +122,7 @@ impl GpuBackend {
         if let Ok(row_cells) = terminal.grid.row_cells(grid_row as u16) {
             for (col, cell) in row_cells.iter().take(cols).enumerate() {
                 let attrs = &cell.attrs;
-                let fg = terminal.resolve_color(attrs.fg, DEFAULT_FG);
-                let bg = terminal.resolve_color(attrs.bg, DEFAULT_BG);
+                let (fg, bg) = terminal.resolve_cell_colors(attrs);
 
                 // Continuation cells (width=0) are discarded in the shader;
                 // the owning wide cell's 2x quad covers their screen area.
@@ -177,8 +176,7 @@ impl GpuBackend {
                 };
             }
         } else {
-            let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
-            let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
+            let (default_fg, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
             self.cell_instances[row_offset..row_offset + cols].fill(CellInstance {
                 atlas_and_flags: 0,
                 fg_color: default_fg,
@@ -198,8 +196,7 @@ impl GpuBackend {
         cols: usize,
     ) {
         let row_offset = display_row * cols;
-        let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
-        let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
+        let (default_fg, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
         let blank = CellInstance {
             atlas_and_flags: 0,
             fg_color: default_fg,
@@ -224,8 +221,7 @@ impl GpuBackend {
                 &self.queue,
             );
             let flags = pack_cell_flags(slot, &cell.attrs);
-            let fg = terminal.resolve_color(cell.attrs.fg, DEFAULT_FG);
-            let bg = terminal.resolve_color(cell.attrs.bg, DEFAULT_BG);
+            let (fg, bg) = terminal.resolve_cell_colors(&cell.attrs);
             let ul = if cell.attrs.has_underline() {
                 if cell.attrs.underline_color == Color::Default {
                     fg

@@ -7,6 +7,27 @@ use rldyourterm_interaction::{
     mouse_button_code_from_winit,
 };
 
+fn encode_alternate_scroll_payload(lines: i32, application_cursor_keys: bool) -> Option<Vec<u8>> {
+    let key = if lines < 0 {
+        RuntimeKey::Up
+    } else if lines > 0 {
+        RuntimeKey::Down
+    } else {
+        return None;
+    };
+
+    encode_runtime_key_event(
+        RuntimeKeyEvent {
+            key,
+            modifiers: RuntimeKeyModifiers::default(),
+        },
+        TerminalModeFlags {
+            application_cursor_keys,
+            ..Default::default()
+        },
+    )
+}
+
 impl GuiRuntimeApp {
     pub(super) fn handle_cursor_moved(
         &mut self,
@@ -101,6 +122,10 @@ impl GuiRuntimeApp {
             return;
         }
 
+        if mouse_mode == MouseMode::X10 && !is_press {
+            return;
+        }
+
         let pointer = self.interaction.state.pointer();
         let encoded = encode_mouse_event(
             self.terminal.mouse_format(),
@@ -186,6 +211,22 @@ impl GuiRuntimeApp {
         }
 
         if self.terminal.mouse_mode() == MouseMode::Off {
+            if self.terminal.alternate_scroll_enabled() && self.terminal.alternate_screen_active() {
+                if let Some(encoded) = encode_alternate_scroll_payload(
+                    lines,
+                    self.terminal.application_cursor_keys_enabled(),
+                ) {
+                    for _ in 0..lines.unsigned_abs().min(10) {
+                        let _ = self.write_pty_payload(
+                            &encoded,
+                            event_loop,
+                            "failed to write alternate scroll key event",
+                        );
+                    }
+                }
+                return;
+            }
+
             let max_offset = self.terminal.scrollback.len();
             self.interaction
                 .state
@@ -209,5 +250,34 @@ impl GuiRuntimeApp {
             let _ =
                 self.write_pty_payload(&encoded, event_loop, "failed to write mouse scroll event");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_alternate_scroll_payload;
+
+    #[test]
+    fn alternate_scroll_payload_uses_csi_cursor_keys_by_default() {
+        assert_eq!(
+            encode_alternate_scroll_payload(-1, false),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            encode_alternate_scroll_payload(1, false),
+            Some(b"\x1b[B".to_vec())
+        );
+    }
+
+    #[test]
+    fn alternate_scroll_payload_uses_application_cursor_mode_when_enabled() {
+        assert_eq!(
+            encode_alternate_scroll_payload(-1, true),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            encode_alternate_scroll_payload(1, true),
+            Some(b"\x1bOB".to_vec())
+        );
     }
 }

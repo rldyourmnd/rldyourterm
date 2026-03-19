@@ -131,6 +131,8 @@ impl GuiRuntimeApp {
         let modes = TerminalModeFlags {
             application_cursor_keys: self.terminal.application_cursor_keys_enabled(),
             kitty_keyboard_flags: self.terminal.kitty_keyboard_flags(),
+            meta_sends_escape: self.terminal.meta_sends_escape_enabled(),
+            alt_sends_escape: self.terminal.alt_sends_escape_enabled(),
         };
         let bytes = shared_encode_winit_key_event(event, self.interaction.modifiers, modes);
 

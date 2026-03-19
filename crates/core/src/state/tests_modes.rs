@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use crate::events::{CoreEvent, DisplayClearMode};
-use crate::grid::{Attrs, Color, UnderlineStyle};
+use crate::grid::{Attrs, Color, DEFAULT_BG, DEFAULT_FG, UnderlineStyle};
 
 use super::{MouseFormat, MouseMode, TerminalState};
 
@@ -198,12 +198,12 @@ fn alternate_screen_restores_per_screen_modes() {
     state.scroll_region = Some((1, 3));
     state.origin_mode = true;
     let _ = state.feed(
-        b"\x1b[?2004h\x1b=\x1b[?1h\x1b[?7l\x1b[?1002h\x1b[?1006h\x1b[?12h\x1b[?1004h\x1b[?2026h\x1b[5 q\x1b[>3u",
+        b"\x1b[?2004h\x1b=\x1b[?1h\x1b[?7l\x1b[?5h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?12h\x1b[?1036h\x1b[?1039h\x1b[?1004h\x1b[?2026h\x1b[5 q\x1b[>3u",
     );
 
     let _ = state.feed(b"\x1b[?1049h");
     let _ = state.feed(
-        b"\x1b[?2004l\x1b>\x1b[?1l\x1b[?7h\x1b[?1000h\x1b[?1006l\x1b[?12l\x1b[?1004l\x1b[?2026l\x1b[2 q\x1b[>1u\x1b[?6l",
+        b"\x1b[?2004l\x1b>\x1b[?1l\x1b[?7h\x1b[?5l\x1b[?1000h\x1b[?1006l\x1b[?1007l\x1b[?12l\x1b[?1036l\x1b[?1039l\x1b[?1004l\x1b[?2026l\x1b[2 q\x1b[>1u\x1b[?6l",
     );
     let _ = state.feed(b"\x1b[?1049l");
 
@@ -211,11 +211,15 @@ fn alternate_screen_restores_per_screen_modes() {
     assert!(state.application_keypad_mode_enabled());
     assert!(state.application_cursor_keys_enabled());
     assert!(!state.auto_wrap_enabled());
+    assert!(state.reverse_video_enabled());
     assert!(state.origin_mode);
     assert_eq!(state.mouse_mode(), MouseMode::ButtonTrack);
     assert_eq!(state.mouse_format(), MouseFormat::Sgr);
+    assert!(state.alternate_scroll_enabled());
     assert!(state.cursor_blink);
     assert_eq!(state.cursor_shape(), 5);
+    assert!(!state.meta_sends_escape_enabled());
+    assert!(state.alt_sends_escape_enabled());
     assert!(state.focus_reporting_enabled());
     assert!(state.synchronized_output_enabled());
     assert_eq!(state.kitty_keyboard_flags(), 3);
@@ -973,6 +977,29 @@ fn mouse_mode_basic_enables_and_disables() {
 }
 
 #[test]
+fn mouse_mode_x10_enables_and_disables() {
+    let mut state = TerminalState::new(10, 5, 5);
+    assert_eq!(state.mouse_mode(), MouseMode::Off);
+    let _ = state.feed(b"\x1b[?9h");
+    assert_eq!(state.mouse_mode(), MouseMode::X10);
+    let _ = state.feed(b"\x1b[?9l");
+    assert_eq!(state.mouse_mode(), MouseMode::Off);
+}
+
+#[test]
+fn reverse_video_swaps_default_cell_colors() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let normal = state.resolve_cell_colors(&Attrs::default());
+    assert_eq!(normal.0, state.resolve_color(Color::Default, DEFAULT_FG));
+    assert_eq!(normal.1, state.resolve_color(Color::Default, DEFAULT_BG));
+
+    let _ = state.feed(b"\x1b[?5h");
+    let reversed = state.resolve_cell_colors(&Attrs::default());
+    assert_eq!(reversed.0, state.resolve_color(Color::Default, DEFAULT_BG));
+    assert_eq!(reversed.1, state.resolve_color(Color::Default, DEFAULT_FG));
+}
+
+#[test]
 fn mouse_mode_button_track_and_any_event() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[?1002h");
@@ -1111,6 +1138,66 @@ fn decrqm_reports_reset_mode() {
     assert!(
         events.iter().any(
             |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?2004;2$y")
+        )
+    );
+}
+
+#[test]
+fn decrqm_reports_extended_private_modes() {
+    let mut state = TerminalState::new(10, 4, 5);
+
+    let events = state.feed(b"\x1b[?5$p\x1b[?9$p\x1b[?1007$p\x1b[?1036$p\x1b[?1039$p");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?5;2$y"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?9;2$y"))
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1007;2$y")
+        )
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1036;2$y")
+        )
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1039;2$y")
+        )
+    );
+
+    let _ = state.feed(b"\x1b[?5h\x1b[?9h\x1b[?1007h\x1b[?1036h\x1b[?1039h");
+    let events = state.feed(b"\x1b[?5$p\x1b[?9$p\x1b[?1007$p\x1b[?1036$p\x1b[?1039$p");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?5;1$y"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?9;1$y"))
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1007;1$y")
+        )
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1036;1$y")
+        )
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[?1039;1$y")
         )
     );
 }

@@ -105,8 +105,7 @@ impl GpuRenderer {
                 if let Some(line) = terminal.scrollback.get(sb_line_idx) {
                     backend.write_scrollback_row_instances(terminal, line, display_row, grid_cols);
                 } else {
-                    let default_fg = color_to_u32(Color::Default, DEFAULT_FG);
-                    let default_bg = color_to_u32(Color::Default, DEFAULT_BG);
+                    let (default_fg, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
                     let row_offset = display_row * grid_cols;
                     backend.cell_instances[row_offset..row_offset + grid_cols].fill(CellInstance {
                         atlas_and_flags: 0,
@@ -226,9 +225,10 @@ impl GpuRenderer {
         };
         let view = frame.texture.create_view(&Default::default());
 
-        let bg_r = DEFAULT_BG.0 as f64 / 255.0;
-        let bg_g = DEFAULT_BG.1 as f64 / 255.0;
-        let bg_b = DEFAULT_BG.2 as f64 / 255.0;
+        let (_, default_bg) = terminal.resolve_cell_colors(&Attrs::default());
+        let bg_r = ((default_bg >> 16) & 0xff) as f64 / 255.0;
+        let bg_g = ((default_bg >> 8) & 0xff) as f64 / 255.0;
+        let bg_b = (default_bg & 0xff) as f64 / 255.0;
 
         let mut encoder = backend
             .device

@@ -14,7 +14,7 @@ mod tests_stress;
 use crate::{
     cursor::Cursor,
     events::{CoreEvent, IngestDegradeReason},
-    grid::{Attrs, Cell, Color, Grid, Palette},
+    grid::{Attrs, Cell, Color, DEFAULT_BG, DEFAULT_FG, Grid, Palette},
     parser::{Parser, ParserAction},
     scrollback::Scrollback,
 };
@@ -23,6 +23,8 @@ use crate::{
 pub enum MouseMode {
     #[default]
     Off,
+    /// Mode 9: X10 compatibility mouse - report button press only.
+    X10,
     /// Mode 1000: report button press/release.
     Basic,
     /// Mode 1002: report press/release and motion while button held.
@@ -57,12 +59,16 @@ pub(super) struct ScreenModeState {
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
     pub(super) auto_wrap: bool,
+    pub(super) reverse_video: bool,
     pub(super) origin_mode: bool,
     pub(super) grapheme_cluster_mode: bool,
     pub(super) mouse_mode: MouseMode,
     pub(super) mouse_format: MouseFormat,
+    pub(super) alternate_scroll: bool,
     pub(super) cursor_blink: bool,
     pub(super) cursor_shape: u8,
+    pub(super) meta_sends_escape: bool,
+    pub(super) alt_sends_escape: bool,
     pub(super) focus_reporting: bool,
     pub(super) synchronized_output: bool,
     pub(super) kitty_keyboard_stack: Vec<u16>,
@@ -100,12 +106,16 @@ pub struct TerminalState {
     pub(super) application_keypad_mode: bool,
     pub(super) application_cursor_keys: bool,
     pub(super) auto_wrap: bool,
+    pub(super) reverse_video: bool,
     pub(super) origin_mode: bool,
     pub(super) grapheme_cluster_mode: bool,
     pub(super) mouse_mode: MouseMode,
     pub(super) mouse_format: MouseFormat,
+    pub(super) alternate_scroll: bool,
     pub(super) cursor_blink: bool,
     pub(super) cursor_shape: u8,
+    pub(super) meta_sends_escape: bool,
+    pub(super) alt_sends_escape: bool,
     pub(super) focus_reporting: bool,
     pub(super) synchronized_output: bool,
     pub(super) kitty_keyboard_stack: Vec<u16>,
@@ -137,12 +147,16 @@ impl TerminalState {
             application_keypad_mode: false,
             application_cursor_keys: false,
             auto_wrap: true,
+            reverse_video: false,
             origin_mode: false,
             grapheme_cluster_mode: false,
             mouse_mode: MouseMode::Off,
             mouse_format: MouseFormat::Normal,
+            alternate_scroll: false,
             cursor_blink: false,
             cursor_shape: 0,
+            meta_sends_escape: true,
+            alt_sends_escape: false,
             focus_reporting: false,
             synchronized_output: false,
             kitty_keyboard_stack: Vec::new(),
@@ -193,6 +207,26 @@ impl TerminalState {
         self.mouse_format
     }
 
+    pub fn alternate_screen_active(&self) -> bool {
+        self.alternate_screen.is_some()
+    }
+
+    pub fn reverse_video_enabled(&self) -> bool {
+        self.reverse_video
+    }
+
+    pub fn alternate_scroll_enabled(&self) -> bool {
+        self.alternate_scroll
+    }
+
+    pub fn meta_sends_escape_enabled(&self) -> bool {
+        self.meta_sends_escape
+    }
+
+    pub fn alt_sends_escape_enabled(&self) -> bool {
+        self.alt_sends_escape
+    }
+
     pub fn cursor_shape(&self) -> u8 {
         self.cursor_shape
     }
@@ -225,6 +259,28 @@ impl TerminalState {
         self.palette.resolve_color(color, default)
     }
 
+    pub fn resolve_cell_colors(&self, attrs: &Attrs) -> (u32, u32) {
+        let mut fg = self.resolve_color(attrs.fg, DEFAULT_FG);
+        let mut bg = self.resolve_color(attrs.bg, DEFAULT_BG);
+
+        if attrs.dim() {
+            let r = ((fg >> 16) & 0xff) as u8 / 2;
+            let g = ((fg >> 8) & 0xff) as u8 / 2;
+            let b = (fg & 0xff) as u8 / 2;
+            fg = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+        }
+
+        if self.reverse_video ^ attrs.inverse() {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+
+        if attrs.hidden() {
+            fg = bg;
+        }
+
+        (fg, bg)
+    }
+
     pub(super) fn set_palette_color(&mut self, index: u8, rgb: (u8, u8, u8)) {
         self.palette.set_rgb(index, rgb);
     }
@@ -243,12 +299,16 @@ impl TerminalState {
             application_keypad_mode: self.application_keypad_mode,
             application_cursor_keys: self.application_cursor_keys,
             auto_wrap: self.auto_wrap,
+            reverse_video: self.reverse_video,
             origin_mode: self.origin_mode,
             grapheme_cluster_mode: self.grapheme_cluster_mode,
             mouse_mode: self.mouse_mode,
             mouse_format: self.mouse_format,
+            alternate_scroll: self.alternate_scroll,
             cursor_blink: self.cursor_blink,
             cursor_shape: self.cursor_shape,
+            meta_sends_escape: self.meta_sends_escape,
+            alt_sends_escape: self.alt_sends_escape,
             focus_reporting: self.focus_reporting,
             synchronized_output: self.synchronized_output,
             kitty_keyboard_stack: self.kitty_keyboard_stack.clone(),
@@ -260,12 +320,16 @@ impl TerminalState {
         self.application_keypad_mode = modes.application_keypad_mode;
         self.application_cursor_keys = modes.application_cursor_keys;
         self.auto_wrap = modes.auto_wrap;
+        self.reverse_video = modes.reverse_video;
         self.origin_mode = modes.origin_mode;
         self.grapheme_cluster_mode = modes.grapheme_cluster_mode;
         self.mouse_mode = modes.mouse_mode;
         self.mouse_format = modes.mouse_format;
+        self.alternate_scroll = modes.alternate_scroll;
         self.cursor_blink = modes.cursor_blink;
         self.cursor_shape = modes.cursor_shape;
+        self.meta_sends_escape = modes.meta_sends_escape;
+        self.alt_sends_escape = modes.alt_sends_escape;
         self.focus_reporting = modes.focus_reporting;
         self.synchronized_output = modes.synchronized_output;
         self.kitty_keyboard_stack = modes.kitty_keyboard_stack;
@@ -291,8 +355,10 @@ impl TerminalState {
     pub(super) fn is_private_mode_set(&self, mode: u16) -> Option<bool> {
         match mode {
             1 => Some(self.application_cursor_keys),
+            5 => Some(self.reverse_video),
             6 => Some(self.origin_mode),
             7 => Some(self.auto_wrap),
+            9 => Some(self.mouse_mode == MouseMode::X10),
             2027 => Some(self.grapheme_cluster_mode),
             12 => Some(self.cursor_blink),
             25 => Some(self.cursor.visible),
@@ -302,6 +368,9 @@ impl TerminalState {
             1003 => Some(self.mouse_mode == MouseMode::AnyEvent),
             1004 => Some(self.focus_reporting),
             1006 => Some(self.mouse_format == MouseFormat::Sgr),
+            1007 => Some(self.alternate_scroll),
+            1036 => Some(!self.meta_sends_escape),
+            1039 => Some(self.alt_sends_escape),
             1048 => Some(self.saved_cursor.is_some()),
             1049 => Some(self.alternate_screen.is_some()),
             2004 => Some(self.bracketed_paste),
