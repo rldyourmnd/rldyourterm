@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
-use rldyourterm_font::{GlyphCache, rasterize_for_atlas};
+use rldyourterm_font::{GlyphCache, GlyphKey, rasterize_for_atlas};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -42,8 +42,8 @@ pub(crate) fn write_glyph_to_atlas(atlas_data: &mut [u8], slot: u16, cell_buf: &
 /// Result of building the GPU glyph atlas texture.
 pub(crate) struct AtlasBuildResult {
     pub texture: wgpu::Texture,
-    pub char_to_slot: HashMap<char, u16>,
-    pub slot_to_char: Vec<Option<char>>,
+    pub glyph_to_slot: HashMap<GlyphKey, u16>,
+    pub slot_to_glyph: Vec<Option<GlyphKey>>,
     pub slot_last_used: Vec<u64>,
     pub next_slot: u16,
 }
@@ -54,12 +54,12 @@ pub(crate) fn build_glyph_atlas(
     glyph_cache: &mut GlyphCache,
 ) -> AtlasBuildResult {
     let mut atlas_data = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
-    let mut char_to_slot: HashMap<char, u16> = HashMap::new();
-    let mut slot_to_char: Vec<Option<char>> = vec![None; ATLAS_SLOTS];
+    let mut glyph_to_slot: HashMap<GlyphKey, u16> = HashMap::new();
+    let mut slot_to_glyph: Vec<Option<GlyphKey>> = vec![None; ATLAS_SLOTS];
     let slot_last_used: Vec<u64> = vec![0; ATLAS_SLOTS];
 
-    char_to_slot.insert(' ', 0);
-    slot_to_char[0] = Some(' ');
+    glyph_to_slot.insert(GlyphKey::from(' '), 0);
+    slot_to_glyph[0] = Some(GlyphKey::from(' '));
     let mut next_slot: u16 = 1;
 
     let ranges: &[(u32, u32)] = &[(0x0020, 0x007F), (0x2500, 0x257F), (0x2580, 0x259F)];
@@ -70,16 +70,17 @@ pub(crate) fn build_glyph_atlas(
                 break;
             }
             if let Some(ch) = char::from_u32(code_point) {
-                if ch == ' ' || char_to_slot.contains_key(&ch) {
+                let glyph_key = GlyphKey::from(ch);
+                if glyph_key.is_blank_space() || glyph_to_slot.contains_key(&glyph_key) {
                     continue;
                 }
                 if !glyph_cache.has_glyph(ch) {
                     continue;
                 }
-                let cell_buf = rasterize_for_atlas(glyph_cache, ch);
+                let cell_buf = rasterize_for_atlas(glyph_cache, glyph_key.clone());
                 write_glyph_to_atlas(&mut atlas_data, next_slot, &cell_buf);
-                char_to_slot.insert(ch, next_slot);
-                slot_to_char[next_slot as usize] = Some(ch);
+                glyph_to_slot.insert(glyph_key.clone(), next_slot);
+                slot_to_glyph[next_slot as usize] = Some(glyph_key);
                 next_slot += 1;
             }
         }
@@ -122,8 +123,8 @@ pub(crate) fn build_glyph_atlas(
 
     AtlasBuildResult {
         texture,
-        char_to_slot,
-        slot_to_char,
+        glyph_to_slot,
+        slot_to_glyph,
         slot_last_used,
         next_slot,
     }
@@ -168,17 +169,17 @@ pub(crate) fn upload_glyph_to_atlas(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ensure_glyph_in_atlas(
-    ch: char,
+    glyph_key: GlyphKey,
     glyph_cache: &mut GlyphCache,
-    char_to_slot: &mut HashMap<char, u16>,
-    slot_to_char: &mut [Option<char>],
+    glyph_to_slot: &mut HashMap<GlyphKey, u16>,
+    slot_to_glyph: &mut [Option<GlyphKey>],
     slot_last_used: &mut [u64],
     frame_counter: u64,
     next_slot: &mut u16,
     atlas_texture: &wgpu::Texture,
     queue: &wgpu::Queue,
 ) -> u16 {
-    if let Some(&slot) = char_to_slot.get(&ch) {
+    if let Some(&slot) = glyph_to_slot.get(&glyph_key) {
         slot_last_used[slot as usize] = frame_counter;
         return slot;
     }
@@ -193,21 +194,21 @@ pub(crate) fn ensure_glyph_in_atlas(
             .min_by_key(|&i| slot_last_used[i])
             .unwrap_or(1) as u16;
 
-        if let Some(old_ch) = slot_to_char[evict_slot as usize].take() {
-            char_to_slot.remove(&old_ch);
+        if let Some(old_glyph_key) = slot_to_glyph[evict_slot as usize].take() {
+            glyph_to_slot.remove(&old_glyph_key);
         }
         debug!(
             evicted_slot = evict_slot,
-            new_char = ?ch,
+            new_glyph = ?glyph_key,
             "atlas LRU eviction"
         );
         evict_slot
     };
 
-    let cell_buf = rasterize_for_atlas(glyph_cache, ch);
+    let cell_buf = rasterize_for_atlas(glyph_cache, glyph_key.clone());
     upload_glyph_to_atlas(queue, atlas_texture, slot, &cell_buf);
-    char_to_slot.insert(ch, slot);
-    slot_to_char[slot as usize] = Some(ch);
+    glyph_to_slot.insert(glyph_key.clone(), slot);
+    slot_to_glyph[slot as usize] = Some(glyph_key);
     slot_last_used[slot as usize] = frame_counter;
     slot
 }

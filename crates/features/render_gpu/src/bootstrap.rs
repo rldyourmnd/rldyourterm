@@ -88,14 +88,14 @@ impl GpuRenderer {
         let mut glyph_cache = GlyphCache::new(CELL_WIDTH as u16, CELL_HEIGHT as u16);
         let atlas::AtlasBuildResult {
             texture: atlas_texture,
-            char_to_slot,
-            slot_to_char,
+            glyph_to_slot,
+            slot_to_glyph,
             slot_last_used,
             next_slot: next_atlas_slot,
         } = build_glyph_atlas(&device, &queue, &mut glyph_cache);
 
         debug!(
-            glyph_count = char_to_slot.len(),
+            glyph_count = glyph_to_slot.len(),
             elapsed_ms = t0.elapsed().as_millis(),
             "gpu init: atlas built (deferred mode)"
         );
@@ -291,7 +291,7 @@ impl GpuRenderer {
             width,
             height,
             atlas_slots = ATLAS_SLOTS,
-            glyph_count = char_to_slot.len(),
+            glyph_count = glyph_to_slot.len(),
             pipeline_cache_supported,
             elapsed_ms = t0.elapsed().as_millis(),
             "GPU backend initialized"
@@ -325,8 +325,8 @@ impl GpuRenderer {
                 initial_capacity
             ],
             glyph_cache,
-            char_to_slot,
-            slot_to_char,
+            glyph_to_slot,
+            slot_to_glyph,
             slot_last_used,
             frame_counter: 0,
             next_atlas_slot,

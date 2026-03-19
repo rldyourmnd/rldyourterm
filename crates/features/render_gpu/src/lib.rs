@@ -9,7 +9,7 @@ mod pipeline_cache;
 mod surface;
 
 use bytemuck::{Pod, Zeroable};
-use rldyourterm_font::GlyphCache;
+use rldyourterm_font::{GlyphCache, GlyphKey};
 use rldyourterm_services::render_mode::GpuFailureKind;
 #[cfg(test)]
 use rldyourterm_services::terminal::ANSI_PALETTE;
@@ -174,8 +174,8 @@ struct GpuBackend {
     cell_buffer_capacity: usize,
     cell_instances: Vec<CellInstance>,
     glyph_cache: GlyphCache,
-    char_to_slot: HashMap<char, u16>,
-    slot_to_char: Vec<Option<char>>,
+    glyph_to_slot: HashMap<GlyphKey, u16>,
+    slot_to_glyph: Vec<Option<GlyphKey>>,
     slot_last_used: Vec<u64>,
     frame_counter: u64,
     next_atlas_slot: u16,

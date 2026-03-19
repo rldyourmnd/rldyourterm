@@ -203,7 +203,7 @@ impl Grid {
             if cell.width == 0 {
                 continue;
             }
-            s.push(cell.ch);
+            cell.append_text_to(&mut s);
         }
         Ok(s)
     }

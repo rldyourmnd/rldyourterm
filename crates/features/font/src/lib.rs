@@ -14,6 +14,46 @@ static FONT_DATA: &[u8] =
 const DEFAULT_MAX_GLYPH_CACHE_ENTRIES: usize = 8_192;
 const FALLBACK_GLYPH_CHAR: char = '?';
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GlyphKey {
+    Char(char),
+    Text(Box<str>),
+}
+
+impl GlyphKey {
+    #[must_use]
+    pub fn is_blank_space(&self) -> bool {
+        match self {
+            Self::Char(ch) => *ch == ' ',
+            Self::Text(text) => text.as_ref() == " ",
+        }
+    }
+}
+
+impl From<char> for GlyphKey {
+    fn from(ch: char) -> Self {
+        Self::Char(ch)
+    }
+}
+
+impl From<&str> for GlyphKey {
+    fn from(text: &str) -> Self {
+        match single_scalar(text) {
+            Some(ch) => Self::Char(ch),
+            None => Self::Text(text.into()),
+        }
+    }
+}
+
+impl From<String> for GlyphKey {
+    fn from(text: String) -> Self {
+        match single_scalar(&text) {
+            Some(ch) => Self::Char(ch),
+            None => Self::Text(text.into_boxed_str()),
+        }
+    }
+}
+
 /// A single font in the fallback chain, calibrated to a specific cell size.
 struct FontEntry {
     font: Font,
@@ -48,8 +88,8 @@ pub struct GlyphCache {
     px_size: f32,
     cell_width: u16,
     cell_height: u16,
-    cache: HashMap<char, GlyphBitmap>,
-    eviction_queue: VecDeque<char>,
+    cache: HashMap<GlyphKey, GlyphBitmap>,
+    eviction_queue: VecDeque<GlyphKey>,
     max_entries: usize,
 }
 
@@ -98,8 +138,9 @@ impl GlyphCache {
             eviction_queue: VecDeque::new(),
             max_entries,
         };
-        let fallback_bitmap = result.rasterize_into_cell(FALLBACK_GLYPH_CHAR);
-        result.cache.insert(FALLBACK_GLYPH_CHAR, fallback_bitmap);
+        let fallback_key = GlyphKey::from(FALLBACK_GLYPH_CHAR);
+        let fallback_bitmap = result.rasterize_into_cell(&fallback_key);
+        result.cache.insert(fallback_key, fallback_bitmap);
         result
     }
 
@@ -124,9 +165,15 @@ impl GlyphCache {
             .unwrap_or(cell_height as i32 - 2)
     }
 
-    /// Get or rasterize a glyph for `ch`. Returns a reference to the cached bitmap.
-    pub fn get(&mut self, ch: char) -> &GlyphBitmap {
-        if !self.cache.contains_key(&ch) {
+    /// Get or rasterize a glyph for `key`. Returns a reference to the cached bitmap.
+    pub fn get<K>(&mut self, key: K) -> &GlyphBitmap
+    where
+        K: Into<GlyphKey>,
+    {
+        let key = key.into();
+        let fallback_key = GlyphKey::from(FALLBACK_GLYPH_CHAR);
+
+        if !self.cache.contains_key(&key) {
             if self.cache.len() >= self.max_entries {
                 while let Some(candidate) = self.eviction_queue.pop_front() {
                     if self.cache.remove(&candidate).is_some() {
@@ -134,24 +181,21 @@ impl GlyphCache {
                     }
                 }
                 if self.cache.len() >= self.max_entries {
-                    let fallback_bitmap = self.rasterize_into_cell(FALLBACK_GLYPH_CHAR);
-                    return self
-                        .cache
-                        .entry(FALLBACK_GLYPH_CHAR)
-                        .or_insert(fallback_bitmap);
+                    let fallback_bitmap = self.rasterize_into_cell(&fallback_key);
+                    return self.cache.entry(fallback_key).or_insert(fallback_bitmap);
                 }
             }
 
-            let bitmap = self.rasterize_into_cell(ch);
-            if ch != FALLBACK_GLYPH_CHAR {
-                self.eviction_queue.push_back(ch);
+            let bitmap = self.rasterize_into_cell(&key);
+            if key != fallback_key {
+                self.eviction_queue.push_back(key.clone());
             }
-            return self.cache.entry(ch).or_insert(bitmap);
+            return self.cache.entry(key).or_insert(bitmap);
         }
 
         self.cache
-            .get(&ch)
-            .unwrap_or_else(|| &self.cache[&FALLBACK_GLYPH_CHAR])
+            .get(&key)
+            .unwrap_or_else(|| &self.cache[&fallback_key])
     }
 
     /// Check if any font in the chain contains a real glyph for `ch`.
@@ -174,7 +218,14 @@ impl GlyphCache {
     /// For Box Drawing (U+2500-U+257F) and Block Elements (U+2580-U+259F) at 8px
     /// cell width, uses font8x8 pixel-perfect bitmaps scaled 2x vertically to fill
     /// 8x16 cells. All other characters use fontdue rasterization with fallback chain.
-    fn rasterize_into_cell(&self, ch: char) -> GlyphBitmap {
+    fn rasterize_into_cell(&self, key: &GlyphKey) -> GlyphBitmap {
+        match key {
+            GlyphKey::Char(ch) => self.rasterize_char_into_cell(*ch),
+            GlyphKey::Text(text) => self.rasterize_text_into_cell(text),
+        }
+    }
+
+    fn rasterize_char_into_cell(&self, ch: char) -> GlyphBitmap {
         let cw = self.cell_width as usize;
         let ch_height = self.cell_height as usize;
 
@@ -205,6 +256,66 @@ impl GlyphCache {
         Self::rasterize_with_font(&self.fonts[0], ch, self.px_size)
     }
 
+    fn rasterize_text_into_cell(&self, text: &str) -> GlyphBitmap {
+        if text.is_empty() {
+            return Self::empty_glyph();
+        }
+        if let Some(ch) = single_scalar(text) {
+            return self.rasterize_char_into_cell(ch);
+        }
+        if self.fonts.is_empty() {
+            return self.rasterize_char_into_cell(FALLBACK_GLYPH_CHAR);
+        }
+
+        let cell_width = self.cell_width as usize;
+        let cell_height = self.cell_height as usize;
+        let mut cell_buf = vec![0u8; cell_width * cell_height];
+        let mut wrote_pixels = false;
+        let mut pen_x = 0.0f32;
+        let mut previous_glyph: Option<(usize, u16)> = None;
+
+        for ch in text.chars() {
+            let Some((font_index, entry, glyph_index)) = self.select_font_for_char(ch) else {
+                continue;
+            };
+
+            if let Some((prev_font_index, prev_glyph_index)) = previous_glyph
+                && prev_font_index == font_index
+                && let Some(kern) =
+                    entry
+                        .font
+                        .horizontal_kern_indexed(prev_glyph_index, glyph_index, self.px_size)
+            {
+                pen_x += kern;
+            }
+
+            let metrics = entry.font.metrics_indexed(glyph_index, self.px_size);
+            let glyph = Self::rasterize_indexed_with_font(entry, glyph_index, self.px_size);
+            Self::composite_glyph(
+                &mut cell_buf,
+                cell_width,
+                cell_height,
+                &glyph,
+                pen_x.floor() as i32,
+            );
+            wrote_pixels |= glyph.glyph_width > 0 && glyph.glyph_height > 0;
+            pen_x += metrics.advance_width.ceil();
+            previous_glyph = Some((font_index, glyph_index));
+        }
+
+        if !wrote_pixels {
+            return Self::empty_glyph();
+        }
+
+        GlyphBitmap {
+            data: cell_buf,
+            x_offset: 0,
+            y_offset: 0,
+            glyph_width: cell_width,
+            glyph_height: cell_height,
+        }
+    }
+
     fn empty_glyph() -> GlyphBitmap {
         GlyphBitmap {
             data: Vec::new(),
@@ -218,7 +329,23 @@ impl GlyphCache {
     /// Rasterize `ch` using a specific font entry.
     fn rasterize_with_font(entry: &FontEntry, ch: char, px_size: f32) -> GlyphBitmap {
         let (metrics, bitmap) = entry.font.rasterize(ch, px_size);
+        Self::glyph_bitmap_from_raster(entry, metrics, bitmap)
+    }
 
+    fn rasterize_indexed_with_font(
+        entry: &FontEntry,
+        glyph_index: u16,
+        px_size: f32,
+    ) -> GlyphBitmap {
+        let (metrics, bitmap) = entry.font.rasterize_indexed(glyph_index, px_size);
+        Self::glyph_bitmap_from_raster(entry, metrics, bitmap)
+    }
+
+    fn glyph_bitmap_from_raster(
+        entry: &FontEntry,
+        metrics: fontdue::Metrics,
+        bitmap: Vec<u8>,
+    ) -> GlyphBitmap {
         if bitmap.is_empty() || metrics.width == 0 || metrics.height == 0 {
             return Self::empty_glyph();
         }
@@ -232,6 +359,52 @@ impl GlyphCache {
             y_offset,
             glyph_width: metrics.width,
             glyph_height: metrics.height,
+        }
+    }
+
+    fn select_font_for_char(&self, ch: char) -> Option<(usize, &FontEntry, u16)> {
+        self.fonts
+            .iter()
+            .enumerate()
+            .find_map(|(index, entry)| {
+                let glyph_index = entry.font.lookup_glyph_index(ch);
+                (glyph_index != 0).then_some((index, entry, glyph_index))
+            })
+            .or_else(|| {
+                self.fonts
+                    .first()
+                    .map(|entry| (0usize, entry, entry.font.lookup_glyph_index(ch)))
+            })
+    }
+
+    fn composite_glyph(
+        cell_buf: &mut [u8],
+        cell_width: usize,
+        cell_height: usize,
+        glyph: &GlyphBitmap,
+        origin_x: i32,
+    ) {
+        for gy in 0..glyph.glyph_height {
+            for gx in 0..glyph.glyph_width {
+                let coverage = glyph.data[gy * glyph.glyph_width + gx];
+                if coverage == 0 {
+                    continue;
+                }
+
+                let px = origin_x + glyph.x_offset + gx as i32;
+                let py = glyph.y_offset + gy as i32;
+                if px < 0 || py < 0 {
+                    continue;
+                }
+                let px = px as usize;
+                let py = py as usize;
+                if px >= cell_width || py >= cell_height {
+                    continue;
+                }
+
+                let dst = &mut cell_buf[py * cell_width + px];
+                *dst = (*dst).max(coverage);
+            }
         }
     }
 
@@ -313,10 +486,13 @@ impl GlyphCache {
 ///
 /// Returns a `cell_width * cell_height` grayscale buffer with the glyph
 /// placed at the correct position within the cell. Caller owns the buffer.
-pub fn rasterize_for_atlas(cache: &mut GlyphCache, ch: char) -> Vec<u8> {
+pub fn rasterize_for_atlas<K>(cache: &mut GlyphCache, key: K) -> Vec<u8>
+where
+    K: Into<GlyphKey>,
+{
     let cw = cache.cell_width as usize;
     let ch_val = cache.cell_height as usize;
-    let glyph = cache.get(ch);
+    let glyph = cache.get(key);
 
     let mut cell_buf = vec![0u8; cw * ch_val];
 
@@ -341,6 +517,12 @@ pub fn rasterize_for_atlas(cache: &mut GlyphCache, ch: char) -> Vec<u8> {
     }
 
     cell_buf
+}
+
+fn single_scalar(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
 }
 
 #[cfg(test)]
@@ -407,8 +589,8 @@ mod tests {
         let _ = cache.get('Ж');
 
         assert_eq!(cache.cache.len(), 2);
-        assert!(!cache.cache.contains_key(&'A'));
-        assert!(cache.cache.contains_key(&'Ж'));
+        assert!(!cache.cache.contains_key(&GlyphKey::from('A')));
+        assert!(cache.cache.contains_key(&GlyphKey::from('Ж')));
     }
 
     #[test]
@@ -418,7 +600,11 @@ mod tests {
         let glyph = cache.get('Ж').data.clone();
         assert_eq!(glyph, fallback);
         assert_eq!(cache.cache.len(), 1);
-        assert!(cache.cache.contains_key(&FALLBACK_GLYPH_CHAR));
+        assert!(
+            cache
+                .cache
+                .contains_key(&GlyphKey::from(FALLBACK_GLYPH_CHAR))
+        );
     }
 
     #[test]
@@ -494,6 +680,15 @@ mod tests {
 
         assert!(cache.has_glyph('─'));
         let glyph = cache.get('─');
+        assert_eq!(glyph.glyph_width, 8);
+        assert_eq!(glyph.glyph_height, 16);
+        assert!(glyph.data.iter().any(|&pixel| pixel > 0));
+    }
+
+    #[test]
+    fn glyph_key_text_rasterization_returns_cell_sized_bitmap() {
+        let mut cache = GlyphCache::new(8, 16);
+        let glyph = cache.get(GlyphKey::from("e\u{301}"));
         assert_eq!(glyph.glyph_width, 8);
         assert_eq!(glyph.glyph_height, 16);
         assert!(glyph.data.iter().any(|&pixel| pixel > 0));

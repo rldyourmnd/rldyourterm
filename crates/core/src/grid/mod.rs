@@ -249,6 +249,29 @@ pub struct Cell {
     pub width: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellText<'a> {
+    Char(char),
+    Text(&'a str),
+}
+
+impl CellText<'_> {
+    #[must_use]
+    pub fn is_blank_space(self) -> bool {
+        match self {
+            Self::Char(ch) => ch == BLANK_CHAR,
+            Self::Text(text) => text == " ",
+        }
+    }
+
+    pub fn append_to(self, out: &mut String) {
+        match self {
+            Self::Char(ch) => out.push(ch),
+            Self::Text(text) => out.push_str(text),
+        }
+    }
+}
+
 impl Cell {
     #[must_use]
     pub fn blank_with_bg(bg: Color) -> Self {
@@ -257,6 +280,20 @@ impl Cell {
             attrs: Attrs::default().with_bg(bg),
             width: 1,
         }
+    }
+
+    #[must_use]
+    pub fn text(&self) -> CellText<'_> {
+        CellText::Char(self.ch)
+    }
+
+    #[must_use]
+    pub fn is_blank_space(&self) -> bool {
+        self.text().is_blank_space()
+    }
+
+    pub fn append_text_to(&self, out: &mut String) {
+        self.text().append_to(out);
     }
 }
 

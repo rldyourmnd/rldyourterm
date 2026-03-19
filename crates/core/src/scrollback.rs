@@ -72,7 +72,7 @@ impl Scrollback {
         // Trim trailing default blank cells to reduce memory.
         let trimmed_end = cells
             .iter()
-            .rposition(|c| c.ch != ' ' || c.attrs != Default::default() || c.width != 1)
+            .rposition(|c| !c.is_blank_space() || c.attrs != Default::default() || c.width != 1)
             .map_or(0, |pos| pos + 1);
 
         // Skip continuation cells (width=0) since the owning wide cell is preserved.
@@ -109,9 +109,13 @@ impl Scrollback {
 
     /// Get the text content of a scrollback line (for search/export).
     pub fn get_text(&self, index: usize) -> Option<String> {
-        self.lines
-            .get(index)
-            .map(|cells| cells.iter().map(|c| c.ch).collect())
+        self.lines.get(index).map(|cells| {
+            let mut text = String::with_capacity(cells.len());
+            for cell in cells {
+                cell.append_text_to(&mut text);
+            }
+            text
+        })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &[Cell]> {

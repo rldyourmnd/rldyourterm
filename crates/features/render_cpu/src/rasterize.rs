@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
-use rldyourterm_font::{GlyphBitmap, GlyphCache};
+use rldyourterm_font::{GlyphBitmap, GlyphCache, GlyphKey};
 use rldyourterm_services::terminal::{
-    Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_BG, DEFAULT_FG, TerminalState,
+    Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, CellText, Color, DEFAULT_BG, DEFAULT_FG, TerminalState,
     UnderlineStyle, color_to_u32,
 };
 
@@ -11,7 +11,16 @@ pub const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_B
 pub const DEFAULT_FG_U32: u32 = rgb_to_u32(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2);
 
 fn is_default_blank_cell(cell: &Cell) -> bool {
-    cell.ch == ' ' && cell.width == 1 && cell.attrs == Attrs::default()
+    cell.is_blank_space() && cell.width == 1 && cell.attrs == Attrs::default()
+}
+
+fn glyph_key_for_cell(cell: &Cell) -> Option<GlyphKey> {
+    match cell.text() {
+        CellText::Char(ch) if ch == ' ' => None,
+        CellText::Char(ch) => Some(GlyphKey::from(ch)),
+        CellText::Text(text) if text == " " => None,
+        CellText::Text(text) => Some(GlyphKey::from(text)),
+    }
 }
 
 fn row_requires_redraw(
@@ -189,7 +198,7 @@ pub fn render_terminal_buffer(
             let sb_line_idx = terminal.scrollback.len() - effective_offset + row_idx;
             if let Some(cells) = terminal.scrollback.get(sb_line_idx) {
                 for (col, cell) in cells.iter().take(visible_cols).enumerate() {
-                    if cell.ch == ' ' && cell.attrs == Attrs::default() {
+                    if cell.is_blank_space() && cell.attrs == Attrs::default() {
                         continue;
                     }
                     let (fg, bg) = resolve_cell_colors_for_terminal(terminal, &cell.attrs);
@@ -197,17 +206,19 @@ pub fn render_terminal_buffer(
                     if bg != default_bg {
                         draw_cell_bg(buffer, width, height, x, base_y, bg);
                     }
-                    let glyph = glyph_cache.get(cell.ch);
-                    draw_glyph_blended(
-                        buffer,
-                        width,
-                        height,
-                        x,
-                        base_y,
-                        glyph,
-                        fg,
-                        cell.attrs.bold(),
-                    );
+                    if let Some(glyph_key) = glyph_key_for_cell(cell) {
+                        let glyph = glyph_cache.get(glyph_key);
+                        draw_glyph_blended(
+                            buffer,
+                            width,
+                            height,
+                            x,
+                            base_y,
+                            glyph,
+                            fg,
+                            cell.attrs.bold(),
+                        );
+                    }
                 }
             }
         } else {
@@ -340,8 +351,8 @@ fn render_grid_row_cells(
         }
 
         let glyph_hidden_by_blink = cell.attrs.blink() && !blink_visible;
-        if cell.ch != ' ' && !glyph_hidden_by_blink {
-            let glyph = glyph_cache.get(cell.ch);
+        if !glyph_hidden_by_blink && let Some(glyph_key) = glyph_key_for_cell(cell) {
+            let glyph = glyph_cache.get(glyph_key);
             draw_glyph_blended(
                 buffer,
                 width,

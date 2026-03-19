@@ -162,7 +162,7 @@ impl GuiRuntimeApp {
                 && let Some(cell) = cells.get(col as usize)
                 && cell.width > 0
             {
-                text.push(cell.ch);
+                cell.append_text_to(&mut text);
             }
         }
 

@@ -10,6 +10,8 @@ use super::{
     TerminalState, UnderlineStyle,
 };
 use crate::atlas::ensure_glyph_in_atlas;
+use rldyourterm_font::GlyphKey;
+use rldyourterm_services::terminal::CellText;
 use tracing::{debug, info};
 
 #[inline]
@@ -48,6 +50,15 @@ pub(super) fn pack_cell_flags(slot: u16, attrs: &super::Attrs) -> u32 {
         flags |= ATTR_OVERLINE;
     }
     flags
+}
+
+fn glyph_key_for_cell(cell: &Cell) -> Option<GlyphKey> {
+    match cell.text() {
+        CellText::Char(ch) if ch == ' ' => None,
+        CellText::Char(ch) => Some(GlyphKey::from(ch)),
+        CellText::Text(text) if text == " " => None,
+        CellText::Text(text) => Some(GlyphKey::from(text)),
+    }
 }
 
 impl GpuBackend {
@@ -136,21 +147,19 @@ impl GpuBackend {
                     continue;
                 }
 
-                let slot = if cell.ch == ' ' {
-                    0u16
-                } else {
+                let slot = glyph_key_for_cell(cell).map_or(0, |glyph_key| {
                     ensure_glyph_in_atlas(
-                        cell.ch,
+                        glyph_key,
                         &mut self.glyph_cache,
-                        &mut self.char_to_slot,
-                        &mut self.slot_to_char,
+                        &mut self.glyph_to_slot,
+                        &mut self.slot_to_glyph,
                         &mut self.slot_last_used,
                         self.frame_counter,
                         &mut self.next_atlas_slot,
                         &self.atlas_texture,
                         &self.queue,
                     )
-                };
+                });
 
                 let mut packed = pack_cell_flags(slot, attrs);
                 if cell.width == 2 {
@@ -206,20 +215,22 @@ impl GpuBackend {
         self.cell_instances[row_offset..row_offset + cols].fill(blank);
 
         for (col, cell) in cells.iter().take(cols).enumerate() {
-            if cell.ch == ' ' && cell.attrs == Attrs::default() {
+            if cell.is_blank_space() && cell.attrs == Attrs::default() {
                 continue;
             }
-            let slot = ensure_glyph_in_atlas(
-                cell.ch,
-                &mut self.glyph_cache,
-                &mut self.char_to_slot,
-                &mut self.slot_to_char,
-                &mut self.slot_last_used,
-                self.frame_counter,
-                &mut self.next_atlas_slot,
-                &self.atlas_texture,
-                &self.queue,
-            );
+            let slot = glyph_key_for_cell(cell).map_or(0, |glyph_key| {
+                ensure_glyph_in_atlas(
+                    glyph_key,
+                    &mut self.glyph_cache,
+                    &mut self.glyph_to_slot,
+                    &mut self.slot_to_glyph,
+                    &mut self.slot_last_used,
+                    self.frame_counter,
+                    &mut self.next_atlas_slot,
+                    &self.atlas_texture,
+                    &self.queue,
+                )
+            });
             let flags = pack_cell_flags(slot, &cell.attrs);
             let (fg, bg) = terminal.resolve_cell_colors(&cell.attrs);
             let ul = if cell.attrs.has_underline() {
