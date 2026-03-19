@@ -188,13 +188,20 @@ pub struct Cell {
     pub width: u8,
 }
 
-impl Default for Cell {
-    fn default() -> Self {
+impl Cell {
+    #[must_use]
+    pub fn blank_with_bg(bg: Color) -> Self {
         Self {
             ch: BLANK_CHAR,
-            attrs: Attrs::default(),
+            attrs: Attrs::default().with_bg(bg),
             width: 1,
         }
+    }
+}
+
+impl Default for Cell {
+    fn default() -> Self {
+        Self::blank_with_bg(Color::Default)
     }
 }
 

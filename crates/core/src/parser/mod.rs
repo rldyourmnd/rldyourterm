@@ -221,6 +221,10 @@ impl Parser {
         }
 
         for &byte in bytes {
+            if self.state != ParseState::Ground && matches!(byte, 0x18 | 0x1A) {
+                self.reset_state_to_ground();
+                continue;
+            }
             match self.state {
                 ParseState::Ground => self.handle_ground_byte(byte, actions),
                 ParseState::Escape => self.handle_escape_byte(byte, actions),

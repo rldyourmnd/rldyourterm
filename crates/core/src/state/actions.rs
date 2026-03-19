@@ -10,7 +10,7 @@ use crate::{
     scrollback::Scrollback,
 };
 
-use super::{AlternateScreenState, TerminalState};
+use super::{AlternateScreenState, SavedCursorState, TerminalState};
 
 impl TerminalState {
     pub(super) fn apply_print(&mut self, ch: char, events: &mut Vec<CoreEvent>) {
@@ -210,8 +210,26 @@ impl TerminalState {
         if self.grid.is_empty() {
             return;
         }
+        let min_row = if self.origin_mode {
+            self.scroll_top()
+        } else {
+            0
+        };
+        let max_row = if self.origin_mode {
+            self.scroll_bottom()
+        } else {
+            self.grid.height().saturating_sub(1)
+        };
+        let raw_row = self.cursor.row as i32 + row_delta;
+        let next_row = raw_row.clamp(min_row as i32, max_row as i32) as u16;
+        let raw_col = self.cursor.col as i32 + col_delta;
+        let next_col = if raw_col < 0 {
+            0
+        } else {
+            raw_col.min(u16::MAX as i32) as u16
+        };
         self.cursor
-            .move_relative(row_delta, col_delta, self.grid.width(), self.grid.height());
+            .move_to(next_row, next_col, self.grid.width(), self.grid.height());
     }
 
     pub(super) fn apply_cursor_position(
@@ -249,21 +267,22 @@ impl TerminalState {
         let height = self.grid.height();
         let row = self.cursor.row.min(height.saturating_sub(1));
         let col = self.cursor.col.min(width.saturating_sub(1));
+        let blank = self.blank_cell();
 
         match mode {
             DisplayClearMode::Below => {
-                let _ = self.grid.clear_row_from(row, col);
+                let _ = self.grid.clear_row_from_with_cell(row, col, blank);
                 for target_row in (row + 1)..height {
-                    let _ = self.grid.clear_row(target_row);
+                    let _ = self.grid.clear_row_with_cell(target_row, blank);
                 }
             }
             DisplayClearMode::Above => {
                 for target_row in 0..row {
-                    let _ = self.grid.clear_row(target_row);
+                    let _ = self.grid.clear_row_with_cell(target_row, blank);
                 }
-                let _ = self.grid.clear_row_to_inclusive(row, col);
+                let _ = self.grid.clear_row_to_inclusive_with_cell(row, col, blank);
             }
-            DisplayClearMode::All => self.grid.clear(),
+            DisplayClearMode::All => self.grid.clear_with_cell(blank),
             DisplayClearMode::Scrollback => {
                 self.scrollback.clear();
             }
@@ -281,15 +300,16 @@ impl TerminalState {
 
         if !self.grid.is_empty() {
             let col = self.cursor.col.min(self.grid.width().saturating_sub(1));
+            let blank = self.blank_cell();
             match mode {
                 LineClearMode::Right => {
-                    let _ = self.grid.clear_row_from(row, col);
+                    let _ = self.grid.clear_row_from_with_cell(row, col, blank);
                 }
                 LineClearMode::Left => {
-                    let _ = self.grid.clear_row_to_inclusive(row, col);
+                    let _ = self.grid.clear_row_to_inclusive_with_cell(row, col, blank);
                 }
                 LineClearMode::All => {
-                    let _ = self.grid.clear_row(row);
+                    let _ = self.grid.clear_row_with_cell(row, blank);
                 }
             }
         }
@@ -364,13 +384,18 @@ impl TerminalState {
     }
 
     pub(super) fn apply_cursor_save(&mut self) {
-        self.saved_cursor = Some((self.cursor, self.pen));
+        self.saved_cursor = Some(SavedCursorState {
+            cursor: self.cursor,
+            pen: self.pen,
+            origin_mode: self.origin_mode,
+        });
     }
 
     pub(super) fn apply_cursor_restore(&mut self, _events: &mut Vec<CoreEvent>) {
-        if let Some((saved_cursor, saved_pen)) = self.saved_cursor {
-            self.cursor = saved_cursor;
-            self.pen = saved_pen;
+        if let Some(saved) = self.saved_cursor {
+            self.cursor = saved.cursor;
+            self.pen = saved.pen;
+            self.origin_mode = saved.origin_mode;
             if !self.grid.is_empty() {
                 self.cursor.row = self.cursor.row.min(self.grid.height().saturating_sub(1));
                 self.cursor.col = self.cursor.col.min(self.grid.width().saturating_sub(1));
@@ -393,7 +418,7 @@ impl TerminalState {
             scrollback: std::mem::replace(&mut self.scrollback, Scrollback::new(0)),
             saved_cursor: self.saved_cursor.take(),
             scroll_region: self.scroll_region.take(),
-            origin_mode: self.origin_mode,
+            screen_modes: self.capture_screen_modes(),
         };
         self.origin_mode = false;
 
@@ -418,7 +443,7 @@ impl TerminalState {
             ),
             saved_cursor: self.saved_cursor.take(),
             scroll_region: self.scroll_region.take(),
-            origin_mode: self.origin_mode,
+            screen_modes: self.capture_screen_modes(),
         };
         self.origin_mode = false;
 
@@ -433,7 +458,7 @@ impl TerminalState {
             self.scrollback = saved.scrollback;
             self.saved_cursor = saved.saved_cursor;
             self.scroll_region = saved.scroll_region;
-            self.origin_mode = saved.origin_mode;
+            self.restore_screen_modes(saved.screen_modes);
             if !self.grid.is_empty() {
                 self.cursor.row = self.cursor.row.min(self.grid.height().saturating_sub(1));
                 self.cursor.col = self.cursor.col.min(self.grid.width().saturating_sub(1));
@@ -465,7 +490,8 @@ impl TerminalState {
         if self.cursor.row < top || self.cursor.row > bottom {
             return;
         }
-        self.grid.insert_lines(self.cursor.row, n, bottom);
+        self.grid
+            .insert_lines_with_cell(self.cursor.row, n, bottom, self.blank_cell());
     }
 
     pub(super) fn apply_delete_lines(&mut self, n: u16) {
@@ -474,7 +500,8 @@ impl TerminalState {
         if self.cursor.row < top || self.cursor.row > bottom {
             return;
         }
-        self.grid.delete_lines(self.cursor.row, n, bottom);
+        self.grid
+            .delete_lines_with_cell(self.cursor.row, n, bottom, self.blank_cell());
     }
 
     pub(super) fn apply_scroll_up(&mut self, n: u16, events: &mut Vec<CoreEvent>) {
@@ -483,29 +510,34 @@ impl TerminalState {
         if top == 0 && bottom == self.grid.height().saturating_sub(1) {
             self.push_scrolled_lines(n, events);
         } else {
-            self.grid.scroll_up_region_discard(n, top, bottom);
+            self.grid
+                .scroll_up_region_discard_with_cell(n, top, bottom, self.blank_cell());
         }
     }
 
     pub(super) fn apply_scroll_down(&mut self, n: u16) {
         let top = self.scroll_top();
         let bottom = self.scroll_bottom();
-        self.grid.scroll_down_region(n, top, bottom);
+        self.grid
+            .scroll_down_region_with_cell(n, top, bottom, self.blank_cell());
     }
 
     pub(super) fn apply_erase_chars(&mut self, n: u16) {
-        self.grid.erase_chars(self.cursor.row, self.cursor.col, n);
+        self.grid
+            .erase_chars_with_cell(self.cursor.row, self.cursor.col, n, self.blank_cell());
     }
 
     pub(super) fn apply_insert_chars(&mut self, n: u16) {
-        self.grid.insert_chars(self.cursor.row, self.cursor.col, n);
+        self.grid
+            .insert_chars_with_cell(self.cursor.row, self.cursor.col, n, self.blank_cell());
     }
 
     pub(super) fn apply_delete_chars(&mut self, n: u16) {
-        self.grid.delete_chars(self.cursor.row, self.cursor.col, n);
+        self.grid
+            .delete_chars_with_cell(self.cursor.row, self.cursor.col, n, self.blank_cell());
     }
 
-    fn scroll_top(&self) -> u16 {
+    pub(super) fn scroll_top(&self) -> u16 {
         self.scroll_region.map_or(0, |(top, _)| top)
     }
 
@@ -521,7 +553,8 @@ impl TerminalState {
         if top == 0 && bottom == self.grid.height().saturating_sub(1) {
             self.push_scrolled_lines(lines, events);
         } else {
-            self.grid.scroll_up_region_discard(lines, top, bottom);
+            self.grid
+                .scroll_up_region_discard_with_cell(lines, top, bottom, self.blank_cell());
         }
     }
 
@@ -542,7 +575,8 @@ impl TerminalState {
         }
 
         // Shift remaining rows up and clear vacated bottom rows.
-        self.grid.scroll_up_discard(effective_lines);
+        self.grid
+            .scroll_up_discard_with_cell(effective_lines, self.blank_cell());
 
         events.push(CoreEvent::GridScrolled {
             lines: effective_lines,

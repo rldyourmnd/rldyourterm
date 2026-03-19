@@ -352,6 +352,6 @@ fn position_param(parsed: &CsiParams, idx: usize) -> u16 {
 }
 
 fn mode_param(parsed: &CsiParams) -> Option<u16> {
-    let mode = parsed.first()?.unwrap_or(0);
+    let mode = parsed.first().flatten().unwrap_or(0);
     if mode <= 3 { Some(mode) } else { None }
 }

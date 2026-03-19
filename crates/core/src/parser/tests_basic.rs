@@ -39,12 +39,41 @@ fn parses_supported_csi_subset() {
 }
 
 #[test]
+fn bare_j_and_k_default_to_mode_zero() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[J\x1b[K");
+
+    assert_eq!(
+        actions,
+        vec![
+            ParserAction::ClearDisplay(DisplayClearMode::Below),
+            ParserAction::ClearLine(LineClearMode::Right),
+        ]
+    );
+}
+
+#[test]
 fn supports_split_escape_sequence_across_feeds() {
     let mut parser = Parser::default();
 
     assert!(parser.feed(b"\x1b[12").is_empty());
     let actions = parser.feed(b"D");
     assert_eq!(actions, vec![ParserAction::CursorBack(12)]);
+}
+
+#[test]
+fn can_and_sub_abort_in_progress_escape_sequences() {
+    let mut parser = Parser::default();
+
+    assert!(parser.feed(b"\x1b[").is_empty());
+    assert!(parser.feed(&[0x18]).is_empty());
+    let actions = parser.feed(b"A");
+    assert_eq!(actions, vec![ParserAction::Print('A')]);
+
+    assert!(parser.feed(b"\x1b]").is_empty());
+    assert!(parser.feed(&[0x1A]).is_empty());
+    let actions = parser.feed(b"B");
+    assert_eq!(actions, vec![ParserAction::Print('B')]);
 }
 
 #[test]

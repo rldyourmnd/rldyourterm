@@ -141,7 +141,14 @@ impl TerminalState {
                 });
             }
             ParserAction::SendDeviceStatusReport => {
-                let row = self.cursor.row.saturating_add(1);
+                let row = if self.origin_mode {
+                    self.cursor
+                        .row
+                        .saturating_sub(self.scroll_top())
+                        .saturating_add(1)
+                } else {
+                    self.cursor.row.saturating_add(1)
+                };
                 let col = self.cursor.col.saturating_add(1);
                 events.push(CoreEvent::TerminalResponse {
                     data: format!("\x1b[{row};{col}R").into_bytes(),

@@ -137,23 +137,49 @@ impl Grid {
     }
 
     pub fn clear(&mut self) {
-        self.cells.fill(Cell::default());
+        self.clear_with_cell(Cell::default());
+    }
+
+    pub fn clear_with_cell(&mut self, blank: Cell) {
+        self.cells.fill(blank);
         self.wrapped.fill(false);
         self.scroll_count = 0;
         self.mark_all_dirty();
     }
 
     pub fn clear_row(&mut self, row: u16) -> Result<(), CoreError> {
-        self.clear_row_range(row, 0, self.width)
+        self.clear_row_with_cell(row, Cell::default())
+    }
+
+    pub fn clear_row_with_cell(&mut self, row: u16, blank: Cell) -> Result<(), CoreError> {
+        self.clear_row_range(row, 0, self.width, blank)
     }
 
     pub fn clear_row_from(&mut self, row: u16, start_col: u16) -> Result<(), CoreError> {
-        self.clear_row_range(row, start_col, self.width)
+        self.clear_row_from_with_cell(row, start_col, Cell::default())
+    }
+
+    pub fn clear_row_from_with_cell(
+        &mut self,
+        row: u16,
+        start_col: u16,
+        blank: Cell,
+    ) -> Result<(), CoreError> {
+        self.clear_row_range(row, start_col, self.width, blank)
     }
 
     pub fn clear_row_to_inclusive(&mut self, row: u16, end_col: u16) -> Result<(), CoreError> {
+        self.clear_row_to_inclusive_with_cell(row, end_col, Cell::default())
+    }
+
+    pub fn clear_row_to_inclusive_with_cell(
+        &mut self,
+        row: u16,
+        end_col: u16,
+        blank: Cell,
+    ) -> Result<(), CoreError> {
         let end_exclusive = end_col.saturating_add(1).min(self.width);
-        self.clear_row_range(row, 0, end_exclusive)
+        self.clear_row_range(row, 0, end_exclusive, blank)
     }
 
     pub fn row_string(&self, row: u16) -> Result<String, CoreError> {
@@ -228,13 +254,17 @@ impl Grid {
     /// Unlike `scroll_up`, does not extract row text - the caller is expected
     /// to push row data into scrollback directly via `row_cells` beforehand.
     pub fn scroll_up_discard(&mut self, lines: u16) {
+        self.scroll_up_discard_with_cell(lines, Cell::default());
+    }
+
+    pub fn scroll_up_discard_with_cell(&mut self, lines: u16, blank: Cell) {
         if lines == 0 || self.height == 0 {
             return;
         }
 
         let lines = lines.min(self.height);
         if self.width == 0 || lines == self.height {
-            self.clear();
+            self.clear_with_cell(blank);
             return;
         }
 
@@ -253,7 +283,7 @@ impl Grid {
 
         for row in (height - lines)..height {
             let start = row * width;
-            self.cells[start..(start + width)].fill(Cell::default());
+            self.cells[start..(start + width)].fill(blank);
             self.wrapped[row] = false;
         }
 
@@ -321,6 +351,16 @@ impl Grid {
     }
 
     pub fn scroll_up_region_discard(&mut self, lines: u16, region_top: u16, region_bottom: u16) {
+        self.scroll_up_region_discard_with_cell(lines, region_top, region_bottom, Cell::default());
+    }
+
+    pub fn scroll_up_region_discard_with_cell(
+        &mut self,
+        lines: u16,
+        region_top: u16,
+        region_bottom: u16,
+        blank: Cell,
+    ) {
         if lines == 0 || self.height == 0 || region_top > region_bottom {
             return;
         }
@@ -356,7 +396,7 @@ impl Grid {
         };
         for row in clear_start..=bottom {
             let start = row * width;
-            self.cells[start..(start + width)].fill(Cell::default());
+            self.cells[start..(start + width)].fill(blank);
             self.wrapped[row] = false;
         }
 
@@ -365,6 +405,16 @@ impl Grid {
     }
 
     pub fn scroll_down_region(&mut self, lines: u16, region_top: u16, region_bottom: u16) {
+        self.scroll_down_region_with_cell(lines, region_top, region_bottom, Cell::default());
+    }
+
+    pub fn scroll_down_region_with_cell(
+        &mut self,
+        lines: u16,
+        region_top: u16,
+        region_bottom: u16,
+        blank: Cell,
+    ) {
         if lines == 0 || self.height == 0 || region_top > region_bottom {
             return;
         }
@@ -399,7 +449,7 @@ impl Grid {
         };
         for row in top..clear_end {
             let start = row * width;
-            self.cells[start..(start + width)].fill(Cell::default());
+            self.cells[start..(start + width)].fill(blank);
             self.wrapped[row] = false;
         }
 
@@ -408,24 +458,48 @@ impl Grid {
     }
 
     pub fn insert_lines(&mut self, at_row: u16, count: u16, region_bottom: u16) {
+        self.insert_lines_with_cell(at_row, count, region_bottom, Cell::default());
+    }
+
+    pub fn insert_lines_with_cell(
+        &mut self,
+        at_row: u16,
+        count: u16,
+        region_bottom: u16,
+        blank: Cell,
+    ) {
         if count == 0 || self.width == 0 || at_row > region_bottom {
             return;
         }
         let region_bottom = region_bottom.min(self.height.saturating_sub(1));
         let at_row = at_row.min(region_bottom);
-        self.scroll_down_region(count, at_row, region_bottom);
+        self.scroll_down_region_with_cell(count, at_row, region_bottom, blank);
     }
 
     pub fn delete_lines(&mut self, at_row: u16, count: u16, region_bottom: u16) {
+        self.delete_lines_with_cell(at_row, count, region_bottom, Cell::default());
+    }
+
+    pub fn delete_lines_with_cell(
+        &mut self,
+        at_row: u16,
+        count: u16,
+        region_bottom: u16,
+        blank: Cell,
+    ) {
         if count == 0 || self.width == 0 || at_row > region_bottom {
             return;
         }
         let region_bottom = region_bottom.min(self.height.saturating_sub(1));
         let at_row = at_row.min(region_bottom);
-        let _ = self.scroll_up_region(count, at_row, region_bottom);
+        self.scroll_up_region_discard_with_cell(count, at_row, region_bottom, blank);
     }
 
     pub fn insert_chars(&mut self, row: u16, at_col: u16, count: u16) {
+        self.insert_chars_with_cell(row, at_col, count, Cell::default());
+    }
+
+    pub fn insert_chars_with_cell(&mut self, row: u16, at_col: u16, count: u16, blank: Cell) {
         if count == 0 || self.width == 0 || row >= self.height || at_col >= self.width {
             return;
         }
@@ -440,11 +514,15 @@ impl Grid {
             self.cells.copy_within(src_start..src_end, src_start + cnt);
         }
 
-        self.cells[row_start + col..row_start + col + cnt].fill(Cell::default());
+        self.cells[row_start + col..row_start + col + cnt].fill(blank);
         self.mark_row_dirty(row);
     }
 
     pub fn delete_chars(&mut self, row: u16, at_col: u16, count: u16) {
+        self.delete_chars_with_cell(row, at_col, count, Cell::default());
+    }
+
+    pub fn delete_chars_with_cell(&mut self, row: u16, at_col: u16, count: u16, blank: Cell) {
         if count == 0 || self.width == 0 || row >= self.height || at_col >= self.width {
             return;
         }
@@ -459,11 +537,15 @@ impl Grid {
             self.cells.copy_within(src_start..row_start + w, dst_start);
         }
 
-        self.cells[row_start + w - cnt..row_start + w].fill(Cell::default());
+        self.cells[row_start + w - cnt..row_start + w].fill(blank);
         self.mark_row_dirty(row);
     }
 
     pub fn erase_chars(&mut self, row: u16, at_col: u16, count: u16) {
+        self.erase_chars_with_cell(row, at_col, count, Cell::default());
+    }
+
+    pub fn erase_chars_with_cell(&mut self, row: u16, at_col: u16, count: u16, blank: Cell) {
         if count == 0 || self.width == 0 || row >= self.height || at_col >= self.width {
             return;
         }
@@ -472,7 +554,7 @@ impl Grid {
         let col = at_col as usize;
         let end = (col + count as usize).min(w);
 
-        self.cells[row_start + col..row_start + end].fill(Cell::default());
+        self.cells[row_start + col..row_start + end].fill(blank);
         self.mark_row_dirty(row);
     }
 
@@ -762,6 +844,7 @@ impl Grid {
         row: u16,
         start_col: u16,
         end_col_exclusive: u16,
+        blank: Cell,
     ) -> Result<(), CoreError> {
         if row >= self.height {
             return Err(CoreError::InvalidGridPosition {
@@ -785,7 +868,7 @@ impl Grid {
         let row_start = row as usize * width;
         let start = row_start + start_col as usize;
         let end = row_start + end_col_exclusive as usize;
-        self.cells[start..end].fill(Cell::default());
+        self.cells[start..end].fill(blank);
         self.mark_row_dirty(row);
         Ok(())
     }

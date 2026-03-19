@@ -14,7 +14,7 @@ mod tests_stress;
 use crate::{
     cursor::Cursor,
     events::{CoreEvent, IngestDegradeReason},
-    grid::{Attrs, Grid},
+    grid::{Attrs, Cell, Grid},
     parser::{Parser, ParserAction},
     scrollback::Scrollback,
 };
@@ -44,15 +44,38 @@ pub(super) const FEED_CHUNK_BYTES: usize = 4 * 1024;
 const PARSER_ACTIONS_SCRATCH_INITIAL_CAPACITY: usize = FEED_CHUNK_BYTES / 2;
 const FEED_EVENTS_SCRATCH_INITIAL_CAPACITY: usize = 8;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SavedCursorState {
+    pub(super) cursor: Cursor,
+    pub(super) pen: Attrs,
+    pub(super) origin_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ScreenModeState {
+    pub(super) bracketed_paste: bool,
+    pub(super) application_keypad_mode: bool,
+    pub(super) application_cursor_keys: bool,
+    pub(super) auto_wrap: bool,
+    pub(super) origin_mode: bool,
+    pub(super) mouse_mode: MouseMode,
+    pub(super) mouse_format: MouseFormat,
+    pub(super) cursor_blink: bool,
+    pub(super) cursor_shape: u8,
+    pub(super) focus_reporting: bool,
+    pub(super) synchronized_output: bool,
+    pub(super) kitty_keyboard_stack: Vec<u16>,
+}
+
 #[derive(Debug)]
 pub(super) struct AlternateScreenState {
     pub(super) grid: Grid,
     pub(super) cursor: Cursor,
     pub(super) pen: Attrs,
     pub(super) scrollback: Scrollback,
-    pub(super) saved_cursor: Option<(Cursor, Attrs)>,
+    pub(super) saved_cursor: Option<SavedCursorState>,
     pub(super) scroll_region: Option<(u16, u16)>,
-    pub(super) origin_mode: bool,
+    pub(super) screen_modes: ScreenModeState,
 }
 
 #[derive(Debug)]
@@ -64,7 +87,7 @@ pub struct TerminalState {
     pub(super) parser_actions_scratch: Vec<ParserAction>,
     pub(super) feed_events_scratch: Vec<CoreEvent>,
     pub(super) pen: Attrs,
-    pub(super) saved_cursor: Option<(Cursor, Attrs)>,
+    pub(super) saved_cursor: Option<SavedCursorState>,
     pub(super) scroll_region: Option<(u16, u16)>,
     pub(super) alternate_screen: Option<Box<AlternateScreenState>>,
     pub(super) window_title: String,
@@ -185,6 +208,42 @@ impl TerminalState {
 
     pub fn kitty_keyboard_flags(&self) -> u16 {
         self.kitty_keyboard_stack.last().copied().unwrap_or(0)
+    }
+
+    pub(super) fn capture_screen_modes(&self) -> ScreenModeState {
+        ScreenModeState {
+            bracketed_paste: self.bracketed_paste,
+            application_keypad_mode: self.application_keypad_mode,
+            application_cursor_keys: self.application_cursor_keys,
+            auto_wrap: self.auto_wrap,
+            origin_mode: self.origin_mode,
+            mouse_mode: self.mouse_mode,
+            mouse_format: self.mouse_format,
+            cursor_blink: self.cursor_blink,
+            cursor_shape: self.cursor_shape,
+            focus_reporting: self.focus_reporting,
+            synchronized_output: self.synchronized_output,
+            kitty_keyboard_stack: self.kitty_keyboard_stack.clone(),
+        }
+    }
+
+    pub(super) fn restore_screen_modes(&mut self, modes: ScreenModeState) {
+        self.bracketed_paste = modes.bracketed_paste;
+        self.application_keypad_mode = modes.application_keypad_mode;
+        self.application_cursor_keys = modes.application_cursor_keys;
+        self.auto_wrap = modes.auto_wrap;
+        self.origin_mode = modes.origin_mode;
+        self.mouse_mode = modes.mouse_mode;
+        self.mouse_format = modes.mouse_format;
+        self.cursor_blink = modes.cursor_blink;
+        self.cursor_shape = modes.cursor_shape;
+        self.focus_reporting = modes.focus_reporting;
+        self.synchronized_output = modes.synchronized_output;
+        self.kitty_keyboard_stack = modes.kitty_keyboard_stack;
+    }
+
+    pub(super) fn blank_cell(&self) -> Cell {
+        Cell::blank_with_bg(self.pen.bg)
     }
 
     #[cfg(test)]

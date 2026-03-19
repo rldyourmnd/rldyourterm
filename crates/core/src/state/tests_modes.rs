@@ -15,6 +15,17 @@ fn cursor_save_restore_preserves_pen() {
 }
 
 #[test]
+fn cursor_save_restore_preserves_origin_mode() {
+    let mut state = TerminalState::new(10, 5, 5);
+    state.scroll_region = Some((1, 3));
+    state.origin_mode = true;
+    let _ = state.feed(b"\x1b7");
+    state.origin_mode = false;
+    let _ = state.feed(b"\x1b8");
+    assert!(state.origin_mode);
+}
+
+#[test]
 fn sgr_hidden_sets_and_resets() {
     let mut state = TerminalState::new(10, 5, 5);
     let _ = state.feed(b"\x1b[8m");
@@ -168,6 +179,35 @@ fn alternate_screen_enter_leave_roundtrip() {
     let _ = state.feed(b"XY");
     let _ = state.feed(b"\x1b[?1049l");
     assert_eq!(state.grid.row_string(0).expect("main row 0"), "ABCD");
+}
+
+#[test]
+fn alternate_screen_restores_per_screen_modes() {
+    let mut state = TerminalState::new(10, 5, 5);
+    state.scroll_region = Some((1, 3));
+    state.origin_mode = true;
+    let _ = state.feed(
+        b"\x1b[?2004h\x1b=\x1b[?1h\x1b[?7l\x1b[?1002h\x1b[?1006h\x1b[?12h\x1b[?1004h\x1b[?2026h\x1b[5 q\x1b[>3u",
+    );
+
+    let _ = state.feed(b"\x1b[?1049h");
+    let _ = state.feed(
+        b"\x1b[?2004l\x1b>\x1b[?1l\x1b[?7h\x1b[?1000h\x1b[?1006l\x1b[?12l\x1b[?1004l\x1b[?2026l\x1b[2 q\x1b[>1u\x1b[?6l",
+    );
+    let _ = state.feed(b"\x1b[?1049l");
+
+    assert!(state.bracketed_paste_enabled());
+    assert!(state.application_keypad_mode_enabled());
+    assert!(state.application_cursor_keys_enabled());
+    assert!(!state.auto_wrap_enabled());
+    assert!(state.origin_mode);
+    assert_eq!(state.mouse_mode(), MouseMode::ButtonTrack);
+    assert_eq!(state.mouse_format(), MouseFormat::Sgr);
+    assert!(state.cursor_blink);
+    assert_eq!(state.cursor_shape(), 5);
+    assert!(state.focus_reporting_enabled());
+    assert!(state.synchronized_output_enabled());
+    assert_eq!(state.kitty_keyboard_flags(), 3);
 }
 
 #[test]
@@ -547,6 +587,36 @@ fn device_status_report_emits_cursor_position() {
 }
 
 #[test]
+fn device_status_report_respects_origin_mode_offset() {
+    let mut state = TerminalState::new(10, 5, 5);
+    state.scroll_region = Some((1, 3));
+    state.origin_mode = true;
+    state.cursor.row = 2;
+    state.cursor.col = 4;
+    let events = state.feed(b"\x1b[6n");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[2;5R"))
+    );
+}
+
+#[test]
+fn origin_mode_relative_cursor_movement_stays_within_scroll_region() {
+    let mut state = TerminalState::new(10, 5, 5);
+    state.scroll_region = Some((1, 3));
+    state.origin_mode = true;
+    state.cursor.row = 2;
+    state.cursor.col = 4;
+
+    let _ = state.feed(b"\x1b[10A");
+    assert_eq!(state.cursor.row, 1);
+
+    let _ = state.feed(b"\x1b[10B");
+    assert_eq!(state.cursor.row, 3);
+}
+
+#[test]
 fn reverse_index_scrolls_down_at_top_of_region() {
     let mut state = TerminalState::new(4, 5, 10);
     // Set scroll region rows 1..3 (0-indexed)
@@ -595,6 +665,122 @@ fn clear_scrollback_empties_scrollback_buffer() {
             mode: DisplayClearMode::Scrollback
         }
     )));
+}
+
+#[test]
+fn clear_display_uses_current_pen_background() {
+    let mut state = TerminalState::new(3, 2, 5);
+    let _ = state.feed(b"ABCDEF");
+    let _ = state.feed(b"\x1b[41m\x1b[2J");
+
+    for row in 0..2u16 {
+        for col in 0..3u16 {
+            let cell = state.grid.get_cell(row, col).expect("cleared cell");
+            assert_eq!(cell.ch, ' ');
+            assert_eq!(cell.attrs.bg, Color::Indexed(1));
+        }
+    }
+}
+
+#[test]
+fn clear_line_and_erase_chars_use_current_pen_background() {
+    let mut line_clear_state = TerminalState::new(5, 1, 5);
+    let _ = line_clear_state.feed(b"ABCDE");
+    line_clear_state.cursor.col = 2;
+    line_clear_state.cursor.wrap_pending = false;
+    let _ = line_clear_state.feed(b"\x1b[42m\x1b[K");
+    for col in 2..5u16 {
+        let cell = line_clear_state
+            .grid
+            .get_cell(0, col)
+            .expect("line-cleared cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(2));
+    }
+
+    let mut erase_state = TerminalState::new(5, 1, 5);
+    let _ = erase_state.feed(b"ABCDE");
+    erase_state.cursor.col = 1;
+    erase_state.cursor.wrap_pending = false;
+    let _ = erase_state.feed(b"\x1b[44m\x1b[2X");
+    for col in 1..3u16 {
+        let cell = erase_state.grid.get_cell(0, col).expect("erased cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(4));
+    }
+}
+
+#[test]
+fn insert_delete_chars_and_lines_use_current_pen_background() {
+    let mut insert_chars_state = TerminalState::new(5, 1, 5);
+    let _ = insert_chars_state.feed(b"ABCDE");
+    insert_chars_state.cursor.col = 1;
+    insert_chars_state.cursor.wrap_pending = false;
+    let _ = insert_chars_state.feed(b"\x1b[45m\x1b[2@");
+    for col in 1..3u16 {
+        let cell = insert_chars_state
+            .grid
+            .get_cell(0, col)
+            .expect("inserted blank cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(5));
+    }
+
+    let mut delete_chars_state = TerminalState::new(5, 1, 5);
+    let _ = delete_chars_state.feed(b"ABCDE");
+    delete_chars_state.cursor.col = 1;
+    delete_chars_state.cursor.wrap_pending = false;
+    let _ = delete_chars_state.feed(b"\x1b[46m\x1b[2P");
+    for col in 3..5u16 {
+        let cell = delete_chars_state
+            .grid
+            .get_cell(0, col)
+            .expect("deleted trailing blank cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(6));
+    }
+
+    let mut insert_lines_state = TerminalState::new(3, 3, 5);
+    let _ = insert_lines_state.feed(b"AAABBBCCC");
+    insert_lines_state.cursor.row = 1;
+    let _ = insert_lines_state.feed(b"\x1b[42m\x1b[L");
+    for col in 0..3u16 {
+        let cell = insert_lines_state
+            .grid
+            .get_cell(1, col)
+            .expect("inserted line blank cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(2));
+    }
+
+    let mut delete_lines_state = TerminalState::new(3, 3, 5);
+    let _ = delete_lines_state.feed(b"AAABBBCCC");
+    delete_lines_state.cursor.row = 1;
+    let _ = delete_lines_state.feed(b"\x1b[42m\x1b[M");
+    for col in 0..3u16 {
+        let cell = delete_lines_state
+            .grid
+            .get_cell(2, col)
+            .expect("deleted line trailing blank cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(2));
+    }
+}
+
+#[test]
+fn line_feed_scroll_uses_current_pen_background() {
+    let mut state = TerminalState::new(3, 2, 5);
+    let _ = state.feed(b"ABCDEF");
+    state.cursor.row = 1;
+    state.cursor.col = 0;
+    state.cursor.wrap_pending = false;
+    let _ = state.feed(b"\x1b[41m\n");
+
+    for col in 0..3u16 {
+        let cell = state.grid.get_cell(1, col).expect("scrolled blank cell");
+        assert_eq!(cell.ch, ' ');
+        assert_eq!(cell.attrs.bg, Color::Indexed(1));
+    }
 }
 
 #[test]
@@ -776,16 +962,18 @@ fn alternate_screen_simple_mode_47() {
     let mut state = TerminalState::new(4, 2, 5);
     let _ = state.feed(b"ABCD");
     let cursor_before = state.cursor;
+    let _ = state.feed(b"\x1b[?1006h");
     let _ = state.feed(b"\x1b[?47h");
     // Alternate screen should be active, grid cleared
     assert_eq!(state.grid.row_string(0).expect("alt row 0"), "    ");
     // Cursor is NOT saved (simple mode)
-    let _ = state.feed(b"XY");
+    let _ = state.feed(b"\x1b[?1006lXY");
     let _ = state.feed(b"\x1b[?47l");
     // Main screen restored
     assert_eq!(state.grid.row_string(0).expect("main row 0"), "ABCD");
     // Cursor should be restored to position before enter (simple doesn't save)
     assert_eq!(state.cursor.row, cursor_before.row);
+    assert_eq!(state.mouse_format(), MouseFormat::Sgr);
 }
 
 #[test]
