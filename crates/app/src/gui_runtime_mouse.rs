@@ -17,10 +17,7 @@ fn encode_alternate_scroll_payload(lines: i32, application_cursor_keys: bool) ->
     };
 
     encode_runtime_key_event(
-        RuntimeKeyEvent {
-            key,
-            modifiers: RuntimeKeyModifiers::default(),
-        },
+        RuntimeKeyEvent::new(key, RuntimeKeyModifiers::default()),
         TerminalModeFlags {
             application_cursor_keys,
             ..Default::default()

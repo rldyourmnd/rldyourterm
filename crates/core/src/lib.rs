@@ -20,7 +20,8 @@ pub use grid::{
     UnderlineStyle, color_to_u32,
 };
 pub use input::{
-    RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, TerminalModeFlags, encode_runtime_key_event,
+    RuntimeKey, RuntimeKeyEvent, RuntimeKeyEventKind, RuntimeKeyModifiers, TerminalModeFlags,
+    encode_runtime_key_event,
 };
 // Keep parser module private while preserving a narrow tooling surface for direct fuzz harnesses.
 pub use parser::Parser;

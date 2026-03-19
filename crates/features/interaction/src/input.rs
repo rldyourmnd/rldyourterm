@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use rldyourterm_core::{
-    RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, TerminalModeFlags, encode_runtime_key_event,
+    RuntimeKey, RuntimeKeyEvent, RuntimeKeyEventKind, RuntimeKeyModifiers, TerminalModeFlags,
+    encode_runtime_key_event,
 };
-use winit::event::KeyEvent as WinitKeyEvent;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::event::{ElementState, KeyEvent as WinitKeyEvent};
+use winit::keyboard::{Key, KeyCode as WinitKeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+
+struct CanonicalizedCharacter {
+    key: char,
+    shifted_key: Option<char>,
+    associated_text: Option<String>,
+}
 
 fn runtime_key_modifiers_from_crossterm(modifiers: KeyModifiers) -> RuntimeKeyModifiers {
     RuntimeKeyModifiers {
@@ -26,46 +34,83 @@ fn runtime_key_modifiers_from_winit(modifiers: ModifiersState) -> RuntimeKeyModi
     }
 }
 
+fn runtime_key_event_kind_from_crossterm(kind: KeyEventKind) -> RuntimeKeyEventKind {
+    match kind {
+        KeyEventKind::Press => RuntimeKeyEventKind::Press,
+        KeyEventKind::Repeat => RuntimeKeyEventKind::Repeat,
+        KeyEventKind::Release => RuntimeKeyEventKind::Release,
+    }
+}
+
+fn runtime_key_event_kind_from_winit(event: &WinitKeyEvent) -> RuntimeKeyEventKind {
+    match event.state {
+        ElementState::Released => RuntimeKeyEventKind::Release,
+        ElementState::Pressed if event.repeat => RuntimeKeyEventKind::Repeat,
+        ElementState::Pressed => RuntimeKeyEventKind::Press,
+    }
+}
+
 pub fn runtime_key_event_from_crossterm(key_event: KeyEvent) -> Option<RuntimeKeyEvent> {
     let mut modifiers = runtime_key_modifiers_from_crossterm(key_event.modifiers);
-    let key = match key_event.code {
-        KeyCode::Char(ch) => RuntimeKey::Character(ch),
-        KeyCode::Enter => RuntimeKey::Enter,
-        KeyCode::Backspace => RuntimeKey::Backspace,
+    let kind = runtime_key_event_kind_from_crossterm(key_event.kind);
+
+    match key_event.code {
+        KeyCode::Char(ch) => {
+            let canonical = canonicalize_crossterm_character(ch, modifiers);
+            let mut event = RuntimeKeyEvent::new(RuntimeKey::Character(canonical.key), modifiers)
+                .with_kind(kind);
+            event = event.with_shifted_key(canonical.shifted_key);
+            if let Some(text) = canonical.associated_text {
+                event = event.with_associated_text(text);
+            }
+            Some(event)
+        }
+        KeyCode::Enter => Some(RuntimeKeyEvent::new(RuntimeKey::Enter, modifiers).with_kind(kind)),
+        KeyCode::Backspace => {
+            Some(RuntimeKeyEvent::new(RuntimeKey::Backspace, modifiers).with_kind(kind))
+        }
         KeyCode::BackTab => {
             modifiers.shift = true;
-            RuntimeKey::Tab
+            Some(RuntimeKeyEvent::new(RuntimeKey::Tab, modifiers).with_kind(kind))
         }
-        KeyCode::Tab => RuntimeKey::Tab,
-        KeyCode::Esc => RuntimeKey::Escape,
-        KeyCode::Up => RuntimeKey::Up,
-        KeyCode::Down => RuntimeKey::Down,
-        KeyCode::Right => RuntimeKey::Right,
-        KeyCode::Left => RuntimeKey::Left,
-        KeyCode::Home => RuntimeKey::Home,
-        KeyCode::End => RuntimeKey::End,
-        KeyCode::Delete => RuntimeKey::Delete,
-        KeyCode::Insert => RuntimeKey::Insert,
-        KeyCode::PageUp => RuntimeKey::PageUp,
-        KeyCode::PageDown => RuntimeKey::PageDown,
+        KeyCode::Tab => Some(RuntimeKeyEvent::new(RuntimeKey::Tab, modifiers).with_kind(kind)),
+        KeyCode::Esc => Some(RuntimeKeyEvent::new(RuntimeKey::Escape, modifiers).with_kind(kind)),
+        KeyCode::Up => Some(RuntimeKeyEvent::new(RuntimeKey::Up, modifiers).with_kind(kind)),
+        KeyCode::Down => Some(RuntimeKeyEvent::new(RuntimeKey::Down, modifiers).with_kind(kind)),
+        KeyCode::Right => Some(RuntimeKeyEvent::new(RuntimeKey::Right, modifiers).with_kind(kind)),
+        KeyCode::Left => Some(RuntimeKeyEvent::new(RuntimeKey::Left, modifiers).with_kind(kind)),
+        KeyCode::Home => Some(RuntimeKeyEvent::new(RuntimeKey::Home, modifiers).with_kind(kind)),
+        KeyCode::End => Some(RuntimeKeyEvent::new(RuntimeKey::End, modifiers).with_kind(kind)),
+        KeyCode::Delete => {
+            Some(RuntimeKeyEvent::new(RuntimeKey::Delete, modifiers).with_kind(kind))
+        }
+        KeyCode::Insert => {
+            Some(RuntimeKeyEvent::new(RuntimeKey::Insert, modifiers).with_kind(kind))
+        }
+        KeyCode::PageUp => {
+            Some(RuntimeKeyEvent::new(RuntimeKey::PageUp, modifiers).with_kind(kind))
+        }
+        KeyCode::PageDown => {
+            Some(RuntimeKeyEvent::new(RuntimeKey::PageDown, modifiers).with_kind(kind))
+        }
         // Legacy xterm/function-key mapping in this runtime is defined only for F1-F20.
         // Reject higher crossterm function keys up front instead of accepting and
         // silently dropping them during encoding.
-        KeyCode::F(index @ 1..=20) => RuntimeKey::F(index),
-        _ => return None,
-    };
-
-    Some(RuntimeKeyEvent { key, modifiers })
+        KeyCode::F(index @ 1..=20) => {
+            Some(RuntimeKeyEvent::new(RuntimeKey::F(index), modifiers).with_kind(kind))
+        }
+        _ => None,
+    }
 }
 
 pub fn runtime_key_event_from_winit(
     key: &Key,
     modifiers: ModifiersState,
 ) -> Option<RuntimeKeyEvent> {
-    Some(RuntimeKeyEvent {
-        key: runtime_key_from_winit(key)?,
-        modifiers: runtime_key_modifiers_from_winit(modifiers),
-    })
+    Some(RuntimeKeyEvent::new(
+        runtime_key_from_winit(key)?,
+        runtime_key_modifiers_from_winit(modifiers),
+    ))
 }
 
 #[cfg(test)]
@@ -92,10 +137,7 @@ pub fn is_runtime_palette_shortcut_crossterm(key_event: KeyEvent) -> bool {
 
 pub fn is_runtime_palette_shortcut_winit(key: Key<&str>, modifiers: ModifiersState) -> bool {
     runtime_key_from_winit_borrowed(key)
-        .map(|key| RuntimeKeyEvent {
-            key,
-            modifiers: runtime_key_modifiers_from_winit(modifiers),
-        })
+        .map(|key| RuntimeKeyEvent::new(key, runtime_key_modifiers_from_winit(modifiers)))
         .is_some_and(is_runtime_palette_shortcut)
 }
 
@@ -134,18 +176,8 @@ pub fn encode_winit_key_event(
     {
         return Some(bytes);
     }
-    runtime_key_from_winit(&event.logical_key)
-        .map(|key| RuntimeKeyEvent { key, modifiers })
-        .or_else(|| {
-            event
-                .text
-                .as_deref()
-                .and_then(|text| text.chars().next())
-                .map(|ch| RuntimeKeyEvent {
-                    key: RuntimeKey::Character(ch),
-                    modifiers,
-                })
-        })
+
+    runtime_key_event_from_winit_input(event, modifiers)
         .and_then(|event| encode_runtime_key_event(event, modes))
 }
 
@@ -167,6 +199,184 @@ fn encode_winit_text_bytes(
         Some(text.as_bytes().to_vec())
     } else {
         None
+    }
+}
+
+fn runtime_key_event_from_winit_input(
+    event: &WinitKeyEvent,
+    modifiers: RuntimeKeyModifiers,
+) -> Option<RuntimeKeyEvent> {
+    let key_without_modifiers = event.key_without_modifiers();
+    let key = runtime_key_from_winit_ref(key_without_modifiers.as_ref())
+        .or_else(|| runtime_key_from_winit_ref(event.logical_key.as_ref()))
+        .or_else(|| {
+            associated_text_from_winit(event)
+                .as_deref()
+                .and_then(single_char)
+                .map(RuntimeKey::Character)
+        })?;
+    let mut runtime_event =
+        RuntimeKeyEvent::new(key, modifiers).with_kind(runtime_key_event_kind_from_winit(event));
+
+    if let RuntimeKey::Character(main_key) = key {
+        runtime_event =
+            runtime_event.with_shifted_key(shifted_key_from_winit(event, modifiers, main_key));
+        runtime_event =
+            runtime_event.with_base_layout_key(base_layout_key_from_winit(event, main_key));
+    }
+    if let Some(text) = associated_text_from_winit(event) {
+        runtime_event = runtime_event.with_associated_text(text);
+    }
+
+    Some(runtime_event)
+}
+
+fn shifted_key_from_winit(
+    event: &WinitKeyEvent,
+    modifiers: RuntimeKeyModifiers,
+    main_key: char,
+) -> Option<char> {
+    if !modifiers.shift {
+        return None;
+    }
+
+    character_from_winit_key(event.logical_key.as_ref()).filter(|shifted| *shifted != main_key)
+}
+
+fn base_layout_key_from_winit(event: &WinitKeyEvent, main_key: char) -> Option<char> {
+    let base_layout_key = match event.physical_key {
+        PhysicalKey::Code(code) => us_layout_char_from_physical_key(code)?,
+        PhysicalKey::Unidentified(_) => return None,
+    };
+
+    (base_layout_key != main_key).then_some(base_layout_key)
+}
+
+fn associated_text_from_winit(event: &WinitKeyEvent) -> Option<String> {
+    for candidate in [event.text_with_all_modifiers(), event.text.as_deref()] {
+        if let Some(candidate) = candidate.filter(|text| valid_associated_text(text)) {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+fn valid_associated_text(text: &str) -> bool {
+    !text.is_empty()
+        && !text
+            .chars()
+            .any(|ch| matches!(u32::from(ch), 0x00..=0x1f | 0x7f..=0x9f))
+}
+
+fn canonicalize_crossterm_character(
+    ch: char,
+    modifiers: RuntimeKeyModifiers,
+) -> CanonicalizedCharacter {
+    let associated_text = (!ch.is_control()).then(|| ch.to_string());
+    let shifted_key = modifiers.shift.then_some(ch);
+
+    if ch.is_ascii_uppercase() {
+        return CanonicalizedCharacter {
+            key: ch.to_ascii_lowercase(),
+            shifted_key,
+            associated_text,
+        };
+    }
+
+    if let Some(unshifted) = unshifted_us_ascii_char(ch) {
+        return CanonicalizedCharacter {
+            key: unshifted,
+            shifted_key,
+            associated_text,
+        };
+    }
+
+    CanonicalizedCharacter {
+        key: ch,
+        shifted_key: None,
+        associated_text,
+    }
+}
+
+fn unshifted_us_ascii_char(ch: char) -> Option<char> {
+    match ch {
+        '!' => Some('1'),
+        '@' => Some('2'),
+        '#' => Some('3'),
+        '$' => Some('4'),
+        '%' => Some('5'),
+        '^' => Some('6'),
+        '&' => Some('7'),
+        '*' => Some('8'),
+        '(' => Some('9'),
+        ')' => Some('0'),
+        '_' => Some('-'),
+        '+' => Some('='),
+        '{' => Some('['),
+        '}' => Some(']'),
+        '|' => Some('\\'),
+        ':' => Some(';'),
+        '"' => Some('\''),
+        '<' => Some(','),
+        '>' => Some('.'),
+        '?' => Some('/'),
+        '~' => Some('`'),
+        _ => None,
+    }
+}
+
+fn us_layout_char_from_physical_key(code: WinitKeyCode) -> Option<char> {
+    match code {
+        WinitKeyCode::Digit0 => Some('0'),
+        WinitKeyCode::Digit1 => Some('1'),
+        WinitKeyCode::Digit2 => Some('2'),
+        WinitKeyCode::Digit3 => Some('3'),
+        WinitKeyCode::Digit4 => Some('4'),
+        WinitKeyCode::Digit5 => Some('5'),
+        WinitKeyCode::Digit6 => Some('6'),
+        WinitKeyCode::Digit7 => Some('7'),
+        WinitKeyCode::Digit8 => Some('8'),
+        WinitKeyCode::Digit9 => Some('9'),
+        WinitKeyCode::KeyA => Some('a'),
+        WinitKeyCode::KeyB => Some('b'),
+        WinitKeyCode::KeyC => Some('c'),
+        WinitKeyCode::KeyD => Some('d'),
+        WinitKeyCode::KeyE => Some('e'),
+        WinitKeyCode::KeyF => Some('f'),
+        WinitKeyCode::KeyG => Some('g'),
+        WinitKeyCode::KeyH => Some('h'),
+        WinitKeyCode::KeyI => Some('i'),
+        WinitKeyCode::KeyJ => Some('j'),
+        WinitKeyCode::KeyK => Some('k'),
+        WinitKeyCode::KeyL => Some('l'),
+        WinitKeyCode::KeyM => Some('m'),
+        WinitKeyCode::KeyN => Some('n'),
+        WinitKeyCode::KeyO => Some('o'),
+        WinitKeyCode::KeyP => Some('p'),
+        WinitKeyCode::KeyQ => Some('q'),
+        WinitKeyCode::KeyR => Some('r'),
+        WinitKeyCode::KeyS => Some('s'),
+        WinitKeyCode::KeyT => Some('t'),
+        WinitKeyCode::KeyU => Some('u'),
+        WinitKeyCode::KeyV => Some('v'),
+        WinitKeyCode::KeyW => Some('w'),
+        WinitKeyCode::KeyX => Some('x'),
+        WinitKeyCode::KeyY => Some('y'),
+        WinitKeyCode::KeyZ => Some('z'),
+        WinitKeyCode::Backquote => Some('`'),
+        WinitKeyCode::Backslash => Some('\\'),
+        WinitKeyCode::BracketLeft => Some('['),
+        WinitKeyCode::BracketRight => Some(']'),
+        WinitKeyCode::Comma => Some(','),
+        WinitKeyCode::Equal => Some('='),
+        WinitKeyCode::Minus => Some('-'),
+        WinitKeyCode::Period => Some('.'),
+        WinitKeyCode::Quote => Some('\''),
+        WinitKeyCode::Semicolon => Some(';'),
+        WinitKeyCode::Slash => Some('/'),
+        WinitKeyCode::Space => Some(' '),
+        _ => None,
     }
 }
 
@@ -211,25 +421,40 @@ fn runtime_key_from_winit_ref(key: Key<&str>) -> Option<RuntimeKey> {
         Key::Named(NamedKey::F19) => Some(RuntimeKey::F(19)),
         Key::Named(NamedKey::F20) => Some(RuntimeKey::F(20)),
         Key::Character(text) => {
-            let mut chars = text.chars();
-            let ch = chars.next()?;
-            if chars.next().is_some() {
-                return None;
-            }
+            let ch = single_char(text)?;
             Some(RuntimeKey::Character(ch))
         }
         _ => None,
     }
 }
 
+fn character_from_winit_key(key: Key<&str>) -> Option<char> {
+    match key {
+        Key::Character(text) => single_char(text),
+        _ => None,
+    }
+}
+
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(ch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         encode_crossterm_key_event, encode_winit_text_bytes, is_runtime_palette_shortcut_winit,
-        runtime_key_from_crossterm, runtime_key_from_winit_borrowed,
+        runtime_key_event_from_crossterm, runtime_key_from_crossterm,
+        runtime_key_from_winit_borrowed,
     };
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use rldyourterm_core::{RuntimeKey, RuntimeKeyModifiers, TerminalModeFlags};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use rldyourterm_core::{
+        RuntimeKey, RuntimeKeyEventKind, RuntimeKeyModifiers, TerminalModeFlags,
+    };
     use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
     fn encode_key(key_event: KeyEvent) -> Option<Vec<u8>> {
@@ -240,12 +465,7 @@ mod tests {
     fn encode_winit_text_bytes_prefers_plain_text_without_modifiers() {
         let bytes = encode_winit_text_bytes(
             Some("x"),
-            RuntimeKeyModifiers {
-                shift: false,
-                alt: false,
-                control: false,
-                super_key: false,
-            },
+            RuntimeKeyModifiers::default(),
             TerminalModeFlags::default(),
         );
         assert_eq!(bytes, Some(vec![b'x']));
@@ -256,10 +476,8 @@ mod tests {
         let bytes = encode_winit_text_bytes(
             Some("x"),
             RuntimeKeyModifiers {
-                shift: false,
                 alt: true,
-                control: false,
-                super_key: false,
+                ..Default::default()
             },
             TerminalModeFlags::default(),
         );
@@ -271,10 +489,8 @@ mod tests {
         let bytes = encode_winit_text_bytes(
             Some("x"),
             RuntimeKeyModifiers {
-                shift: false,
-                alt: false,
                 control: true,
-                super_key: false,
+                ..Default::default()
             },
             TerminalModeFlags::default(),
         );
@@ -286,10 +502,8 @@ mod tests {
         let bytes = encode_winit_text_bytes(
             Some("x"),
             RuntimeKeyModifiers {
-                shift: false,
                 alt: true,
-                control: false,
-                super_key: false,
+                ..Default::default()
             },
             TerminalModeFlags {
                 meta_sends_escape: false,
@@ -318,6 +532,33 @@ mod tests {
             runtime_key_from_crossterm(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
             Some(RuntimeKey::Up)
         );
+    }
+
+    #[test]
+    fn crossterm_shifted_character_normalizes_key_text_and_event_kind() {
+        let key_event = KeyEvent::new_with_kind(
+            KeyCode::Char('A'),
+            KeyModifiers::SHIFT,
+            KeyEventKind::Repeat,
+        );
+        let runtime_event =
+            runtime_key_event_from_crossterm(key_event).expect("shifted character must map");
+
+        assert_eq!(runtime_event.key, RuntimeKey::Character('a'));
+        assert_eq!(runtime_event.kind, RuntimeKeyEventKind::Repeat);
+        assert_eq!(runtime_event.shifted_key, Some('A'));
+        assert_eq!(runtime_event.associated_text.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn crossterm_shifted_symbol_normalizes_key_text() {
+        let key_event = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT);
+        let runtime_event =
+            runtime_key_event_from_crossterm(key_event).expect("shifted symbol must map");
+
+        assert_eq!(runtime_event.key, RuntimeKey::Character('='));
+        assert_eq!(runtime_event.shifted_key, Some('+'));
+        assert_eq!(runtime_event.associated_text.as_deref(), Some("+"));
     }
 
     #[test]

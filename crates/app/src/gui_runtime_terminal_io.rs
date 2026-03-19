@@ -69,35 +69,39 @@ impl GuiRuntimeApp {
         event: &WinitKeyEvent,
         event_loop: &ActiveEventLoop,
     ) {
-        if event.state != ElementState::Pressed {
-            return;
-        }
+        let press_like = event.state == ElementState::Pressed;
 
-        if is_local_shutdown_key_winit(event, self.interaction.modifiers) {
+        if press_like && is_local_shutdown_key_winit(event, self.interaction.modifiers) {
             self.emit_close_intent();
             self.exit_code.get_or_insert(0);
             event_loop.exit();
             return;
         }
 
-        if is_runtime_palette_shortcut_winit(event.logical_key.as_ref(), self.interaction.modifiers)
+        if press_like
+            && is_runtime_palette_shortcut_winit(
+                event.logical_key.as_ref(),
+                self.interaction.modifiers,
+            )
         {
             self.toggle_palette();
             return;
         }
 
-        match self.handle_palette_action(event) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(error) => {
-                self.fatal_error = Some(error);
-                event_loop.exit();
-                return;
+        if press_like {
+            match self.handle_palette_action(event) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    self.fatal_error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
             }
         }
 
         // Scrollback navigation: Shift+PageUp/Down adjusts viewport_offset
-        if self.interaction.modifiers.shift_key() {
+        if press_like && self.interaction.modifiers.shift_key() {
             match &event.logical_key {
                 Key::Named(NamedKey::PageUp) => {
                     let page_size = self.terminal.grid.height() as usize / 2;
@@ -120,13 +124,10 @@ impl GuiRuntimeApp {
             }
         }
 
-        if is_paste_shortcut(&event.logical_key, self.interaction.modifiers) {
+        if press_like && is_paste_shortcut(&event.logical_key, self.interaction.modifiers) {
             self.handle_clipboard_paste(event_loop);
             return;
         }
-
-        // Clear text selection on any key press that produces PTY input.
-        self.clear_selection();
 
         let modes = TerminalModeFlags {
             application_cursor_keys: self.terminal.application_cursor_keys_enabled(),
@@ -137,6 +138,10 @@ impl GuiRuntimeApp {
         let bytes = shared_encode_winit_key_event(event, self.interaction.modifiers, modes);
 
         if let Some(ref bytes) = bytes {
+            // Preserve the current selection on release-only events.
+            if press_like {
+                self.clear_selection();
+            }
             trace!(key = ?event.logical_key, len = bytes.len(), "keyboard input to PTY");
             let _ =
                 self.write_pty_payload(bytes, event_loop, "failed to write keyboard input to PTY");

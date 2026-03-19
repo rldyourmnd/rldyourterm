@@ -260,13 +260,15 @@ pub fn run_interactive_pty(
         poll_controller.on_terminal_event();
 
         match terminal_event {
-            Event::Key(key_event) if is_press_like(key_event.kind) => {
-                if is_local_shutdown_key_crossterm(key_event) {
+            Event::Key(key_event) => {
+                let press_like = is_press_like(key_event.kind);
+
+                if press_like && is_local_shutdown_key_crossterm(key_event) {
                     requested_local_exit = true;
                     break;
                 }
 
-                if is_runtime_palette_shortcut_crossterm(key_event) {
+                if press_like && is_runtime_palette_shortcut_crossterm(key_event) {
                     let decision = toggle_runtime_palette(palette_open);
                     palette_open = decision.next_open;
                     if let Some(notice) = decision.notice {
@@ -275,7 +277,7 @@ pub fn run_interactive_pty(
                     continue;
                 }
 
-                if palette_open {
+                if press_like && palette_open {
                     let diagnostics_enabled = settings.state().debug_mode;
                     let decision = handle_runtime_palette_key_input(
                         palette_open,

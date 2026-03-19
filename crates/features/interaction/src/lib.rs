@@ -24,6 +24,7 @@ pub use palette::{
     runtime_palette_status_line, toggle_runtime_palette,
 };
 pub use rldyourterm_core::{
-    RuntimeKey, RuntimeKeyEvent, RuntimeKeyModifiers, TerminalModeFlags, encode_runtime_key_event,
+    RuntimeKey, RuntimeKeyEvent, RuntimeKeyEventKind, RuntimeKeyModifiers, TerminalModeFlags,
+    encode_runtime_key_event,
 };
 pub use state::{GridPoint, InteractionState, PointerState, SelectionRange};
