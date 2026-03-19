@@ -6,7 +6,8 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::{
     events::{CoreEvent, DisplayClearMode, LineClearMode},
-    grid::{Attrs, Color, Grid},
+    grid::{Attrs, Color, Grid, UnderlineStyle},
+    parser::{SgrParam, SgrParams},
     scrollback::Scrollback,
 };
 
@@ -339,7 +340,7 @@ impl TerminalState {
         events.push(CoreEvent::LineCleared { row, mode });
     }
 
-    pub(super) fn apply_sgr(&mut self, params: &[Option<u16>]) {
+    pub(super) fn apply_sgr(&mut self, params: &SgrParams) {
         if params.is_empty() {
             self.pen = Attrs::default();
             return;
@@ -347,30 +348,27 @@ impl TerminalState {
 
         let mut i = 0;
         while i < params.len() {
-            let code = params[i].unwrap_or(0);
+            let Some(param) = params.get(i) else {
+                break;
+            };
+            let code = param.value().unwrap_or(0);
             match code {
                 0 => self.pen = Attrs::default(),
                 1 => self.pen.set_bold(true),
                 2 => self.pen.set_dim(true),
                 3 => self.pen.set_italic(true),
-                4 => self.pen.set_underline(true),
+                4 => self.pen.set_underline_style(parse_underline_style(param)),
                 5 | 6 => self.pen.set_blink(true),
                 7 => self.pen.set_inverse(true),
                 8 => self.pen.set_hidden(true),
                 9 => self.pen.set_strikethrough(true),
-                21 => {
-                    self.pen.set_underline(false);
-                    self.pen.set_double_underline(true);
-                }
+                21 => self.pen.set_underline_style(UnderlineStyle::Double),
                 22 => {
                     self.pen.set_bold(false);
                     self.pen.set_dim(false);
                 }
                 23 => self.pen.set_italic(false),
-                24 => {
-                    self.pen.set_underline(false);
-                    self.pen.set_double_underline(false);
-                }
+                24 => self.pen.set_underline_style(UnderlineStyle::None),
                 25 => self.pen.set_blink(false),
                 27 => self.pen.set_inverse(false),
                 28 => self.pen.set_hidden(false),
@@ -399,7 +397,7 @@ impl TerminalState {
                 59 => self.pen.underline_color = Color::Default,
                 90..=97 => self.pen.fg = Color::Indexed((code - 90 + 8) as u8),
                 100..=107 => self.pen.bg = Color::Indexed((code - 100 + 8) as u8),
-                _ => {} // ignore unknown SGR codes
+                _ => {}
             }
             i += 1;
         }
@@ -609,22 +607,60 @@ impl TerminalState {
     }
 }
 
-fn parse_extended_color(params: &[Option<u16>], i: &mut usize) -> Option<Color> {
-    let next = params.get(*i + 1).copied().flatten()?;
+fn parse_underline_style(param: SgrParam) -> UnderlineStyle {
+    match param.subparams().first().copied().flatten() {
+        Some(0) => UnderlineStyle::None,
+        None | Some(1) => UnderlineStyle::Single,
+        Some(2) => UnderlineStyle::Double,
+        Some(3) => UnderlineStyle::Curly,
+        Some(4) => UnderlineStyle::Dotted,
+        Some(5) => UnderlineStyle::Dashed,
+        Some(_) => UnderlineStyle::Single,
+    }
+}
+
+fn parse_extended_color(params: &SgrParams, i: &mut usize) -> Option<Color> {
+    let param = params.get(*i)?;
+    if !param.subparams().is_empty() {
+        return parse_colon_extended_color(param);
+    }
+
+    let next = params.get(*i + 1)?.value()?;
     match next {
         5 => {
-            // 256-color: 38;5;N or 48;5;N (valid range 0-255)
-            let n = params.get(*i + 2).copied().flatten()?;
+            let index = u8::try_from(params.get(*i + 2)?.value()?).ok()?;
             *i += 2;
-            let index = u8::try_from(n).ok()?;
             Some(Color::Indexed(index))
         }
         2 => {
-            // truecolor: 38;2;R;G;B or 48;2;R;G;B (valid range 0-255 per component)
-            let r = params.get(*i + 2).copied().flatten()?;
-            let g = params.get(*i + 3).copied().flatten()?;
-            let b = params.get(*i + 4).copied().flatten()?;
+            let r = params.get(*i + 2)?.value()?;
+            let g = params.get(*i + 3)?.value()?;
+            let b = params.get(*i + 4)?.value()?;
             *i += 4;
+            Some(Color::Rgb(
+                u8::try_from(r).ok()?,
+                u8::try_from(g).ok()?,
+                u8::try_from(b).ok()?,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn parse_colon_extended_color(param: SgrParam) -> Option<Color> {
+    let subparams = param.subparams();
+    let mode = subparams.first().copied().flatten()?;
+    match mode {
+        5 => {
+            let index = u8::try_from(subparams.get(1).copied().flatten()?).ok()?;
+            Some(Color::Indexed(index))
+        }
+        2 => {
+            let (r, g, b) = match subparams {
+                [Some(2), Some(r), Some(g), Some(b), ..] => (*r, *g, *b),
+                [Some(2), None, Some(r), Some(g), Some(b), ..] => (*r, *g, *b),
+                _ => return None,
+            };
             Some(Color::Rgb(
                 u8::try_from(r).ok()?,
                 u8::try_from(g).ok()?,

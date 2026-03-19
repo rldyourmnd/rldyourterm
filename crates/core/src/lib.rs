@@ -16,7 +16,7 @@ mod state;
 pub use cursor::Cursor;
 pub use grid::{
     ANSI_PALETTE, Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_BG, DEFAULT_FG, Grid,
-    color_to_u32,
+    UnderlineStyle, color_to_u32,
 };
 // Keep parser module private while preserving a narrow tooling surface for direct fuzz harnesses.
 pub use parser::Parser;

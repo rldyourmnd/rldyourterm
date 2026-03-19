@@ -3,7 +3,7 @@
 
 use crate::events::{DisplayClearMode, IngestDegradeReason, LineClearMode};
 
-use super::{MAX_CSI_LEN, MAX_OSC_LEN, Parser, ParserAction, SgrParams};
+use super::{MAX_CSI_LEN, MAX_OSC_LEN, Parser, ParserAction, SgrParam, SgrParams};
 
 #[test]
 fn parses_printable_and_basic_controls() {
@@ -168,6 +168,33 @@ fn parses_sgr_truecolor() {
         actions,
         vec![ParserAction::SetGraphicsRendition(SgrParams::from_slice(
             &[Some(38), Some(2), Some(255), Some(128), Some(0),]
+        ))]
+    );
+}
+
+#[test]
+fn parses_sgr_colon_truecolor() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[38:2::255:128:0m");
+    assert_eq!(
+        actions,
+        vec![ParserAction::SetGraphicsRendition(SgrParams::from_params(
+            &[SgrParam::with_subparams(
+                Some(38),
+                &[Some(2), None, Some(255), Some(128), Some(0)],
+            )]
+        ))]
+    );
+}
+
+#[test]
+fn parses_sgr_colon_underline_style() {
+    let mut parser = Parser::default();
+    let actions = parser.feed(b"\x1b[4:3m");
+    assert_eq!(
+        actions,
+        vec![ParserAction::SetGraphicsRendition(SgrParams::from_params(
+            &[SgrParam::with_subparams(Some(4), &[Some(3)])]
         ))]
     );
 }

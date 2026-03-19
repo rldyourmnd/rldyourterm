@@ -15,7 +15,7 @@ use rldyourterm_services::render_mode::GpuFailureKind;
 use rldyourterm_services::terminal::ANSI_PALETTE;
 use rldyourterm_services::terminal::{
     Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_BG, DEFAULT_FG, TerminalState,
-    color_to_u32,
+    UnderlineStyle, color_to_u32,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -110,6 +110,9 @@ const ATTR_WIDE: u32 = 1 << 24;
 const ATTR_CONTINUATION: u32 = 1 << 25;
 const ATTR_DOUBLE_UNDERLINE: u32 = 1 << 26;
 const ATTR_OVERLINE: u32 = 1 << 27;
+const ATTR_CURLY_UNDERLINE: u32 = 1 << 28;
+const ATTR_DOTTED_UNDERLINE: u32 = 1 << 29;
+const ATTR_DASHED_UNDERLINE: u32 = 1 << 30;
 
 /// Sentinel value indicating no active selection (u32::MAX).
 pub const SELECTION_NONE: u32 = u32::MAX;

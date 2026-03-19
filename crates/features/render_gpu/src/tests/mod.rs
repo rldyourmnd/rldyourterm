@@ -451,12 +451,24 @@ fn attr_flags_do_not_overlap_atlas_index() {
     assert_eq!(ATTR_BOLD & 0xFFFF, 0);
     assert_eq!(ATTR_ITALIC & 0xFFFF, 0);
     assert_eq!(ATTR_UNDERLINE & 0xFFFF, 0);
+    assert_eq!(ATTR_DOUBLE_UNDERLINE & 0xFFFF, 0);
+    assert_eq!(ATTR_CURLY_UNDERLINE & 0xFFFF, 0);
+    assert_eq!(ATTR_DOTTED_UNDERLINE & 0xFFFF, 0);
+    assert_eq!(ATTR_DASHED_UNDERLINE & 0xFFFF, 0);
     assert_eq!(ATTR_STRIKETHROUGH & 0xFFFF, 0);
     assert_eq!(ATTR_DIM & 0xFFFF, 0);
     assert_eq!(ATTR_INVERSE & 0xFFFF, 0);
-    let all_flags =
-        ATTR_BOLD | ATTR_ITALIC | ATTR_UNDERLINE | ATTR_STRIKETHROUGH | ATTR_DIM | ATTR_INVERSE;
-    assert_eq!(all_flags.count_ones(), 6);
+    let all_flags = ATTR_BOLD
+        | ATTR_ITALIC
+        | ATTR_UNDERLINE
+        | ATTR_DOUBLE_UNDERLINE
+        | ATTR_CURLY_UNDERLINE
+        | ATTR_DOTTED_UNDERLINE
+        | ATTR_DASHED_UNDERLINE
+        | ATTR_STRIKETHROUGH
+        | ATTR_DIM
+        | ATTR_INVERSE;
+    assert_eq!(all_flags.count_ones(), 10);
 }
 
 #[test]
@@ -520,6 +532,27 @@ fn pack_cell_flags_sets_double_underline_bit() {
 }
 
 #[test]
+fn pack_cell_flags_sets_curly_underline_bit() {
+    let attrs = Attrs::default().with_curly_underline();
+    let flags = pack_cell_flags(7, &attrs);
+    assert_eq!(flags & 0xFFFF, 7);
+    assert_ne!(flags & ATTR_CURLY_UNDERLINE, 0);
+    assert_eq!(flags & ATTR_UNDERLINE, 0);
+    assert_eq!(flags & ATTR_DOUBLE_UNDERLINE, 0);
+}
+
+#[test]
+fn pack_cell_flags_sets_dotted_and_dashed_bits() {
+    let dotted = pack_cell_flags(0, &Attrs::default().with_dotted_underline());
+    assert_ne!(dotted & ATTR_DOTTED_UNDERLINE, 0);
+    assert_eq!(dotted & ATTR_DASHED_UNDERLINE, 0);
+
+    let dashed = pack_cell_flags(0, &Attrs::default().with_dashed_underline());
+    assert_ne!(dashed & ATTR_DASHED_UNDERLINE, 0);
+    assert_eq!(dashed & ATTR_DOTTED_UNDERLINE, 0);
+}
+
+#[test]
 fn pack_cell_flags_sets_overline_bit() {
     let attrs = Attrs::default().with_overline();
     let flags = pack_cell_flags(0, &attrs);
@@ -566,7 +599,7 @@ fn pack_cell_flags_all_bits_combined() {
     let flags = pack_cell_flags(0xFFFF, &attrs);
     assert_ne!(flags & ATTR_BOLD, 0);
     assert_ne!(flags & ATTR_ITALIC, 0);
-    assert_ne!(flags & ATTR_UNDERLINE, 0);
+    assert_eq!(flags & ATTR_UNDERLINE, 0);
     assert_ne!(flags & ATTR_STRIKETHROUGH, 0);
     assert_ne!(flags & ATTR_DIM, 0);
     assert_ne!(flags & ATTR_INVERSE, 0);

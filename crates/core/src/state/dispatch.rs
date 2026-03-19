@@ -57,7 +57,7 @@ impl TerminalState {
             }
             ParserAction::ClearDisplay(mode) => self.apply_clear_display(mode, events),
             ParserAction::ClearLine(mode) => self.apply_clear_line(mode, events),
-            ParserAction::SetGraphicsRendition(params) => self.apply_sgr(params.as_slice()),
+            ParserAction::SetGraphicsRendition(params) => self.apply_sgr(&params),
             ParserAction::CursorSavePosition => self.apply_cursor_save(),
             ParserAction::CursorRestorePosition => self.apply_cursor_restore(events),
             ParserAction::SetCursorVisible(visible) => {
@@ -133,6 +133,20 @@ impl TerminalState {
                 events.push(CoreEvent::TerminalResponse {
                     data: b"\x1bP>|rldyourterm 0.1.0\x1b\\".to_vec(),
                 });
+            }
+            ParserAction::SendWindowSizeChars => {
+                let rows = self.grid.height();
+                let cols = self.grid.width();
+                events.push(CoreEvent::TerminalResponse {
+                    data: format!("\x1b[8;{rows};{cols}t").into_bytes(),
+                });
+            }
+            ParserAction::SendWindowSizePixels => {
+                if let Some((width, height)) = self.viewport_pixels {
+                    events.push(CoreEvent::TerminalResponse {
+                        data: format!("\x1b[4;{height};{width}t").into_bytes(),
+                    });
+                }
             }
             ParserAction::RequestModeReport(mode) => {
                 let setting = match self.is_private_mode_set(mode) {

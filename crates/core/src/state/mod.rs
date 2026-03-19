@@ -111,6 +111,7 @@ pub struct TerminalState {
     pub(super) last_printed_char: Option<char>,
     pub(super) tab_stops: Vec<bool>,
     pub(super) current_hyperlink: Option<String>,
+    pub(super) viewport_pixels: Option<(u32, u32)>,
 }
 
 impl TerminalState {
@@ -146,6 +147,7 @@ impl TerminalState {
             last_printed_char: None,
             tab_stops: Self::default_tab_stops(width),
             current_hyperlink: None,
+            viewport_pixels: None,
         }
     }
 
@@ -314,6 +316,10 @@ impl TerminalState {
             alt.cursor.col = alt.cursor.col.min(new_width.saturating_sub(1));
             alt.cursor.wrap_pending = false;
         }
+    }
+
+    pub fn set_viewport_pixels(&mut self, width: u32, height: u32) {
+        self.viewport_pixels = Some((width, height));
     }
 
     #[cfg(test)]

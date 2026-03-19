@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use super::{
-    ATTR_BLINK, ATTR_BOLD, ATTR_CONTINUATION, ATTR_DIM, ATTR_DOUBLE_UNDERLINE, ATTR_HIDDEN,
-    ATTR_INVERSE, ATTR_ITALIC, ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE, Attrs,
+    ATTR_BLINK, ATTR_BOLD, ATTR_CONTINUATION, ATTR_CURLY_UNDERLINE, ATTR_DASHED_UNDERLINE,
+    ATTR_DIM, ATTR_DOTTED_UNDERLINE, ATTR_DOUBLE_UNDERLINE, ATTR_HIDDEN, ATTR_INVERSE, ATTR_ITALIC,
+    ATTR_OVERLINE, ATTR_STRIKETHROUGH, ATTR_UNDERLINE, ATTR_WIDE, Attrs,
     CELL_BUFFER_SHRINK_FRAME_STREAK_THRESHOLD, CELL_BUFFER_SHRINK_UTILIZATION_DIVISOR, CELL_HEIGHT,
     CELL_WIDTH, Cell, CellInstance, Color, DEFAULT_BG, DEFAULT_FG, GpuBackend,
-    INITIAL_CELL_BUFFER_CAPACITY, TerminalState, color_to_u32,
+    INITIAL_CELL_BUFFER_CAPACITY, TerminalState, UnderlineStyle, color_to_u32,
 };
 use crate::atlas::ensure_glyph_in_atlas;
 use tracing::{debug, info};
@@ -19,9 +20,6 @@ pub(super) fn pack_cell_flags(slot: u16, attrs: &super::Attrs) -> u32 {
     }
     if attrs.italic() {
         flags |= ATTR_ITALIC;
-    }
-    if attrs.underline() {
-        flags |= ATTR_UNDERLINE;
     }
     if attrs.strikethrough() {
         flags |= ATTR_STRIKETHROUGH;
@@ -38,8 +36,13 @@ pub(super) fn pack_cell_flags(slot: u16, attrs: &super::Attrs) -> u32 {
     if attrs.hidden() {
         flags |= ATTR_HIDDEN;
     }
-    if attrs.double_underline() {
-        flags |= ATTR_DOUBLE_UNDERLINE;
+    match attrs.underline_style() {
+        UnderlineStyle::None => {}
+        UnderlineStyle::Single => flags |= ATTR_UNDERLINE,
+        UnderlineStyle::Double => flags |= ATTR_DOUBLE_UNDERLINE,
+        UnderlineStyle::Curly => flags |= ATTR_CURLY_UNDERLINE,
+        UnderlineStyle::Dotted => flags |= ATTR_DOTTED_UNDERLINE,
+        UnderlineStyle::Dashed => flags |= ATTR_DASHED_UNDERLINE,
     }
     if attrs.overline() {
         flags |= ATTR_OVERLINE;
@@ -156,7 +159,7 @@ impl GpuBackend {
                 }
 
                 // Resolve underline decoration color for shader (SGR 58).
-                let ul_color = if attrs.underline() || attrs.double_underline() {
+                let ul_color = if attrs.has_underline() {
                     if attrs.underline_color == Color::Default {
                         fg
                     } else {
@@ -222,7 +225,7 @@ impl GpuBackend {
             let flags = pack_cell_flags(slot, &cell.attrs);
             let fg = color_to_u32(cell.attrs.fg, DEFAULT_FG);
             let bg = color_to_u32(cell.attrs.bg, DEFAULT_BG);
-            let ul = if cell.attrs.underline() || cell.attrs.double_underline() {
+            let ul = if cell.attrs.has_underline() {
                 if cell.attrs.underline_color == Color::Default {
                     fg
                 } else {

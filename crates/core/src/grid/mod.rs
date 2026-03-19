@@ -20,16 +20,28 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u16)]
+pub enum UnderlineStyle {
+    #[default]
+    None = 0,
+    Single = 1,
+    Double = 2,
+    Curly = 3,
+    Dotted = 4,
+    Dashed = 5,
+}
+
 const ATTR_BOLD: u16 = 1 << 0;
 const ATTR_DIM: u16 = 1 << 1;
 const ATTR_ITALIC: u16 = 1 << 2;
-const ATTR_UNDERLINE: u16 = 1 << 3;
-const ATTR_DOUBLE_UNDERLINE: u16 = 1 << 4;
-const ATTR_OVERLINE: u16 = 1 << 5;
-const ATTR_INVERSE: u16 = 1 << 6;
-const ATTR_HIDDEN: u16 = 1 << 7;
-const ATTR_BLINK: u16 = 1 << 8;
-const ATTR_STRIKETHROUGH: u16 = 1 << 9;
+const ATTR_UNDERLINE_STYLE_SHIFT: u16 = 3;
+const ATTR_UNDERLINE_STYLE_MASK: u16 = 0b111 << ATTR_UNDERLINE_STYLE_SHIFT;
+const ATTR_OVERLINE: u16 = 1 << 6;
+const ATTR_INVERSE: u16 = 1 << 7;
+const ATTR_HIDDEN: u16 = 1 << 8;
+const ATTR_BLINK: u16 = 1 << 9;
+const ATTR_STRIKETHROUGH: u16 = 1 << 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Attrs {
@@ -70,17 +82,51 @@ impl Attrs {
     pub fn set_italic(&mut self, v: bool) {
         self.set(ATTR_ITALIC, v);
     }
+    pub fn underline_style(&self) -> UnderlineStyle {
+        match (self.flags & ATTR_UNDERLINE_STYLE_MASK) >> ATTR_UNDERLINE_STYLE_SHIFT {
+            1 => UnderlineStyle::Single,
+            2 => UnderlineStyle::Double,
+            3 => UnderlineStyle::Curly,
+            4 => UnderlineStyle::Dotted,
+            5 => UnderlineStyle::Dashed,
+            _ => UnderlineStyle::None,
+        }
+    }
+    pub fn set_underline_style(&mut self, style: UnderlineStyle) {
+        self.flags &= !ATTR_UNDERLINE_STYLE_MASK;
+        self.flags |= (style as u16) << ATTR_UNDERLINE_STYLE_SHIFT;
+    }
+    pub fn has_underline(&self) -> bool {
+        self.underline_style() != UnderlineStyle::None
+    }
     pub fn underline(&self) -> bool {
-        self.get(ATTR_UNDERLINE)
+        self.underline_style() == UnderlineStyle::Single
     }
     pub fn set_underline(&mut self, v: bool) {
-        self.set(ATTR_UNDERLINE, v);
+        self.set_underline_style(if v {
+            UnderlineStyle::Single
+        } else {
+            UnderlineStyle::None
+        });
     }
     pub fn double_underline(&self) -> bool {
-        self.get(ATTR_DOUBLE_UNDERLINE)
+        self.underline_style() == UnderlineStyle::Double
     }
     pub fn set_double_underline(&mut self, v: bool) {
-        self.set(ATTR_DOUBLE_UNDERLINE, v);
+        self.set_underline_style(if v {
+            UnderlineStyle::Double
+        } else {
+            UnderlineStyle::None
+        });
+    }
+    pub fn curly_underline(&self) -> bool {
+        self.underline_style() == UnderlineStyle::Curly
+    }
+    pub fn dotted_underline(&self) -> bool {
+        self.underline_style() == UnderlineStyle::Dotted
+    }
+    pub fn dashed_underline(&self) -> bool {
+        self.underline_style() == UnderlineStyle::Dashed
     }
     pub fn overline(&self) -> bool {
         self.get(ATTR_OVERLINE)
@@ -152,6 +198,21 @@ impl Attrs {
     #[must_use]
     pub fn with_double_underline(mut self) -> Self {
         self.set_double_underline(true);
+        self
+    }
+    #[must_use]
+    pub fn with_curly_underline(mut self) -> Self {
+        self.set_underline_style(UnderlineStyle::Curly);
+        self
+    }
+    #[must_use]
+    pub fn with_dotted_underline(mut self) -> Self {
+        self.set_underline_style(UnderlineStyle::Dotted);
+        self
+    }
+    #[must_use]
+    pub fn with_dashed_underline(mut self) -> Self {
+        self.set_underline_style(UnderlineStyle::Dashed);
         self
     }
     #[must_use]

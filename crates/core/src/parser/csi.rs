@@ -5,7 +5,10 @@ use crate::events::{DisplayClearMode, LineClearMode};
 
 use crate::state::{MouseFormat, MouseMode};
 
-use super::{CsiParams, MAX_CSI_PARAMS, Parser, ParserAction, SgrParams};
+use super::{
+    CsiParams, MAX_CSI_PARAMS, MAX_SGR_PARAMS, MAX_SGR_SUBPARAMS, Parser, ParserAction, SgrParam,
+    SgrParams,
+};
 
 impl Parser {
     pub(super) fn complete_csi(&mut self, actions: &mut Vec<ParserAction>) {
@@ -101,6 +104,12 @@ impl Parser {
     }
 
     fn parse_standard_csi_action(&self, params_raw: &[u8], final_byte: u8) -> Option<ParserAction> {
+        if final_byte == b'm' {
+            return Some(ParserAction::SetGraphicsRendition(
+                parse_sgr_params(params_raw).ok()?,
+            ));
+        }
+
         let parsed = parse_params(params_raw).ok()?;
 
         match final_byte {
@@ -143,9 +152,6 @@ impl Parser {
                     _ => return None,
                 }))
             }
-            b'm' => Some(ParserAction::SetGraphicsRendition(SgrParams::from_slice(
-                parsed.as_slice(),
-            ))),
             b's' => Some(ParserAction::CursorSavePosition),
             b'u' => Some(ParserAction::CursorRestorePosition),
             b'L' => Some(ParserAction::InsertLines(step_param(&parsed))),
@@ -176,6 +182,11 @@ impl Parser {
                     None
                 }
             }
+            b't' => match parsed.first().and_then(|p| p).unwrap_or(0) {
+                14 => Some(ParserAction::SendWindowSizePixels),
+                18 => Some(ParserAction::SendWindowSizeChars),
+                _ => None,
+            },
             b'n' => {
                 let param = parsed.first().and_then(|p| p)?;
                 match param {
@@ -339,6 +350,96 @@ fn parse_params(input: &[u8]) -> Result<CsiParams, ()> {
     params[count as usize] = current.map(|v| v as u16);
     count += 1;
     Ok(CsiParams { params, len: count })
+}
+
+fn parse_sgr_params(input: &[u8]) -> Result<SgrParams, ()> {
+    if input.is_empty() {
+        return Ok(SgrParams::default());
+    }
+
+    let mut params = [SgrParam::default(); MAX_SGR_PARAMS];
+    let mut param_count = 0usize;
+
+    let mut current_param = SgrParam::default();
+    let mut current_value: Option<u32> = None;
+    let mut in_subparams = false;
+
+    for &byte in input {
+        match byte {
+            b'0'..=b'9' => {
+                let digit = u32::from(byte - b'0');
+                let next = current_value
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(digit);
+                current_value = Some(next.min(u16::MAX as u32));
+            }
+            b':' => {
+                if in_subparams {
+                    push_sgr_subparam(&mut current_param, current_value.map(|value| value as u16));
+                } else {
+                    current_param = SgrParam::new(current_value.map(|value| value as u16));
+                    in_subparams = true;
+                }
+                current_value = None;
+            }
+            b';' => {
+                finalize_sgr_param(
+                    &mut params,
+                    &mut param_count,
+                    &mut current_param,
+                    current_value,
+                    in_subparams,
+                );
+                current_value = None;
+                in_subparams = false;
+            }
+            _ => return Err(()),
+        }
+    }
+
+    finalize_sgr_param(
+        &mut params,
+        &mut param_count,
+        &mut current_param,
+        current_value,
+        in_subparams,
+    );
+
+    Ok(SgrParams::from_params(&params[..param_count]))
+}
+
+fn push_sgr_subparam(param: &mut SgrParam, value: Option<u16>) {
+    let mut subparams = [None; MAX_SGR_SUBPARAMS];
+    let existing = param.subparams();
+    let mut sub_len = existing.len();
+    subparams[..sub_len].copy_from_slice(existing);
+    if sub_len < MAX_SGR_SUBPARAMS {
+        subparams[sub_len] = value;
+        sub_len += 1;
+    }
+    *param = SgrParam::with_subparams(param.value(), &subparams[..sub_len]);
+}
+
+fn finalize_sgr_param(
+    params: &mut [SgrParam; MAX_SGR_PARAMS],
+    param_count: &mut usize,
+    current_param: &mut SgrParam,
+    current_value: Option<u32>,
+    in_subparams: bool,
+) {
+    if in_subparams {
+        push_sgr_subparam(current_param, current_value.map(|value| value as u16));
+    } else {
+        *current_param = SgrParam::new(current_value.map(|value| value as u16));
+    }
+
+    if *param_count < MAX_SGR_PARAMS {
+        params[*param_count] = *current_param;
+        *param_count += 1;
+    }
+
+    *current_param = SgrParam::default();
 }
 
 fn step_param(parsed: &CsiParams) -> u16 {

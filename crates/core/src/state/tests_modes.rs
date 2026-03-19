@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
 use crate::events::{CoreEvent, DisplayClearMode};
-use crate::grid::{Attrs, Color};
+use crate::grid::{Attrs, Color, UnderlineStyle};
 
 use super::{MouseFormat, MouseMode, TerminalState};
 
@@ -836,6 +836,40 @@ fn device_ok_emits_terminal_response() {
 }
 
 #[test]
+fn xtwinops_character_size_query_emits_terminal_response() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let events = state.feed(b"\x1b[18t");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[8;5;10t"))
+    );
+}
+
+#[test]
+fn xtwinops_pixel_size_query_emits_terminal_response_when_metadata_exists() {
+    let mut state = TerminalState::new(10, 5, 5);
+    state.set_viewport_pixels(800, 600);
+    let events = state.feed(b"\x1b[14t");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, CoreEvent::TerminalResponse { data } if data == b"\x1b[4;600;800t")
+        )
+    );
+}
+
+#[test]
+fn xtwinops_pixel_size_query_is_silent_without_metadata() {
+    let mut state = TerminalState::new(10, 5, 5);
+    let events = state.feed(b"\x1b[14t");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, CoreEvent::TerminalResponse { .. }))
+    );
+}
+
+#[test]
 fn deferred_wrap_sets_flag_at_last_column() {
     let mut state = TerminalState::new(3, 2, 5);
     let _ = state.feed(b"abc");
@@ -1202,10 +1236,29 @@ fn sgr_double_underline_sets_and_resets() {
     let _ = state.feed(b"\x1b[21m");
     assert!(state.pen.double_underline());
     assert!(!state.pen.underline());
+    assert_eq!(state.pen.underline_style(), UnderlineStyle::Double);
     // SGR 24 resets both underline and double_underline
     let _ = state.feed(b"\x1b[24m");
     assert!(!state.pen.double_underline());
     assert!(!state.pen.underline());
+    assert_eq!(state.pen.underline_style(), UnderlineStyle::None);
+}
+
+#[test]
+fn sgr_colon_underline_variants_switch_styles() {
+    let mut state = TerminalState::new(10, 5, 5);
+
+    let _ = state.feed(b"\x1b[4:3m");
+    assert_eq!(state.pen.underline_style(), UnderlineStyle::Curly);
+
+    let _ = state.feed(b"\x1b[4:4m");
+    assert_eq!(state.pen.underline_style(), UnderlineStyle::Dotted);
+
+    let _ = state.feed(b"\x1b[4:5m");
+    assert_eq!(state.pen.underline_style(), UnderlineStyle::Dashed);
+
+    let _ = state.feed(b"\x1b[4:0m");
+    assert_eq!(state.pen.underline_style(), UnderlineStyle::None);
 }
 
 #[test]
@@ -1222,6 +1275,16 @@ fn sgr_underline_color_sets_rgb() {
     let mut state = TerminalState::new(10, 5, 5);
     // SGR 58;2;255;0;128 sets underline color to RGB(255,0,128)
     let _ = state.feed(b"\x1b[58;2;255;0;128m");
+    assert_eq!(state.pen.underline_color, Color::Rgb(255, 0, 128));
+}
+
+#[test]
+fn sgr_colon_extended_colors_set_fg_bg_and_underline_color() {
+    let mut state = TerminalState::new(10, 5, 5);
+
+    let _ = state.feed(b"\x1b[38:2::12:34:56;48:5:42;58:2::255:0:128m");
+    assert_eq!(state.pen.fg, Color::Rgb(12, 34, 56));
+    assert_eq!(state.pen.bg, Color::Indexed(42));
     assert_eq!(state.pen.underline_color, Color::Rgb(255, 0, 128));
 }
 

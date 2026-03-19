@@ -162,6 +162,23 @@ fn parses_device_ok_query() {
     assert_eq!(actions, vec![ParserAction::SendDeviceOk]);
 }
 
+#[test]
+fn parses_xtwinops_size_queries() {
+    let mut parser = Parser::default();
+    assert_eq!(
+        parser.feed(b"\x1b[18t"),
+        vec![ParserAction::SendWindowSizeChars]
+    );
+    assert_eq!(
+        parser.feed(b"\x1b[14t"),
+        vec![ParserAction::SendWindowSizePixels]
+    );
+    assert_eq!(
+        parser.feed(b"\x1b[14;2t"),
+        vec![ParserAction::SendWindowSizePixels]
+    );
+}
+
 // ── Coverage gap tests: boundary conditions ────────────────
 
 #[test]

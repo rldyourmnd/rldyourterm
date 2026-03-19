@@ -4,7 +4,7 @@
 use rldyourterm_font::{GlyphBitmap, GlyphCache};
 use rldyourterm_services::terminal::{
     Attrs, CELL_HEIGHT, CELL_WIDTH, Cell, Color, DEFAULT_BG, DEFAULT_FG, TerminalState,
-    color_to_u32,
+    UnderlineStyle, color_to_u32,
 };
 
 pub const DEFAULT_BG_U32: u32 = rgb_to_u32(DEFAULT_BG.0, DEFAULT_BG.1, DEFAULT_BG.2);
@@ -350,23 +350,24 @@ fn render_grid_row_cells(
         }
 
         // Resolve underline decoration color (SGR 58 or fallback to fg).
-        let ul_color = if cell.attrs.underline_color == Color::Default {
-            fg
-        } else {
-            color_to_u32(cell.attrs.underline_color, DEFAULT_FG)
-        };
-
-        if cell.attrs.underline() {
-            draw_underline(buffer, width, height, x, base_y, ul_color);
+        let underline_style = cell.attrs.underline_style();
+        if underline_style != UnderlineStyle::None {
+            let ul_color = if cell.attrs.underline_color == Color::Default {
+                fg
+            } else {
+                color_to_u32(cell.attrs.underline_color, DEFAULT_FG)
+            };
+            draw_underline_decoration(buffer, width, height, x, base_y, underline_style, ul_color);
             if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
-                draw_underline(buffer, width, height, x + CELL_WIDTH, base_y, ul_color);
-            }
-        }
-
-        if cell.attrs.double_underline() {
-            draw_double_underline(buffer, width, height, x, base_y, ul_color);
-            if cell_pixel_width > CELL_WIDTH && col + 1 < visible_cols {
-                draw_double_underline(buffer, width, height, x + CELL_WIDTH, base_y, ul_color);
+                draw_underline_decoration(
+                    buffer,
+                    width,
+                    height,
+                    x + CELL_WIDTH,
+                    base_y,
+                    underline_style,
+                    ul_color,
+                );
             }
         }
 
@@ -504,6 +505,67 @@ fn draw_strikethrough(
     let row_start = line_y * width;
     let end_x = (x + CELL_WIDTH).min(width);
     buffer[row_start + x..row_start + end_x].fill(fg);
+}
+
+fn draw_underline_decoration(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    style: UnderlineStyle,
+    fg: u32,
+) {
+    match style {
+        UnderlineStyle::None => {}
+        UnderlineStyle::Single => draw_underline(buffer, width, height, x, y, fg),
+        UnderlineStyle::Double => draw_double_underline(buffer, width, height, x, y, fg),
+        UnderlineStyle::Curly => draw_curly_underline(buffer, width, height, x, y, fg),
+        UnderlineStyle::Dotted => draw_patterned_underline(buffer, width, height, x, y, fg, 2, 1),
+        UnderlineStyle::Dashed => draw_patterned_underline(buffer, width, height, x, y, fg, 4, 3),
+    }
+}
+
+fn draw_patterned_underline(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    fg: u32,
+    cycle: usize,
+    on_pixels: usize,
+) {
+    let line_y = y + CELL_HEIGHT - 1;
+    if line_y >= height || cycle == 0 {
+        return;
+    }
+    let row_start = line_y * width;
+    let end_x = (x + CELL_WIDTH).min(width);
+    for px in x..end_x {
+        if px % cycle < on_pixels {
+            buffer[row_start + px] = fg;
+        }
+    }
+}
+
+fn draw_curly_underline(
+    buffer: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    fg: u32,
+) {
+    const WAVE_OFFSETS: [usize; CELL_WIDTH] = [2, 1, 0, 1, 2, 1, 0, 1];
+
+    for (offset_x, offset_y) in WAVE_OFFSETS.iter().copied().enumerate() {
+        let px = x + offset_x;
+        let py = y + CELL_HEIGHT - 3 + offset_y;
+        if px < width && py < height {
+            buffer[py * width + px] = fg;
+        }
+    }
 }
 
 fn draw_double_underline(

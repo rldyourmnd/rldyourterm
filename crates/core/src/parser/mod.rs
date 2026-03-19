@@ -19,10 +19,48 @@ const MAX_OSC_LEN: usize = 4096;
 const REPLACEMENT_CHAR: char = '\u{FFFD}';
 
 pub const MAX_SGR_PARAMS: usize = 16;
+pub const MAX_SGR_SUBPARAMS: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SgrParam {
+    value: Option<u16>,
+    subparams: [Option<u16>; MAX_SGR_SUBPARAMS],
+    sub_len: u8,
+}
+
+impl SgrParam {
+    pub fn new(value: Option<u16>) -> Self {
+        Self {
+            value,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_subparams(value: Option<u16>, subparams: &[Option<u16>]) -> Self {
+        let mut stored = [None; MAX_SGR_SUBPARAMS];
+        let sub_len = subparams.len().min(MAX_SGR_SUBPARAMS);
+        stored[..sub_len].copy_from_slice(&subparams[..sub_len]);
+        Self {
+            value,
+            subparams: stored,
+            sub_len: sub_len as u8,
+        }
+    }
+
+    pub fn value(&self) -> Option<u16> {
+        self.value
+    }
+
+    pub fn subparams(&self) -> &[Option<u16>] {
+        &self.subparams[..self.sub_len as usize]
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SgrParams {
     params: [Option<u16>; MAX_SGR_PARAMS],
+    subparams: [[Option<u16>; MAX_SGR_SUBPARAMS]; MAX_SGR_PARAMS],
+    sub_lens: [u8; MAX_SGR_PARAMS],
     len: u8,
 }
 
@@ -33,6 +71,29 @@ impl SgrParams {
         params[..len].copy_from_slice(&slice[..len]);
         Self {
             params,
+            subparams: [[None; MAX_SGR_SUBPARAMS]; MAX_SGR_PARAMS],
+            sub_lens: [0; MAX_SGR_PARAMS],
+            len: len as u8,
+        }
+    }
+
+    pub fn from_params(slice: &[SgrParam]) -> Self {
+        let mut params = [None; MAX_SGR_PARAMS];
+        let mut subparams = [[None; MAX_SGR_SUBPARAMS]; MAX_SGR_PARAMS];
+        let mut sub_lens = [0; MAX_SGR_PARAMS];
+        let len = slice.len().min(MAX_SGR_PARAMS);
+
+        for (index, param) in slice.iter().take(len).enumerate() {
+            params[index] = param.value();
+            let stored_subparams = param.subparams();
+            sub_lens[index] = stored_subparams.len() as u8;
+            subparams[index][..stored_subparams.len()].copy_from_slice(stored_subparams);
+        }
+
+        Self {
+            params,
+            subparams,
+            sub_lens,
             len: len as u8,
         }
     }
@@ -40,12 +101,39 @@ impl SgrParams {
     pub fn as_slice(&self) -> &[Option<u16>] {
         &self.params[..self.len as usize]
     }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn get(&self, idx: usize) -> Option<SgrParam> {
+        if idx >= self.len() {
+            return None;
+        }
+
+        let sub_len = self.sub_lens[idx] as usize;
+        Some(SgrParam {
+            value: self.params[idx],
+            subparams: self.subparams[idx],
+            sub_len: sub_len as u8,
+        })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = SgrParam> + '_ {
+        (0..self.len()).filter_map(|idx| self.get(idx))
+    }
 }
 
 impl Default for SgrParams {
     fn default() -> Self {
         Self {
             params: [None; MAX_SGR_PARAMS],
+            subparams: [[None; MAX_SGR_SUBPARAMS]; MAX_SGR_PARAMS],
+            sub_lens: [0; MAX_SGR_PARAMS],
             len: 0,
         }
     }
@@ -79,10 +167,6 @@ impl CsiParams {
 
     fn first(&self) -> Option<Option<u16>> {
         self.get(0)
-    }
-
-    fn as_slice(&self) -> &[Option<u16>] {
-        &self.params[..self.len as usize]
     }
 
     fn len(&self) -> usize {
@@ -162,6 +246,8 @@ pub enum ParserAction {
     SendPrimaryDA,
     SendSecondaryDA,
     SendXtversion,
+    SendWindowSizeChars,
+    SendWindowSizePixels,
     RequestModeReport(u16),
     SendDeviceStatusReport,
     SendDeviceOk,

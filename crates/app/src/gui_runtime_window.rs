@@ -176,6 +176,8 @@ impl GuiRuntimeApp {
         );
 
         self.terminal.resize(cols, rows);
+        self.terminal
+            .set_viewport_pixels(u32::from(pixel_width), u32::from(pixel_height));
 
         if let Err(error) = self.pty.resize(PtySize {
             cols,

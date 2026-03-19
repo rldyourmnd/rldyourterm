@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Danil Silantyev, Global CEO NDDev. on.nddev.it.com (OpenNetwork)
 
-use rldyourterm_core::{Attrs, Color, TerminalState};
+use rldyourterm_core::{Attrs, Color, TerminalState, UnderlineStyle};
 use rldyourterm_integration_tests::{feed, feed_bytes, row, term, term_full};
 
 // ── Cursor movement (CSI) ───────────────────────────────────
@@ -541,6 +541,27 @@ fn sgr_underline_color() {
 }
 
 #[test]
+fn sgr_colon_extended_color_sequences_affect_subsequent_cells() {
+    let mut t = TerminalState::new(80, 24, 100);
+    feed_bytes(&mut t, b"\x1b[38:2::12:34:56;48:5:42;58:2::255:0:128mA");
+    let cells = t.grid.row_cells(0).unwrap();
+    assert_eq!(cells[0].attrs.fg, Color::Rgb(12, 34, 56));
+    assert_eq!(cells[0].attrs.bg, Color::Indexed(42));
+    assert_eq!(cells[0].attrs.underline_color, Color::Rgb(255, 0, 128));
+}
+
+#[test]
+fn sgr_colon_underline_styles_are_preserved_on_cells() {
+    let mut t = TerminalState::new(80, 24, 100);
+    feed_bytes(&mut t, b"\x1b[4:3mA\x1b[4:4mB\x1b[4:5mC\x1b[24mD");
+    let cells = t.grid.row_cells(0).unwrap();
+    assert_eq!(cells[0].attrs.underline_style(), UnderlineStyle::Curly);
+    assert_eq!(cells[1].attrs.underline_style(), UnderlineStyle::Dotted);
+    assert_eq!(cells[2].attrs.underline_style(), UnderlineStyle::Dashed);
+    assert_eq!(cells[3].attrs.underline_style(), UnderlineStyle::None);
+}
+
+#[test]
 fn sgr_bright_colors() {
     let mut t = TerminalState::new(80, 24, 100);
     // Bright foreground colors 90-97
@@ -924,6 +945,18 @@ fn da2_response_contains_terminal_type() {
         resp.contains(">0;0;0c"),
         "DA2 response should contain terminal type identifier, got: {resp}"
     );
+}
+
+#[test]
+fn xtwinops_reports_character_and_pixel_sizes() {
+    let mut t = TerminalState::new(80, 24, 100);
+    t.set_viewport_pixels(1280, 720);
+
+    let char_responses = feed(&mut t, b"\x1b[18t");
+    assert_eq!(char_responses, vec![b"\x1b[8;24;80t".to_vec()]);
+
+    let pixel_responses = feed(&mut t, b"\x1b[14t");
+    assert_eq!(pixel_responses, vec![b"\x1b[4;720;1280t".to_vec()]);
 }
 
 // ── XTVERSION response ──────────────────────────────────────

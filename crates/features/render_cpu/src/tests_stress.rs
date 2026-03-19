@@ -530,6 +530,96 @@ fn underline_draws_line_at_cell_bottom() {
     }
 }
 
+#[test]
+fn dotted_underline_draws_alternating_bottom_pixels() {
+    let cols: usize = 1;
+    let rows: usize = 1;
+    let mut state = state_with_default_scrollback(cols as u16, rows as u16);
+    state.cursor.visible = false;
+
+    let attrs = Attrs::default()
+        .with_fg(Color::Rgb(255, 255, 0))
+        .with_dotted_underline();
+    state
+        .grid
+        .put_char(0, 0, ' ', attrs)
+        .expect("put dotted underline");
+
+    let mut ctx = RenderCtx::new(cols, rows);
+    ctx.render_full(&mut state);
+
+    let ul_y = CELL_HEIGHT - 1;
+    let fg_u32 = rgb_to_u32(255, 255, 0);
+    for px in 0..CELL_WIDTH {
+        let expected = if px % 2 == 0 { fg_u32 } else { DEFAULT_BG_U32 };
+        assert_eq!(
+            ctx.pixel_at(px, ul_y),
+            expected,
+            "unexpected dotted pixel at {px}"
+        );
+    }
+}
+
+#[test]
+fn dashed_underline_draws_repeating_runs_at_cell_bottom() {
+    let cols: usize = 1;
+    let rows: usize = 1;
+    let mut state = state_with_default_scrollback(cols as u16, rows as u16);
+    state.cursor.visible = false;
+
+    let attrs = Attrs::default()
+        .with_fg(Color::Rgb(255, 128, 0))
+        .with_dashed_underline();
+    state
+        .grid
+        .put_char(0, 0, ' ', attrs)
+        .expect("put dashed underline");
+
+    let mut ctx = RenderCtx::new(cols, rows);
+    ctx.render_full(&mut state);
+
+    let ul_y = CELL_HEIGHT - 1;
+    let fg_u32 = rgb_to_u32(255, 128, 0);
+    for px in 0..CELL_WIDTH {
+        let expected = if px % 4 < 3 { fg_u32 } else { DEFAULT_BG_U32 };
+        assert_eq!(
+            ctx.pixel_at(px, ul_y),
+            expected,
+            "unexpected dashed pixel at {px}"
+        );
+    }
+}
+
+#[test]
+fn curly_underline_draws_wave_across_last_three_rows() {
+    let cols: usize = 1;
+    let rows: usize = 1;
+    let mut state = state_with_default_scrollback(cols as u16, rows as u16);
+    state.cursor.visible = false;
+
+    let attrs = Attrs::default()
+        .with_fg(Color::Rgb(0, 255, 255))
+        .with_curly_underline();
+    state
+        .grid
+        .put_char(0, 0, ' ', attrs)
+        .expect("put curly underline");
+
+    let mut ctx = RenderCtx::new(cols, rows);
+    ctx.render_full(&mut state);
+
+    let fg_u32 = rgb_to_u32(0, 255, 255);
+    let expected_offsets = [2usize, 1, 0, 1, 2, 1, 0, 1];
+    for (px, offset) in expected_offsets.iter().copied().enumerate() {
+        let py = CELL_HEIGHT - 3 + offset;
+        assert_eq!(
+            ctx.pixel_at(px, py),
+            fg_u32,
+            "missing curly pixel at ({px}, {py})"
+        );
+    }
+}
+
 // ===========================================================================
 // Wide Character Rendering
 // ===========================================================================

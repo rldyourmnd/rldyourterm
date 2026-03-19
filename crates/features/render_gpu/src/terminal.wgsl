@@ -47,12 +47,16 @@ const WIDE_BIT: u32        = 0x1000000u; // bit 24
 const CONT_BIT: u32        = 0x2000000u; // bit 25
 const DBL_UL_BIT: u32      = 0x4000000u; // bit 26
 const OVERLINE_BIT: u32    = 0x8000000u; // bit 27
+const CURLY_UL_BIT: u32    = 0x10000000u; // bit 28
+const DOTTED_UL_BIT: u32   = 0x20000000u; // bit 29
+const DASHED_UL_BIT: u32   = 0x40000000u; // bit 30
 
 // Selection sentinel: no active selection.
 const SEL_NONE: u32 = 0xFFFFFFFFu;
 
 // Atlas texture size (pixels) for bold pixel offset calculation.
 const ATLAS_TEX_SIZE: f32 = 1024.0;
+const CURLY_WAVE: array<u32, 8> = array<u32, 8>(2u, 1u, 0u, 1u, 2u, 1u, 0u, 1u);
 
 @group(0) @binding(0) var<uniform> grid: GridUniforms;
 @group(1) @binding(0) var atlas_tex: texture_2d<f32>;
@@ -132,6 +136,43 @@ fn unpack_rgb(packed: u32) -> vec3<f32> {
         f32((packed >> 8u) & 0xFFu) / 255.0,
         f32(packed & 0xFFu) / 255.0,
     );
+}
+
+fn underline_decoration_alpha(flags: u32, cell_pos: vec2<f32>) -> f32 {
+    let cell_width_px = max(grid.cell_width, 1.0);
+    let span_px = select(cell_width_px, cell_width_px * 2.0, (flags & WIDE_BIT) != 0u);
+    let x_px = u32(floor(cell_pos.x * span_px));
+    let cell_height_px = max(u32(grid.cell_height), 1u);
+    let y_px = min(u32(floor(cell_pos.y * grid.cell_height)), cell_height_px - 1u);
+    let bottom_row = cell_height_px - 1u;
+    let upper_row = max(cell_height_px, 3u) - 3u;
+
+    var alpha: f32 = 0.0;
+
+    if (flags & UNDERLINE_BIT) != 0u && y_px == bottom_row {
+        alpha = 1.0;
+    }
+
+    if (flags & DBL_UL_BIT) != 0u && (y_px == upper_row || y_px == bottom_row) {
+        alpha = 1.0;
+    }
+
+    if (flags & DOTTED_UL_BIT) != 0u && y_px == bottom_row && (x_px % 2u == 0u) {
+        alpha = 1.0;
+    }
+
+    if (flags & DASHED_UL_BIT) != 0u && y_px == bottom_row && (x_px % 4u < 3u) {
+        alpha = 1.0;
+    }
+
+    if (flags & CURLY_UL_BIT) != 0u {
+        let target_row = upper_row + CURLY_WAVE[x_px % 8u];
+        if y_px == target_row {
+            alpha = 1.0;
+        }
+    }
+
+    return alpha;
 }
 
 @fragment
@@ -225,20 +266,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Decoration color for underline/double underline (SGR 58 or fallback to fg).
     let decoration_color = select(fg, unpack_rgb(in.underline_color), in.underline_color != 0u);
 
-    // Track underline decoration zone for custom underline_color compositing.
-    var decoration_alpha: f32 = 0.0;
-
-    // Underline: 1px solid line at bottom of cell (SGR 4)
-    if (flags & UNDERLINE_BIT) != 0u && in.cell_pos.y > 0.9375 {
-        decoration_alpha = 1.0;
-    }
-
-    // Double underline: two 1px lines near cell bottom (SGR 21)
-    if (flags & DBL_UL_BIT) != 0u {
-        if (in.cell_pos.y > 0.8125 && in.cell_pos.y < 0.875) || in.cell_pos.y > 0.9375 {
-            decoration_alpha = 1.0;
-        }
-    }
+    let decoration_alpha = underline_decoration_alpha(flags, in.cell_pos);
 
     // Overline: 1px line at top of cell (SGR 53) — uses fg color
     if (flags & OVERLINE_BIT) != 0u && in.cell_pos.y < 0.0625 {
