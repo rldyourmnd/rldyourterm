@@ -1,5 +1,9 @@
 # rldyourterm
 
+> **DEPRECATED.** This repository is archived and no longer maintained.
+> It is kept read-only for reference; its GDS anchor records
+> `lifecycle: archived` under `portfolio:archived-projects`.
+
 [![CI](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml/badge.svg)](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/rldyourmnd/rldyourterm/branch/main/graph/badge.svg)](https://codecov.io/gh/rldyourmnd/rldyourterm)
 [![Security](https://github.com/rldyourmnd/rldyourterm/actions/workflows/ci.yml/badge.svg?branch=main&event=audit)](https://github.com/rldyourmnd/rldyourterm/security/overview)
