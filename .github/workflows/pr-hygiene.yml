@@ -45,7 +45,7 @@ jobs:
     # workflow_dispatch the job is skipped; semantic-gate (which allows
     # skipped) reports the required "Semantic PR" context as success.
     if: ${{ github.event_name == 'pull_request' }}
-    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@ca538d59aef41c1bb03c3669366c368128d5af88
     with:
       pr_title: true
       commitlint: false
@@ -78,7 +78,7 @@ jobs:
   stale:
     name: Stale
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@ca538d59aef41c1bb03c3669366c368128d5af88
     with:
       pr_title: false
       commitlint: false

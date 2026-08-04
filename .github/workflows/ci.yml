@@ -74,7 +74,7 @@ jobs:
     name: rust-ci
     permissions:
       contents: read
-    uses: NDDev-it-com/ci-workflows/.github/workflows/rust-ci.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    uses: NDDev-it-com/ci-workflows/.github/workflows/rust-ci.yml@ca538d59aef41c1bb03c3669366c368128d5af88
     with:
       runner: ubuntu-24.04
       toolchain: "1.94.0"
@@ -94,7 +94,7 @@ jobs:
     name: supply-chain
     permissions:
       contents: read
-    uses: NDDev-it-com/ci-workflows/.github/workflows/rust-supply-chain.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    uses: NDDev-it-com/ci-workflows/.github/workflows/rust-supply-chain.yml@ca538d59aef41c1bb03c3669366c368128d5af88
     with:
       runner: ubuntu-24.04
       toolchain: "1.94.0"
@@ -112,7 +112,7 @@ jobs:
     name: Repo Lint
     permissions:
       contents: read
-    uses: NDDev-it-com/ci-workflows/.github/workflows/actionlint.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    uses: NDDev-it-com/ci-workflows/.github/workflows/actionlint.yml@ca538d59aef41c1bb03c3669366c368128d5af88
     with:
       runner: ubuntu-24.04
       actionlint_version: "1.7.11"
