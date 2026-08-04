@@ -1,0 +1,232 @@
+name: Security
+
+# Consolidated security pipeline.
+#
+# Built from reusable workflows in NDDev-it-com/ci-workflows (pinned to a
+# SHA):
+#   - public-codeql.yml            : CodeQL code-scanning (rust, security-and-quality)
+#   - public-scorecard.yml         : OSSF Scorecard + SARIF upload
+#   - public-dependency-review.yml : GitHub dependency-review on PRs
+#   - clusterfuzzlite.yml          : ClusterFuzzLite PR (code-change) fuzzing
+#
+# Each security domain has its own inlined caller-named gate job so the exact
+# branch-protection required-check contexts are preserved:
+#   "CodeQL", "Scorecard", "Dependency Review", "ClusterFuzzLite PR fuzzing".
+#
+# The gate jobs are inlined (rather than calling ci-workflows/gate.yml) because
+# a reusable workflow cannot read the caller's `needs` context, which would make
+# gate.yml's result-validation always report "NOT FOUND".
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * 1'  # CodeQL weekly on Monday at 02:00 UTC
+    - cron: '0 0 * * 0'  # Scorecard weekly at 00:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  CARGO_NET_RETRY: "5"
+  CARGO_INCREMENTAL: "0"
+  CI_RUST_TOOLCHAIN: "1.94.0"
+  # Keep CodeQL metric drift fail-closed while allowing known benign generated warnings.
+  CODEQL_MAX_EXTRACTED_WITH_ERRORS: "5"
+
+jobs:
+  # ==================== CodeQL ====================
+
+  codeql:
+    name: CodeQL
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: NDDev-it-com/ci-workflows/.github/workflows/public-codeql.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      languages: '["rust"]'
+      queries: security-and-quality
+      build_command: "cargo build --workspace --locked"
+      # Collect Rust extraction diagnostics and enforce the actionable-warning /
+      # extracted-with-errors budgets (fail-closed). Runs with always() so
+      # diagnostics are captured even when the analyze step fails.
+      post_analyze_command: |
+        bash scripts/ci/codeql_collect_rust_diagnostics.sh codeql-rust-diagnostics
+        if [ -f codeql-rust-diagnostics/summary.md ]; then
+          cat codeql-rust-diagnostics/summary.md >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "CodeQL diagnostics summary was not generated." >> "$GITHUB_STEP_SUMMARY"
+        fi
+        set -euo pipefail
+        status_file="codeql-rust-diagnostics/status.env"
+        if [ ! -f "${status_file}" ]; then
+          echo "::error::CodeQL diagnostics status file is missing; enforcement cannot continue."
+          exit 1
+        fi
+        # shellcheck source=/dev/null
+        source "${status_file}"
+        errors="${CODEQL_EXTRACTION_ERROR_ROWS:-0}"
+        actionable="${CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS:-0}"
+        extracted_with_errors_metric="${CODEQL_EXTRACTED_WITH_ERRORS_METRIC:-0}"
+        extracted_with_errors_budget="${CODEQL_MAX_EXTRACTED_WITH_ERRORS:-0}"
+        case "${errors}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_EXTRACTION_ERROR_ROWS='${errors}'."; exit 1;; esac
+        case "${actionable}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_ACTIONABLE_EXTRACTION_WARNING_ROWS='${actionable}'."; exit 1;; esac
+        case "${extracted_with_errors_metric}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_EXTRACTED_WITH_ERRORS_METRIC='${extracted_with_errors_metric}'."; exit 1;; esac
+        case "${extracted_with_errors_budget}" in ''|*[!0-9]*) echo "::error::Invalid CODEQL_MAX_EXTRACTED_WITH_ERRORS='${extracted_with_errors_budget}'."; exit 1;; esac
+        echo "CodeQL extraction diagnostics enforcement: errors=${errors}, actionable_warnings=${actionable}, extracted_with_errors_metric=${extracted_with_errors_metric}, extracted_with_errors_budget=${extracted_with_errors_budget}"
+        if [ "${errors}" -gt 0 ] || [ "${actionable}" -gt 0 ]; then
+          echo "::error::Actionable CodeQL extraction diagnostics detected."
+          exit 1
+        fi
+        if [ "${extracted_with_errors_metric}" -gt "${extracted_with_errors_budget}" ]; then
+          echo "::error::CodeQL extracted-with-errors metric (${extracted_with_errors_metric}) exceeded budget (${extracted_with_errors_budget})."
+          exit 1
+        fi
+      output_directory: codeql-rust-diagnostics
+      upload_sarif_artifact: true
+      artifact_name: codeql-rust-diagnostics
+      retention_days: 14
+
+  codeql-gate:
+    name: CodeQL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [codeql]
+    steps:
+      - name: Validate CodeQL job result
+        run: |
+          case "${{ needs.codeql.result }}" in
+            success)
+              ;;
+            *)
+              echo "CodeQL gate blocked by upstream result: ${{ needs.codeql.result }}" >&2
+              exit 1
+              ;;
+          esac
+
+  # ==================== OSSF Scorecard ====================
+
+  scorecard:
+    name: Scorecard
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      id-token: write
+    uses: NDDev-it-com/ci-workflows/.github/workflows/public-scorecard.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      # Don't publish to the OpenSSF Scorecard API from PR/merge-group runs;
+      # results are still uploaded as SARIF to code scanning.
+      publish_results: false
+      # Non-actionable maturity checks are filtered out so they don't surface as
+      # code-scanning alerts on every PR.
+      filter_rule_ids: "MaintainedID,CodeReviewID,CIIBestPracticesID"
+      normalize_placeholder_uris: true
+      upload_sarif_on_forks: false
+
+  scorecard-gate:
+    name: Scorecard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [scorecard]
+    steps:
+      - name: Validate scorecard job result
+        run: |
+          case "${{ needs.scorecard.result }}" in
+            success)
+              ;;
+            *)
+              echo "Scorecard gate blocked by upstream result: ${{ needs.scorecard.result }}" >&2
+              exit 1
+              ;;
+          esac
+
+  # ==================== Dependency Review ====================
+
+  dependency-review:
+    name: Dependency Review
+    # dependency-review-action compares the PR base/head diffs and only has a
+    # payload on pull_request. On merge_group / schedule / workflow_dispatch
+    # there is no PR diff to review; the job is skipped and the
+    # dependency-review-gate (which allow_skipped) reports the required
+    # "Dependency Review" context as success.
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: NDDev-it-com/ci-workflows/.github/workflows/public-dependency-review.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      fail_on_severity: moderate
+      vulnerability_check: true
+
+  dependency-review-gate:
+    name: Dependency Review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [dependency-review]
+    steps:
+      - name: Validate dependency-review job result
+        run: |
+          case "${{ needs.dependency-review.result }}" in
+            success|skipped)
+              ;;
+            *)
+              echo "Dependency Review gate blocked by upstream result: ${{ needs.dependency-review.result }}" >&2
+              exit 1
+              ;;
+          esac
+
+  # ==================== ClusterFuzzLite PR fuzzing ====================
+
+  cflite-pr:
+    name: ClusterFuzzLite PR
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: NDDev-it-com/ci-workflows/.github/workflows/clusterfuzzlite.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      mode: code-change
+      language: rust
+      sanitizer_matrix: '["address"]'
+      fuzz_seconds: 300
+      output_sarif: true
+      timeout_minutes: 35
+
+  cflite-gate:
+    name: ClusterFuzzLite PR fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [cflite-pr]
+    steps:
+      - name: Validate ClusterFuzzLite PR fuzzing result
+        run: |
+          case "${{ needs.cflite-pr.result }}" in
+            success)
+              ;;
+            *)
+              echo "ClusterFuzzLite PR fuzzing gate blocked by upstream result: ${{ needs.cflite-pr.result }}" >&2
+              exit 1
+              ;;
+          esac

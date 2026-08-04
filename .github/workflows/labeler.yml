@@ -1,0 +1,31 @@
+name: Label PR
+
+# PR labeler, split from the consolidated pr-hygiene.yml because labeler must
+# trigger on `pull_request_target` (labels PRs from forks with the read-only
+# `GITHUB_TOKEN`). Uses the labeler job from the reusable pr-hygiene.yml in
+# NDDev-it-com/ci-workflows (pinned to a SHA).
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: labeler-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions: read-all
+
+jobs:
+  labeler:
+    name: Label PR
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      pr_title: false
+      commitlint: false
+      labeler: true
+      stale: false
+      labeler_config: .github/labeler.yml

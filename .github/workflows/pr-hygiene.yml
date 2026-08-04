@@ -1,0 +1,91 @@
+name: PR Hygiene
+
+# Consolidated PR-hygiene pipeline.
+#
+# Built from the reusable pr-hygiene.yml in NDDev-it-com/ci-workflows (pinned
+# to a SHA). The reusable bundles pr-title (Conventional Commits) and stale
+# processing as independently toggleable jobs.
+#
+# Labeler is deliberately in a SEPARATE workflow (labeler.yml) because it must
+# trigger on `pull_request_target` (so it can label PRs from forks with the
+# read-only `GITHUB_TOKEN`), whereas pr-title and stale trigger on
+# `pull_request` / `schedule`. A single workflow file can only declare one
+# `on:` block, so consolidating labeler here would either regress its trigger
+# or double-run the workflow on every PR.
+#
+# The Semantic PR gate is inlined (rather than calling ci-workflows/gate.yml)
+# because a reusable workflow cannot read the caller's `needs` context.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    - cron: '30 1 * * *'  # Daily at 01:30 UTC (stale processing)
+  workflow_dispatch:
+
+concurrency:
+  group: pr-hygiene-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: read
+  issues: write
+  contents: read
+
+jobs:
+  # ==================== Semantic PR title (Conventional Commits) ====================
+
+  semantic:
+    name: Semantic PR (semantic-pull-request)
+    # action-semantic-pull-request validates the PR title, which is only
+    # available on pull_request events. On merge_group / schedule /
+    # workflow_dispatch the job is skipped; semantic-gate (which allows
+    # skipped) reports the required "Semantic PR" context as success.
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      pr_title: true
+      commitlint: false
+      labeler: false
+      stale: false
+      pr_title_types: "feat,fix,refactor,docs,test,chore,ci,build,perf,style,revert"
+      pr_title_require_scope: false
+      pr_title_subject_pattern: ^(?![A-Z]).+$
+
+  semantic-gate:
+    name: Semantic PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [semantic]
+    steps:
+      - name: Validate semantic PR job result
+        run: |
+          case "${{ needs.semantic.result }}" in
+            success|skipped)
+              ;;
+            *)
+              echo "Semantic PR gate blocked by upstream result: ${{ needs.semantic.result }}" >&2
+              exit 1
+              ;;
+          esac
+
+  # ==================== Stale issues / PRs ====================
+
+  stale:
+    name: Stale
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      pr_title: false
+      commitlint: false
+      labeler: false
+      stale: true
+      days_before_stale: 60
+      days_before_close: 7
+      stale_operations_per_run: 30
+      stale_exempt_issue_labels: "pinned,security,enhancement,bug"
+      stale_exempt_pr_labels: "pinned,security,work-in-progress"
