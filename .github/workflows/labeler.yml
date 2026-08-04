@@ -22,7 +22,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    uses: NDDev-it-com/ci-workflows/.github/workflows/pr-hygiene.yml@ca538d59aef41c1bb03c3669366c368128d5af88
     with:
       pr_title: false
       commitlint: false
