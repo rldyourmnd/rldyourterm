@@ -1,5 +1,26 @@
 name: CI
 
+# Consolidated CI pipeline.
+#
+# Built from reusable workflows in NDDev-it-com/ci-workflows (pinned to a
+# SHA):
+#   - rust-ci.yml             : build + OS test matrix + rustfmt + clippy + MSRV
+#   - rust-supply-chain.yml   : cargo-deny + cargo-audit
+#   - actionlint.yml          : workflow linting + shellcheck + repo-local linters
+#
+# Bespoke jobs kept in-repo because no reusable equivalent exists:
+#   - check                   : CFLite toolchain-pin sync + governance preflight
+#   - benchmark-smoke         : terminal benchmark smoke harness
+#   - dead-weight             : repo-local dead-code/unused-dep policy
+#   - coverage                : cargo-llvm-cov + Codecov upload (CODECOV_ENABLED gated)
+#   - jenkins-merge-group-bridge : mirrors the Jenkins PR context onto merge-group SHAs
+#   - ci-gate                 : caller-named gate job ("CI") for branch protection
+#
+# The gate job is inlined (rather than calling ci-workflows/gate.yml) because a
+# reusable workflow cannot read the caller's `needs` context, which would make
+# gate.yml's result-validation always report "NOT FOUND". Inlining preserves the
+# exact branch-protection check name ("CI") AND validates results correctly.
+
 on:
   pull_request:
     branches: [main]
@@ -26,7 +47,7 @@ env:
   MSRV_RUST_TOOLCHAIN: "1.92.0"
 
 jobs:
-  # ==================== Platform Matrix Jobs ====================
+  # ==================== Bespoke preflight (governance + CFLite pin) ====================
 
   check:
     name: Check (ubuntu)
@@ -47,14 +68,68 @@ jobs:
         run: bash scripts/ci/run_e2e_governance.sh --mode ci
       - run: cargo check --workspace --all-targets --locked
 
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  # ==================== Reusable Rust CI (build + test matrix + fmt + clippy + msrv) ====================
+
+  rust-ci:
+    name: rust-ci
+    permissions:
+      contents: read
+    uses: NDDev-it-com/ci-workflows/.github/workflows/rust-ci.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      toolchain: "1.94.0"
+      components: "clippy,rustfmt"
+      build_command: "cargo check --workspace --all-targets --locked"
+      test_command: "cargo test --workspace --locked"
+      test_matrix_os: '["ubuntu-24.04","macos-14"]'
+      fmt_command: "cargo fmt --all -- --check"
+      clippy_command: "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+      msrv_toolchain: "1.92.0"
+      msrv_command: "cargo check --workspace --all-targets --locked"
+      timeout_minutes: 20
+
+  # ==================== Reusable supply-chain (cargo-deny + cargo-audit) ====================
+
+  supply-chain:
+    name: supply-chain
+    permissions:
+      contents: read
+    uses: NDDev-it-com/ci-workflows/.github/workflows/rust-supply-chain.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      toolchain: "1.94.0"
+      enable_deny: true
+      enable_audit: true
+      # machete is disabled here; the bespoke dead-weight job enforces the
+      # repo's stricter unused-dependency policy via run_dead_weight_checks.sh.
+      enable_machete: false
+      deny_command: "check bans licenses advisories sources"
+      cargo_audit_version: "0.22.1"
+
+  # ==================== Reusable actionlint + shellcheck + repo-local linters ====================
+
+  repo-lint:
+    name: Repo Lint
+    permissions:
+      contents: read
+    uses: NDDev-it-com/ci-workflows/.github/workflows/actionlint.yml@c9eea1fc544a76057df2fbac5860b6251ad04961
+    with:
+      runner: ubuntu-24.04
+      actionlint_version: "1.7.11"
+      actionlint_sha256: "900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a"
+      enable_shellcheck: true
+      shellcheck_version: "0.11.0"
+      shellcheck_sha256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+      # Repository-local linters (license consistency, pinned-action checks,
+      # etc.) run as the actionlint post_command.
+      post_command: "bash scripts/ci/run_repo_linters.sh"
+
+  # ==================== Bespoke benchmark smoke ====================
+
+  benchmark-smoke:
+    name: Benchmark Smoke
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-14]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -63,10 +138,33 @@ jobs:
         with:
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.os == 'macos-14' }}
-      - run: cargo test --workspace --locked
+          save-if: "false"
+      - run: bash scripts/ci/run_terminal_benchmark_smoke.sh
 
-  # ==================== Code Coverage ====================
+  # ==================== Bespoke dead-weight (unused dependency policy) ====================
+
+  dead-weight:
+    name: Dead Weight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
+          save-if: "false"
+          linux-packages: ""
+      - name: Install cargo-machete
+        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
+        with:
+          tool: cargo-machete@0.9.1
+      - name: Run dead-weight checks
+        run: bash scripts/ci/run_dead_weight_checks.sh oss
+
+  # ==================== Code Coverage (CODECOV_ENABLED gated) ====================
 
   coverage:
     name: Coverage
@@ -103,156 +201,7 @@ jobs:
           fail_ci_if_error: false
           token: ${{ env.CODECOV_TOKEN }}
 
-  # ==================== Lint & Format ====================
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          components: clippy
-          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: "false"
-      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-
-  benchmark-smoke:
-    name: Benchmark Smoke
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: "false"
-      - run: bash scripts/ci/run_terminal_benchmark_smoke.sh
-
-  dead-weight:
-    name: Dead Weight
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: "false"
-          linux-packages: ""
-      - name: Install cargo-machete
-        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
-        with:
-          tool: cargo-machete@0.9.1
-      - name: Run dead-weight checks
-        run: bash scripts/ci/run_dead_weight_checks.sh oss
-
-  repo-lint:
-    name: Repo Lint
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - name: Install repo lint toolchain
-        run: |
-          set -euo pipefail
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends curl python3 ripgrep tar xz-utils
-
-          curl -fsSLo /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz
-          echo "900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a  /tmp/actionlint.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/actionlint.tar.gz -C /tmp
-          sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
-
-          curl -fsSLo /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
-          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
-          sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
-      - name: Run repository linters
-        run: bash scripts/ci/run_repo_linters.sh
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # master
-        with:
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  # ==================== MSRV Check ====================
-
-  msrv:
-    name: MSRV (1.92)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: ${{ env.MSRV_RUST_TOOLCHAIN }}
-          shared-key: ci-${{ runner.os }}-${{ env.MSRV_RUST_TOOLCHAIN }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --workspace --all-targets --locked
-
-  # ==================== Security ====================
-
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-rust-ci
-        with:
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          shared-key: ci-${{ runner.os }}-${{ env.CI_RUST_TOOLCHAIN }}
-          save-if: "false"
-          cache-targets: false
-          linux-packages: ""
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@64c5c20c872907b6f7cd50994ac189e7274160f2 # v2.68.26
-        with:
-          tool: cargo-audit@0.22.1
-      - name: Run cargo-audit
-        run: cargo audit
-
-  # ==================== Dependency Linting ====================
-
-  deny:
-    name: Cargo Deny
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.11
-        with:
-          command: check bans licenses advisories sources
+  # ==================== Jenkins merge-group context bridge ====================
 
   jenkins-merge-group-bridge:
     name: Jenkins Merge Group Bridge
@@ -288,13 +237,27 @@ jobs:
             --data "$payload" \
             "https://api.github.com/repos/${REPO}/statuses/${TARGET_SHA}" >/dev/null
 
-  # Branch protection expects a required check named exactly "CI".
+  # ==================== CI gate (branch-protection check name: "CI") ====================
+  #
+  # Inlined rather than calling ci-workflows/gate.yml: a reusable workflow
+  # cannot read the caller's `needs` context, so gate.yml's result validation
+  # always reports "NOT FOUND" for every required job. Inlining preserves the
+  # exact "CI" check name AND validates results correctly.
+
   ci-gate:
     name: CI
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [check, test, coverage, clippy, benchmark-smoke, dead-weight, repo-lint, fmt, msrv, audit, deny]
+    needs:
+      - check
+      - rust-ci
+      - supply-chain
+      - repo-lint
+      - benchmark-smoke
+      - dead-weight
+      - coverage
+      - jenkins-merge-group-bridge
     steps:
       - name: Validate fan-out job results
         run: |
@@ -309,21 +272,28 @@ jobs:
           }
 
           require_success "check" "${{ needs.check.result }}"
-          require_success "test" "${{ needs.test.result }}"
-          require_success "clippy" "${{ needs.clippy.result }}"
+          require_success "rust-ci" "${{ needs.rust-ci.result }}"
+          require_success "supply-chain" "${{ needs.supply-chain.result }}"
+          require_success "repo-lint" "${{ needs.repo-lint.result }}"
           require_success "benchmark-smoke" "${{ needs.benchmark-smoke.result }}"
           require_success "dead-weight" "${{ needs.dead-weight.result }}"
-          require_success "repo-lint" "${{ needs.repo-lint.result }}"
-          require_success "fmt" "${{ needs.fmt.result }}"
-          require_success "msrv" "${{ needs.msrv.result }}"
-          require_success "audit" "${{ needs.audit.result }}"
-          require_success "deny" "${{ needs.deny.result }}"
 
+          # coverage only runs when vars.CODECOV_ENABLED == 'true'; skipped otherwise.
           case "${{ needs.coverage.result }}" in
             success|skipped)
               ;;
             *)
               echo "CI gate blocked: 'coverage' must be success or skipped, got '${{ needs.coverage.result }}'" >&2
+              exit 1
+              ;;
+          esac
+
+          # jenkins-merge-group-bridge only runs on merge_group; skipped elsewhere.
+          case "${{ needs.jenkins-merge-group-bridge.result }}" in
+            success|skipped)
+              ;;
+            *)
+              echo "CI gate blocked: 'jenkins-merge-group-bridge' must be success or skipped, got '${{ needs.jenkins-merge-group-bridge.result }}" >&2
               exit 1
               ;;
           esac
